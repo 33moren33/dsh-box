@@ -218,7 +218,7 @@ export function buildInstallManifest(version, closure) {
     name: `dsh-release-${version.replace(/[^0-9a-z.-]/gi, '-')}`,
     private: true,
     version: '0.0.0',
-    description: 'One pinned DeepSeek Harness release, downloaded by dsh-clean-boot.',
+    description: 'One pinned DeepSeek Harness release, downloaded by dsh-box.',
     dependencies,
   }
 }

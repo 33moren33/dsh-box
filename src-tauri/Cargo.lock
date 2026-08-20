@@ -671,7 +671,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsh-clean-boot-shell"
+name = "dsh-box-shell"
 version = "0.1.0"
 dependencies = [
  "tauri",

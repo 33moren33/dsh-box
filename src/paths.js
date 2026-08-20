@@ -125,7 +125,7 @@ export function ensureBox(dir) {
   if (conflict !== null) throw new Error(conflict)
   const layout = boxLayout(dir)
   for (const path of [layout.root, layout.versions, layout.sandboxes]) mkdirSync(path, { recursive: true })
-  if (!existsSync(layout.marker)) writeFileSync(layout.marker, 'dsh-clean-boot\n')
+  if (!existsSync(layout.marker)) writeFileSync(layout.marker, 'dsh-box\n')
   if (!existsSync(layout.gitignore)) writeFileSync(layout.gitignore, BOX_GITIGNORE)
   return layout
 }

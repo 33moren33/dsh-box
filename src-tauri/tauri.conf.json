@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "dsh-clean-boot",
+  "productName": "dsh-box",
   "version": "0.1.0",
-  "identifier": "com.dshcleanboot.desktop",
+  "identifier": "com.dshbox.desktop",
   "build": {
     "frontendDist": "../src/ui"
   },

@@ -74,7 +74,7 @@ function canBind(port) {
 export function writePluginOverlay(file, plugins) {
   if (plugins.length === 0) return null
   const lines = [
-    '# Written by dsh-clean-boot for one launch. Applied on top of the official',
+    '# Written by dsh-box for one launch. Applied on top of the official',
     '# layers, so nothing official is replaced by its presence.',
     '- insert:',
   ]
