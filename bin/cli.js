@@ -14,8 +14,10 @@ import {
   describePlugin, partitionPlugins, readConfig, removePlugin, upsertPlugin, writeConfig,
 } from '../src/config.js'
 import { installRelease, listReleases } from '../src/registry.js'
+import { userDshHome } from '../src/paths.js'
 import {
-  adoptSessions, deleteSandbox, ensureSandbox, inspectSandbox, listSandboxes, suggestSandboxName,
+  adoptSessions, deleteSandbox, ensureSandbox, inspectSandbox, listSandboxes, mainDshRunning,
+  suggestSandboxName,
 } from '../src/sandbox.js'
 import { launch, stop } from '../src/launch.js'
 import { deleteVersion, downloadedVersions } from '../src/versions.js'
@@ -38,6 +40,7 @@ start 的选项:
   --version <版本>   用哪个版本        --sandbox <名字>   用哪个沙箱
   --new              开全新沙箱        --plugin <id>      勾一个插件,可重复
   --workspace <目录> dsh 打开哪个目录  --no-sign-in       不导入登录
+  --main             非沙箱:用真实的 ~/.dsh 启动,插件仅本次生效
 
 通用选项: --json 以 JSON 输出结果(给脚本和 Agent 用)。
 数据默认放在 ./dsh_box(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。
@@ -233,15 +236,23 @@ async function start(layout, opts) {
 
   const quiet = opts.json === true
   const say = quiet ? () => {} : (line) => console.log(line)
+  const main = opts.main === true
   const importSignIn = opts['no-sign-in'] !== true
-  const { info, created, signInImported } = ensureSandbox(layout, name, { importSignIn })
-  say(`\n  沙箱「${info.name}」${created ? '已新建' : '已复用'}${signInImported ? ',登录已导入' : ''}`)
-  if (!created) say(`  它的对话只属于它,别的沙箱看不到`)
-  if (chosen.length === 0) say('  没勾额外插件:这是纯官方的 dsh')
+  let boxName = '主环境'
+  if (main) {
+    if (await mainDshRunning()) throw new Error('主环境已经开着一台(端口 3080),先关掉它再启动')
+    say('\n  非沙箱:用你真实的 ~/.dsh 启动,勾选的插件仅本次生效')
+  } else {
+    const { info, created, signInImported } = ensureSandbox(layout, name, { importSignIn })
+    boxName = info.name
+    say(`\n  沙箱「${info.name}」${created ? '已新建' : '已复用'}${signInImported ? ',登录已导入' : ''}`)
+    if (!created) say(`  它的对话只属于它,别的沙箱看不到`)
+    if (chosen.length === 0) say('  没勾额外插件:这是纯官方的 dsh')
+  }
 
   const result = await launch({
     layout,
-    sandbox: info.name,
+    ...(main ? { home: userDshHome() } : { sandbox: boxName }),
     version,
     plugins: chosen,
     workspace: typeof opts.workspace === 'string' ? opts.workspace : last.workspace || process.cwd(),
@@ -252,7 +263,7 @@ async function start(layout, opts) {
     ...config,
     last: {
       version,
-      sandbox: info.name,
+      sandbox: main ? last.sandbox : boxName,
       plugins: chosen.map((p) => p.id),
       importSignIn,
       workspace: typeof opts.workspace === 'string' ? opts.workspace : last.workspace,
@@ -261,7 +272,7 @@ async function start(layout, opts) {
 
   if (opts.json === true) {
     console.log(JSON.stringify({
-      url: result.url, pid: result.pid, port: result.port, sandbox: info.name, version,
+      url: result.url, pid: result.pid, port: result.port, sandbox: boxName, version,
     }))
   } else {
     console.log(`\n  打开 ${result.url}`)

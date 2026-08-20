@@ -95,16 +95,15 @@
       <input type="text" id="sandboxName" placeholder="沙箱名" style="flex:1;min-width:200px">
       <button class="chip" id="newSandboxBtn">新沙箱</button>
     </div>
-    <div class="row" style="margin-top:10px">
-      <input type="text" id="workspace" placeholder="工作区目录" style="flex:1;min-width:200px">
-      <button class="chip" id="workspaceBrowse" hidden>浏览…</button>
-    </div>
     <label class="check"><input type="checkbox" id="importSignIn" checked>
       <span><b>导入登录凭据</b></span></label>
   </section>
 
   <section class="card">
     <button class="go" id="startBtn">启动</button>
+    <div class="row" style="margin-top:8px;justify-content:center">
+      <button class="mini" id="mainStartBtn">主环境启动(非沙箱,勾选的插件仅本次生效)</button>
+    </div>
     <div id="startOut"></div>
   </section>
 
@@ -141,9 +140,8 @@ async function refresh() {
   if (version === '') version = state.last.version || state.downloaded[0]?.version || ''
   if (picked.size === 0) for (const id of state.last.plugins ?? []) picked.add(id)
   if ($('sandboxName').value === '') $('sandboxName').value = state.last.sandbox || state.suggestedName
-  if ($('workspace').value === '') $('workspace').value = state.last.workspace ?? ''
   $('importSignIn').checked = state.last.importSignIn !== false
-  $('boxPath').textContent = `数据目录 ${state.box}`
+  $('boxPath').textContent = `数据目录 ${state.box} · 过程日志在其 logs 子目录`
   drawVersions(); drawPlugins(); drawRunning(); drawSandboxes()
 }
 
@@ -173,14 +171,13 @@ function drawVersions() {
   const offered = [...new Set([...state.featured, ...state.downloaded.map((d) => d.version)])]
   const chip = (v) => {
     const local = have.get(v)
-    const tagText = { latest: '官方稳定版', next: '官方尝鲜版' }
-    const tag = Object.entries(state.tags ?? {}).filter(([, val]) => val === v).map(([t]) => tagText[t] ?? t).join(' ')
     const button = document.createElement('button')
     button.className = 'chip'
     button.setAttribute('aria-pressed', String(v === version))
     const size = local?.sizeMb != null ? ` · ${local.sizeMb} MB` : ''
-    const label = local === undefined ? (tag ? `未下载 · ${tag}` : '未下载')
-      : local.pinned ? `${local.packages} 包已核对${size}` : '版本混杂,请重新下载'
+    const newest = v === state.featured?.[0] ? ' · newest' : ''
+    const label = (local === undefined ? '未下载'
+      : local.pinned ? `${local.packages} 包已核对${size}` : '版本混杂,请重新下载') + newest
     button.innerHTML = `${v}<small>${label}</small>`
     button.onclick = () => { version = v; drawVersions() }
     if (local !== undefined) {
@@ -374,7 +371,6 @@ if (pickDir !== undefined) {
       if (typeof dir === 'string') $(input).value = dir
     }
   }
-  wire('workspaceBrowse', 'workspace')
   wire('pluginBrowse', 'pluginDir')
 }
 
@@ -384,7 +380,6 @@ $('startBtn').onclick = async () => {
     const { jobId } = await api('/api/start', {
       version,
       sandbox: $('sandboxName').value.trim(),
-      workspace: $('workspace').value.trim(),
       plugins: [...picked],
       importSignIn: $('importSignIn').checked,
     })
@@ -399,12 +394,42 @@ $('startBtn').onclick = async () => {
   }
 }
 
+$('mainStartBtn').onclick = async () => {
+  if (!confirm(`用 ${version} 打开你真实的主环境(非沙箱)?\n建议选日常在用的版本:数据格式跨版本无迁移。`)) return
+  $('mainStartBtn').disabled = true
+  try {
+    const { jobId } = await api('/api/main/start', {
+      version,
+      plugins: [...picked],
+    })
+    const result = await watchJob($('startOut'), jobId, '正在启动主环境…')
+    $('startOut').innerHTML = `<div class="ok">主环境已启动。
+      <a href="${result.url}" target="_blank" rel="noreferrer">打开 ${escape(result.url)}</a></div>`
+    await refresh()
+  } catch (error) {
+    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+  } finally {
+    $('mainStartBtn').disabled = false
+  }
+}
+
 function escape(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
 refresh().catch((error) => {
   document.body.insertAdjacentHTML('afterbegin', `<div class="err">${escape(error.message)}</div>`)
+})
+
+// Sandbox links open through the service in the system's default browser.
+// Inside the desktop shell the webview has no tabs, so a plain _blank link
+// silently does nothing; in a normal browser this lands in a new tab the
+// same as before. One behavior, both worlds.
+document.addEventListener('click', (event) => {
+  const link = event.target.closest?.('a[href^="http://127.0.0.1:"]')
+  if (!link) return
+  event.preventDefault()
+  api('/api/open', { url: link.href }).catch(() => { window.open(link.href, '_blank') })
 })
 
 // Keep the running list honest without touching what the user is editing:

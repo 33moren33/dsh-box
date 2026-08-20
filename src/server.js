@@ -9,9 +9,8 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { versionDir } from './paths.js'
@@ -19,8 +18,9 @@ import {
   SOURCE_CHOICES, describePlugin, partitionPlugins, readConfig, removePlugin, upsertPlugin, writeConfig,
 } from './config.js'
 import { installRelease, isValidVersion, listReleases } from './registry.js'
+import { userDshHome } from './paths.js'
 import {
-  adoptSessions, deleteSandbox, ensureSandbox, listSandboxes, suggestSandboxName,
+  adoptSessions, deleteSandbox, ensureSandbox, listSandboxes, mainDshRunning, suggestSandboxName,
 } from './sandbox.js'
 import { findFreePort, launch, stop } from './launch.js'
 import { deleteVersion, downloadedVersions } from './versions.js'
@@ -52,19 +52,39 @@ const jobs = new Map()
 
 /**
  * Start a job and hand back its id immediately.
+ *
+ * Every line also lands in a file under `logs/`, because the window's copy
+ * is gone after a refresh and a truncated ring buffer — while the question
+ * "why did my launch with those two plugins die" is usually asked later,
+ * about exactly the lines that scrolled away.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} label - what this job is, for the log file name.
  * @param {(log: (line: string) => void) => Promise<unknown>} work
  * @returns {string} the job id.
  */
-function startJob(work) {
+function startJob(layout, label, work) {
   const id = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const job = { id, state: 'running', lines: [], error: null, result: null }
   jobs.set(id, job)
+
+  const stamp = new Date().toISOString().slice(0, 19).replace('T', '_').replaceAll(':', '-')
+  const file = join(layout.root, 'logs', `${stamp}_${label.replace(/[^\w.-]+/g, '-')}.log`)
+  mkdirSync(join(layout.root, 'logs'), { recursive: true })
+  const persist = (line) => {
+    try {
+      appendFileSync(file, `${new Date().toISOString().slice(11, 19)} ${line}\n`)
+    } catch {
+      // A log that cannot be written must not take the job down with it.
+    }
+  }
+
   const log = (line) => {
+    persist(line)
     job.lines.push(line)
     if (job.lines.length > 200) job.lines.shift()
   }
   work(log).then(
-    (result) => { job.result = result; job.state = 'done' },
+    (result) => { job.result = result; job.state = 'done'; persist('完成') },
     (error) => { job.error = error.message; job.state = 'failed'; log(`失败:${error.message}`) },
   )
   // Finished jobs are kept a while so a slow poll still sees the outcome.
@@ -135,12 +155,14 @@ async function handle(layout, request, response) {
 
   const body = await readJson(request)
   switch (url.pathname) {
-    case '/api/pull': return json(response, 200, { jobId: startJob((log) => pull(layout, body, log)) })
+    case '/api/pull': return json(response, 200, { jobId: startJob(layout, `pull-${body.version}`, (log) => pull(layout, body, log)) })
     case '/api/source': return json(response, 200, setSource(layout, body))
-    case '/api/version/delete': return json(response, 200, { jobId: startJob((log) => dropVersion(layout, body, log)) })
+    case '/api/open': return json(response, 200, openLocal(body))
+    case '/api/version/delete': return json(response, 200, { jobId: startJob(layout, `drop-${body.version}`, (log) => dropVersion(layout, body, log)) })
     case '/api/plugin/add': return json(response, 200, addPlugin(layout, body))
     case '/api/plugin/remove': return json(response, 200, dropPlugin(layout, body))
-    case '/api/start': return json(response, 200, { jobId: startJob((log) => start(layout, body, log)) })
+    case '/api/start': return json(response, 200, { jobId: startJob(layout, `start-${body.sandbox || 'new'}`, (log) => start(layout, body, log)) })
+    case '/api/main/start': return json(response, 200, { jobId: startJob(layout, 'start-main', (log) => startMain(layout, body, log)) })
     case '/api/stop': return json(response, 200, await halt(body))
     case '/api/sandbox/delete': return json(response, 200, dropSandbox(layout, body))
     case '/api/sandbox/adopt': return json(response, 200, await adoptSessions(layout, String(body.name ?? '')))
@@ -205,6 +227,23 @@ async function pull(layout, body, log) {
   mkdirSync(dir, { recursive: true })
   const report = await installRelease(dir, version, { onLog: log, source: readConfig(layout).source })
   return { version, packages: report.checked }
+}
+
+/**
+ * Open a local sandbox URL in the system's default browser.
+ *
+ * Exists for the desktop shell: its webview has no tabs, so an ordinary
+ * `target="_blank"` link silently does nothing there. The page routes link
+ * clicks here instead, which lands the user in a real browser in both
+ * worlds. Only loopback http URLs are accepted — this endpoint must not be
+ * a general-purpose "open anything" lever.
+ * @param {{url: string}} body
+ */
+function openLocal(body) {
+  const url = String(body.url ?? '')
+  if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(url)) throw new Error('只开本机沙箱地址')
+  openBrowser(url)
+  return { ok: true }
 }
 
 /**
@@ -298,6 +337,48 @@ async function start(layout, body, log) {
     },
   })
   return { url: result.url, pid: result.pid, sandbox: info.name, created, signInImported }
+}
+
+/**
+ * Boot the user's real dsh home — no sandbox — with the ticked plugins.
+ *
+ * This exists to answer one question a sandbox cannot: what does a plugin
+ * look like inside the environment someone actually lives in, with their
+ * real conversations, settings and patches around it. The plugins ride on a
+ * per-launch `--patch`, so a normally started dsh is not affected by having
+ * used this entry. Refused while a dsh already serves on its default port:
+ * two processes writing one home is how storage files get corrupted.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {{version: string, plugins?: string[], workspace?: string}} body
+ * @param {(line: string) => void} log
+ */
+async function startMain(layout, body, log) {
+  const config = readConfig(layout)
+  const version = String(body.version ?? '')
+  if (!isValidVersion(version)) throw new Error('先选一个版本')
+  if (await mainDshRunning()) throw new Error('主环境已经开着一台(端口 3080),先关掉它再从这里启动')
+  if ([...running.values()].some((entry) => entry.main === true)) {
+    throw new Error('主环境已经从这里启动过一台了,在「正在运行」里停掉它先')
+  }
+
+  const wanted = new Set(Array.isArray(body.plugins) ? body.plugins : [])
+  const chosen = partitionPlugins(config).live.filter((p) => wanted.has(p.id))
+  const workspace = String(body.workspace ?? '').trim()
+  log(`用 ${version} 启动主环境(非沙箱)${chosen.length > 0 ? `,附加 ${chosen.length} 个插件(仅本次启动生效)` : ''}`)
+
+  const result = await launch({
+    layout,
+    home: userDshHome(),
+    version,
+    plugins: chosen,
+    workspace: workspace === '' ? undefined : workspace,
+    onLog: log,
+  })
+  running.set(result.pid, {
+    pid: result.pid, port: result.port, url: result.url, sandbox: '主环境', version, main: true, child: result.child,
+  })
+  result.child.once('exit', () => running.delete(result.pid))
+  return { url: result.url, pid: result.pid }
 }
 
 /**

@@ -7,9 +7,10 @@
 //! shell this thin is what lets the browser version and the window version
 //! stay the same program.
 
+use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
@@ -41,7 +42,9 @@ pub fn run() {
                 }
                 Err(reason) => {
                     // A double-clicked app has no terminal; the dialog is the
-                    // only place a reason can reach the user.
+                    // only place a reason can reach the user. The stderr line
+                    // is for the other launch path — a terminal or a test.
+                    eprintln!("{reason}");
                     app.dialog()
                         .message(&reason)
                         .kind(MessageDialogKind::Error)
@@ -83,7 +86,11 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
     command
         .arg(&entry)
         .args(["ui", "--port", &port.to_string(), "--no-open"])
-        .current_dir(&cwd);
+        .current_dir(&cwd)
+        // Captured, not inherited: a double-clicked app has no terminal, so
+        // whatever Node says on the way down is only readable if kept.
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
     if let Some(dir) = &box_dir {
         command.env("DSH_BOX_HOME", dir);
     }
@@ -102,7 +109,16 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("Node 服务还没起来就退出了,退出码 {status}"));
+            let mut said = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = stderr.read_to_string(&mut said);
+            }
+            let tail: String = said.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev()
+                .collect::<Vec<_>>().join("\n");
+            return Err(format!(
+                "Node 服务还没起来就退出了,退出码 {status}。\n入口:{}\nNode 说:\n{tail}",
+                entry.display(),
+            ));
         }
         if TcpStream::connect_timeout(
             &([127, 0, 0, 1], port).into(),
@@ -138,21 +154,40 @@ fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathB
             }
         }
     }
-    let resources = app
-        .path()
-        .resource_dir()
-        .map_err(|error| format!("找不到资源目录:{error}"))?;
+    let resources = plain(
+        app.path()
+            .resource_dir()
+            .map_err(|error| format!("找不到资源目录:{error}"))?,
+    );
     let entry = resources.join("boot").join("bin").join("cli.js");
     if !entry.exists() {
         return Err(format!("安装包里缺了启动脚本:{}", entry.display()));
     }
-    let data = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("找不到数据目录:{error}"))?;
+    let data = plain(
+        app.path()
+            .app_data_dir()
+            .map_err(|error| format!("找不到数据目录:{error}"))?,
+    );
     std::fs::create_dir_all(&data).map_err(|error| format!("建不了数据目录:{error}"))?;
     let box_dir = data.join("dsh_box");
     Ok((entry, data, Some(box_dir)))
+}
+
+/// Strip Windows' `\\?\` verbatim prefix.
+///
+/// Tauri hands out canonicalized paths, which on Windows carry that prefix —
+/// and Node's module loader cannot open its entry script through it, failing
+/// with a bewildering `lstat 'C:'`. Caught by running the portable layout
+/// outside the repository.
+fn plain(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return PathBuf::from(rest);
+        }
+    }
+    path
 }
 
 /// Find a runnable Node and its major version.

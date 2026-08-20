@@ -4,14 +4,22 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { cleanPath, sandboxPaths, versionDir, versionEntry } from './paths.js'
 import { clearModuleFallback, noteBoot, switchesRelease } from './sandbox.js'
 
-/** dsh's own default; the first port tried so a single sandbox lands where people expect. */
+/** dsh's own default. Reserved for the user's real environment. */
 export const PREFERRED_PORT = 3080
+
+/**
+ * Where sandboxes start hunting. Deliberately not 3080: when the user's
+ * daily dsh happens to be off, a sandbox that grabs its port ends up
+ * impersonating it — wrong tab answers, and the "is the main dsh running"
+ * guard reads the sandbox as the real thing. Observed, not hypothetical.
+ */
+export const SANDBOX_PORT = 3090
 
 /**
  * Find a port nothing else is on.
@@ -115,6 +123,31 @@ export function linkPlugins(home, profile, plugins) {
 }
 
 /**
+ * Which of the chosen plugins this home already loads on its own.
+ *
+ * "Loads on its own" means: named in one of the patch files dsh reads
+ * automatically — the home-wide one and the profile's own. Detection is a
+ * plain text search for the package name, which can over-match (a name in a
+ * comment) but the cost of that is only a plugin not being added twice —
+ * the exact outcome wanted. The launcher's own overlay file is not
+ * consulted: it is rewritten on every launch and rides `--patch`, so it is
+ * never "already installed".
+ * @param {string} home
+ * @param {string} profile
+ * @param {PluginChoice[]} plugins
+ * @returns {PluginChoice[]} the ones already present.
+ */
+export function pluginsAlreadyInHome(home, profile, plugins) {
+  if (plugins.length === 0) return []
+  const text = [join(home, 'cordis.patch.yml'), join(home, 'profiles', profile, 'cordis.patch.yml')]
+    .filter((file) => existsSync(file))
+    .map((file) => readFileSync(file, 'utf8'))
+    .join('\n')
+  if (text === '') return []
+  return plugins.filter((plugin) => text.includes(plugin.package))
+}
+
+/**
  * `existsSync` reports false for a link whose target is gone, yet the link
  * itself still occupies the name and blocks creating a new one.
  * @param {string} path
@@ -137,10 +170,16 @@ function lstatSafe(path) {
  */
 
 /**
- * Boot one sandbox on one release.
+ * Boot one home on one release.
+ *
+ * Usually the home is a sandbox. Passing `home` explicitly instead boots any
+ * home — the real `~/.dsh` in practice, which is what makes this tool double
+ * as a plain launch entry for the dsh someone uses daily. In that mode no
+ * sandbox bookkeeping happens: nothing is created, imported or recorded.
  * @param {object} options
  * @param {import('./paths.js').BoxLayout} options.layout
- * @param {string} options.sandbox - sandbox name.
+ * @param {string} [options.sandbox] - sandbox name; ignored when `home` is given.
+ * @param {string} [options.home] - boot this home directly instead of a sandbox.
  * @param {string} options.version - release to boot.
  * @param {PluginChoice[]} [options.plugins]
  * @param {string} [options.profile]
@@ -150,27 +189,51 @@ function lstatSafe(path) {
  * @returns {Promise<LaunchResult>}
  */
 export async function launch({
-  layout, sandbox, version, plugins = [], profile = 'web', workspace, openBrowser = false, onLog,
+  layout, sandbox, home, version, plugins = [], profile = 'web', workspace, openBrowser = false, onLog,
 }) {
   const entry = versionEntry(layout, version)
   if (!existsSync(entry)) throw new Error(`版本 ${version} 还没下载`)
 
-  const home = sandboxPaths(layout, sandbox).home
-  if (switchesRelease(layout, sandbox, version)) {
+  const direct = home !== undefined
+  if (!direct) home = sandboxPaths(layout, sandbox).home
+  if (direct || switchesRelease(layout, sandbox, version)) {
     // Boot re-points the flat module fallback for every package the running
     // release knows about, and leaves alone any link naming a package that
     // release has never heard of. On a normal machine those links dangle
     // harmlessly because the other installation is gone. Here every release
     // is kept side by side, so such a link still resolves — to the wrong
-    // release. Between rc.6 and rc.8 that is eleven packages.
-    if (clearModuleFallback(home)) onLog?.('切换版本:已清掉上一版留下的模块链接')
+    // release. Between rc.6 and rc.8 that is eleven packages. A directly
+    // booted home is cleared every time, because what last touched it is
+    // unknown to us; boot rebuilds the whole directory either way.
+    if (clearModuleFallback(home)) onLog?.('已清掉可能指错版本的模块链接,启动时会重建')
   }
 
-  const linked = linkPlugins(home, profile, plugins)
-  if (linked.length > 0) onLog?.(`已把 ${linked.length} 个插件包链接进沙箱`)
+  // A home is not a blank sheet — the real ~/.dsh in particular already has
+  // plugins written into its own patch files. Adding one of those again
+  // registers the same adapter twice, and dsh answers by refusing to load
+  // the entire plugin tree (DUPLICATE_ADAPTER, exit 1) — found the hard way
+  // on a main-environment launch. Already-present plugins are skipped, and
+  // said out loud so the "why wasn't it added twice" question answers itself.
+  const present = pluginsAlreadyInHome(home, profile, plugins)
+  for (const plugin of present) {
+    onLog?.(`「${plugin.package}」这个环境里已经装着,跳过——装两份会让 dsh 拒绝启动`)
+  }
+  const adding = plugins.filter((plugin) => !present.includes(plugin))
 
-  const overlay = writePluginOverlay(join(home, 'clean-boot.patch.yml'), plugins)
-  const port = await findFreePort()
+  const linked = linkPlugins(home, profile, adding)
+  if (linked.length > 0) onLog?.(`已把 ${linked.length} 个插件包链接进${direct ? '主环境(退出时会清走)' : '沙箱'}`)
+
+  // The overlay for a directly booted home lives in our own data directory,
+  // not in that home: the real ~/.dsh is someone's daily environment, and a
+  // launcher that scatters files into it is exactly the coupling this tool
+  // exists to prevent. Sandbox homes are ours, so theirs stays put.
+  const overlay = writePluginOverlay(
+    direct ? join(layout.root, 'main.clean-boot.patch.yml') : join(home, 'clean-boot.patch.yml'),
+    adding,
+  )
+  // 3080 belongs to the user's real dsh; sandboxes hunt from their own base
+  // so an idle 3080 is never squatted by something that only looks like it.
+  const port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
 
   const args = ['--profile', profile]
   if (overlay !== null) args.push('--patch', overlay)
@@ -194,8 +257,23 @@ export async function launch({
   child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
   child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
 
+  if (direct && linked.length > 0) {
+    // Links planted in a real home are cleaned up when that dsh exits.
+    // Best-effort: if the launcher dies first the links stay — inert, since
+    // nothing loads a plugin that no patch names — but tidy is the default.
+    child.once('exit', () => {
+      for (const name of linked) {
+        try {
+          rmSync(join(home, 'profiles', profile, 'node_modules', ...name.split('/')), { recursive: true, force: true })
+        } catch {
+          // Leaving a dangling link beats crashing an exit handler.
+        }
+      }
+    })
+  }
+
   await waitUntilServing(port, child, onLog)
-  noteBoot(layout, sandbox, version)
+  if (!direct) noteBoot(layout, sandbox, version)
   return { pid: child.pid, port, url: `http://127.0.0.1:${port}`, child }
 }
 

@@ -3,7 +3,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { readdir, stat } from 'node:fs/promises'
+import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { versionDir } from './paths.js'
 import { verifyPinned } from './registry.js'
@@ -47,6 +47,37 @@ export function downloadedVersions(layout) {
  */
 export function isDownloaded(layout, version) {
   return downloadedVersions(layout).some((entry) => entry.version === version)
+}
+
+/**
+ * Delete one downloaded release entirely.
+ *
+ * Sandboxes are untouched — their conversations and settings live in their
+ * own homes — but a sandbox that last booted this release will need it
+ * downloaded again before its next start. The caller is responsible for
+ * refusing while a running sandbox is on this release.
+ * Deletion is async and reports a heartbeat for the same reason install
+ * does: a release tree is tens of thousands of files, Windows takes its
+ * time, and silence is indistinguishable from a hang.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} version
+ * @param {(line: string) => void} [onLog]
+ */
+export async function deleteVersion(layout, version, onLog) {
+  const dir = versionDir(layout, version)
+  if (!existsSync(dir)) throw new Error(`${version} 本来就没下载`)
+  const mb = versionSizeMb(dir)
+  onLog?.(`正在删除 ${version}${mb === null ? '' : `,约 ${mb} MB`}…`)
+  const started = Date.now()
+  const beat = setInterval(() => {
+    onLog?.(`还在删,已 ${Math.round((Date.now() - started) / 1000)} 秒`)
+  }, 3000)
+  try {
+    await rm(dir, { recursive: true, force: true })
+  } finally {
+    clearInterval(beat)
+  }
+  onLog?.(`${version} 已删除`)
 }
 
 /** Where a version directory's measured size is remembered. */
