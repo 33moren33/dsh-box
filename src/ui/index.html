@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>dsh 沙箱启动器</title>
+<style>
+  :root {
+    --ink: #17181c; --dim: #6b7280; --line: #e3e5ea; --bg: #f6f7f9;
+    --card: #fff; --accent: #1d4ed8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.7 ui-sans-serif, -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    display: flex; justify-content: center; padding: 28px 16px 64px;
+  }
+  main { width: 100%; max-width: 620px; }
+  h1 { font-size: 19px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--dim); margin: 0 0 20px; font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin-bottom: 14px; }
+  .card > h2 { font-size: 13px; letter-spacing: .04em; color: var(--dim); margin: 0 0 12px; font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: #fff; border-radius: 7px; padding: 7px 13px; cursor: pointer; font: inherit; line-height: 1.4; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); background: #eff4ff; color: var(--accent); font-weight: 600; }
+  .chip small { display: block; color: var(--dim); font-weight: 400; font-size: 11px; }
+  .chip[aria-pressed="true"] small { color: var(--accent); opacity: .8; }
+  input[type=text] { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: inherit; }
+  input[type=text]:focus { outline: 2px solid #bfd3ff; border-color: var(--accent); }
+  select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: inherit; }
+  details.older { margin-top: 10px; }
+  details.older summary { cursor: pointer; color: var(--dim); font-size: 12.5px; }
+  details.older .row { margin-top: 8px; }
+  label.check { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; cursor: pointer; }
+  label.check input { margin-top: 6px; }
+  label.check span b { font-weight: 600; }
+  label.check span i { font-style: normal; color: var(--dim); display: block; font-size: 12.5px; }
+  button.go { width: 100%; padding: 12px; font: inherit; font-weight: 600; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  button.go:disabled { background: #9aa4b8; cursor: default; }
+  .mini { background: none; border: 0; color: var(--dim); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; padding: 0 4px; }
+  .mini:disabled { opacity: .35; cursor: default; text-decoration: none; }
+  .list { border-top: 1px solid var(--line); }
+  .item { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); align-items: center; }
+  .item em { font-style: normal; color: var(--dim); font-size: 12.5px; display: block; }
+  pre { background: #11131a; color: #dfe3ec; padding: 12px; border-radius: 8px; overflow: auto; font-size: 12px; max-height: 220px; margin: 12px 0 0; line-height: 1.5; }
+  .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 12px 14px; border-radius: 8px; margin-top: 12px; }
+  .ok a { color: #065f46; font-weight: 700; }
+  .err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 14px; border-radius: 8px; margin-top: 12px; white-space: pre-wrap; }
+  .path { color: var(--dim); font-size: 12px; word-break: break-all; margin: 12px 0 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>dsh 沙箱启动器</h1>
+  <p class="sub">隔离沙箱里试版本、试插件,不影响你日常的 dsh。</p>
+
+  <section class="card">
+    <h2>官方版本</h2>
+    <div class="row" id="versions"></div>
+    <details class="older" id="olderWrap" hidden>
+      <summary>更早的内测版本</summary>
+      <div class="row" id="olderVersions"></div>
+    </details>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="customVersion" placeholder="或直接填版本号,例如 0.0.1-rc.1" style="flex:1;min-width:200px">
+      <button class="chip" id="pullBtn">下载</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <span class="sub" style="margin:0">安装源</span>
+      <select id="source">
+        <option value="auto">自动</option>
+        <option value="official">官方 npm</option>
+        <option value="mirror">中国镜像</option>
+      </select>
+    </div>
+    <div id="pullOut"></div>
+  </section>
+
+  <section class="card">
+    <h2>三方插件</h2>
+    <div id="plugins"></div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="pluginDir" placeholder="插件目录路径" style="flex:1;min-width:220px">
+      <button class="chip" id="pluginBrowse" hidden>浏览…</button>
+      <button class="chip" id="addPluginBtn">添加</button>
+    </div>
+    <p class="sub" style="margin:10px 0 0">不勾则启动纯官方 dsh。</p>
+  </section>
+
+  <section class="card">
+    <h2>沙箱</h2>
+    <div class="row">
+      <input type="text" id="sandboxName" placeholder="沙箱名" style="flex:1;min-width:200px">
+      <button class="chip" id="newSandboxBtn">新沙箱</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="workspace" placeholder="工作区目录" style="flex:1;min-width:200px">
+      <button class="chip" id="workspaceBrowse" hidden>浏览…</button>
+    </div>
+    <label class="check"><input type="checkbox" id="importSignIn" checked>
+      <span><b>导入登录凭据</b></span></label>
+  </section>
+
+  <section class="card">
+    <button class="go" id="startBtn">启动</button>
+    <div id="startOut"></div>
+  </section>
+
+  <section class="card" id="runningCard" hidden>
+    <h2>正在运行</h2>
+    <div class="list" id="running"></div>
+  </section>
+
+  <section class="card">
+    <h2>已有沙箱</h2>
+    <div class="list" id="sandboxes"></div>
+    <div id="adoptOut"></div>
+    <p class="path" id="boxPath"></p>
+  </section>
+</main>
+
+<script type="module">
+const $ = (id) => document.getElementById(id)
+let state = null
+let version = ''
+const picked = new Set()
+
+async function api(path, body) {
+  const response = await fetch(path, body === undefined
+    ? undefined
+    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.error ?? `请求失败(${response.status})`)
+  return data
+}
+
+async function refresh() {
+  state = await api('/api/state')
+  if (version === '') version = state.last.version || state.downloaded[0]?.version || ''
+  if (picked.size === 0) for (const id of state.last.plugins ?? []) picked.add(id)
+  if ($('sandboxName').value === '') $('sandboxName').value = state.last.sandbox || state.suggestedName
+  if ($('workspace').value === '') $('workspace').value = state.last.workspace ?? ''
+  $('importSignIn').checked = state.last.importSignIn !== false
+  $('boxPath').textContent = `数据目录 ${state.box}`
+  drawVersions(); drawPlugins(); drawRunning(); drawSandboxes()
+}
+
+function drawRunning() {
+  const list = state.running ?? []
+  $('runningCard').hidden = list.length === 0
+  const host = $('running')
+  host.innerHTML = ''
+  for (const r of list) {
+    const row = document.createElement('div')
+    row.className = 'item'
+    row.innerHTML = `<div><b>${escape(r.sandbox)}</b>
+      <em>${escape(r.version)} · <a href="${r.url}" target="_blank" rel="noreferrer">${escape(r.url)}</a></em></div>`
+    const halt = document.createElement('button')
+    halt.className = 'mini'; halt.textContent = '停止'
+    halt.onclick = async () => { await api('/api/stop', { pid: r.pid }); await refresh() }
+    row.append(halt)
+    host.append(row)
+  }
+}
+
+function drawVersions() {
+  const have = new Map(state.downloaded.map((d) => [d.version, d]))
+  // Main row: every release from the featured cut to the newest, plus
+  // anything already downloaded (a downloaded early build is actionable and
+  // should not hide in the fold).
+  const offered = [...new Set([...state.featured, ...state.downloaded.map((d) => d.version)])]
+  const chip = (v) => {
+    const local = have.get(v)
+    const tagText = { latest: '官方稳定版', next: '官方尝鲜版' }
+    const tag = Object.entries(state.tags ?? {}).filter(([, val]) => val === v).map(([t]) => tagText[t] ?? t).join(' ')
+    const button = document.createElement('button')
+    button.className = 'chip'
+    button.setAttribute('aria-pressed', String(v === version))
+    const size = local?.sizeMb != null ? ` · ${local.sizeMb} MB` : ''
+    const label = local === undefined ? (tag ? `未下载 · ${tag}` : '未下载')
+      : local.pinned ? `${local.packages} 包已核对${size}` : '版本混杂,请重新下载'
+    button.innerHTML = `${v}<small>${label}</small>`
+    button.onclick = () => { version = v; drawVersions() }
+    return button
+  }
+  $('versions').innerHTML = ''
+  for (const v of offered) $('versions').append(chip(v))
+  const older = (state.older ?? []).filter((v) => !have.has(v))
+  $('olderWrap').hidden = older.length === 0
+  $('olderVersions').innerHTML = ''
+  for (const v of older) $('olderVersions').append(chip(v))
+  $('source').value = state.source ?? 'auto'
+}
+
+function drawPlugins() {
+  const host = $('plugins')
+  host.innerHTML = ''
+  if (state.plugins.length === 0 && state.missingPlugins.length === 0) {
+    host.innerHTML = '<p class="sub" style="margin:0">还没添加插件。</p>'
+    return
+  }
+  for (const plugin of state.plugins) {
+    const label = document.createElement('label')
+    label.className = 'check'
+    label.innerHTML = `<input type="checkbox" ${picked.has(plugin.id) ? 'checked' : ''}>
+      <span><b>${escape(plugin.label)}</b><i>${escape(plugin.path)}</i></span>`
+    label.querySelector('input').onchange = (event) => {
+      if (event.target.checked) picked.add(plugin.id); else picked.delete(plugin.id)
+    }
+    const drop = document.createElement('button')
+    drop.className = 'mini'; drop.textContent = '移除'
+    drop.onclick = async (event) => {
+      event.preventDefault()
+      await api('/api/plugin/remove', { id: plugin.id })
+      picked.delete(plugin.id); await refresh()
+    }
+    label.append(drop)
+    host.append(label)
+  }
+  for (const plugin of state.missingPlugins) {
+    const row = document.createElement('p')
+    row.className = 'sub'
+    row.style.margin = '4px 0'
+    row.textContent = `${plugin.label} —— 文件夹已经不在了,装不上`
+    host.append(row)
+  }
+}
+
+function drawSandboxes() {
+  const host = $('sandboxes')
+  host.innerHTML = ''
+  if (state.sandboxes.length === 0) {
+    host.innerHTML = '<p class="sub" style="margin:10px 0 0">还没有。</p>'
+    return
+  }
+  for (const box of state.sandboxes) {
+    const row = document.createElement('div')
+    row.className = 'item'
+    const bits = [
+      box.lastVersion ? `上次用 ${box.lastVersion}` : '未启动过',
+      `${box.sessions} 条对话`,
+      box.hasCredentials ? '已登录' : '未登录',
+    ]
+    row.innerHTML = `<div><b>${escape(box.name)}</b><em>${bits.join(' · ')}</em></div>`
+    const use = document.createElement('button')
+    use.className = 'mini'; use.textContent = '用它'
+    use.onclick = () => { $('sandboxName').value = box.name }
+    const adopt = document.createElement('button')
+    adopt.className = 'mini'; adopt.textContent = '对话并入主环境'
+    adopt.disabled = box.sessions === 0
+    adopt.onclick = async () => {
+      if (!confirm(`把「${box.name}」的 ${box.sessions} 条对话复制进主环境?沙箱原件保留,重复的跳过。`)) return
+      try {
+        const r = await api('/api/sandbox/adopt', { name: box.name })
+        $('adoptOut').innerHTML = `<div class="ok">已并入 ${r.adopted} 条,跳过 ${r.skipped} 条重复。下次打开 dsh 即可看到。</div>`
+      } catch (error) {
+        $('adoptOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+      }
+    }
+    const drop = document.createElement('button')
+    drop.className = 'mini'; drop.textContent = '删除'
+    drop.onclick = async () => {
+      if (!confirm(`删除「${box.name}」及其全部对话?`)) return
+      await api('/api/sandbox/delete', { name: box.name }); await refresh()
+    }
+    const actions = document.createElement('div')
+    actions.append(use, adopt, drop)
+    row.append(actions)
+    host.append(row)
+  }
+}
+
+/**
+ * Watch a long job and keep its log on screen.
+ *
+ * The alternative — one request that resolves when the work ends — showed a
+ * frozen line for two minutes and no way to tell progress from failure.
+ */
+async function watchJob(host, jobId, headline) {
+  const render = (state, lines) => {
+    const banner = state === 'failed' ? 'err' : 'ok'
+    host.innerHTML = `<div class="${banner}">${headline}</div><pre>${escape(lines.join('\n'))}</pre>`
+    const log = host.querySelector('pre')
+    log.scrollTop = log.scrollHeight
+  }
+  for (;;) {
+    const job = await api(`/api/job?id=${encodeURIComponent(jobId)}`)
+    if (job.state === 'running') {
+      render('running', job.lines)
+      await new Promise((r) => setTimeout(r, 700))
+      continue
+    }
+    if (job.state === 'failed') {
+      host.innerHTML = `<div class="err"><b>失败了。</b>下面是原因:</div><pre>${escape(job.error)}</pre>`
+      throw new Error(job.error)
+    }
+    render('done', job.lines)
+    return job.result
+  }
+}
+
+$('pullBtn').onclick = async () => {
+  const wanted = $('customVersion').value.trim() || version
+  if (wanted === '') return
+  $('pullBtn').disabled = true
+  try {
+    const { jobId } = await api('/api/pull', { version: wanted })
+    const result = await watchJob($('pullOut'), jobId, `正在下载 ${escape(wanted)}…`)
+    version = result.version
+    $('pullOut').innerHTML = `<div class="ok">${escape(result.version)} 已就绪:${result.packages} 个包已核对。</div>`
+    await refresh()
+  } catch (error) {
+    // watchJob renders job failures itself; this catches everything else —
+    // most importantly a dead server, which otherwise fails in silence.
+    $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+  } finally {
+    $('pullBtn').disabled = false
+  }
+}
+
+$('source').onchange = async () => {
+  try {
+    await api('/api/source', { source: $('source').value })
+  } catch (error) {
+    $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+  }
+}
+
+$('addPluginBtn').onclick = async () => {
+  const dir = $('pluginDir').value.trim()
+  if (dir === '') return
+  try {
+    const { plugin } = await api('/api/plugin/add', { dir })
+    picked.add(plugin.id)
+    $('pluginDir').value = ''
+    await refresh()
+  } catch (error) {
+    $('plugins').insertAdjacentHTML('beforeend', `<div class="err">${escape(error.message)}</div>`)
+  }
+}
+
+$('newSandboxBtn').onclick = () => { $('sandboxName').value = state?.suggestedName ?? '' }
+
+// Native folder pickers exist only inside the desktop shell; in a plain
+// browser the buttons stay hidden and the text fields do the same job.
+const pickDir = window.__TAURI__?.dialog?.open
+if (pickDir !== undefined) {
+  const wire = (button, input) => {
+    $(button).hidden = false
+    $(button).onclick = async (event) => {
+      event.preventDefault()
+      const dir = await pickDir({ directory: true })
+      if (typeof dir === 'string') $(input).value = dir
+    }
+  }
+  wire('workspaceBrowse', 'workspace')
+  wire('pluginBrowse', 'pluginDir')
+}
+
+$('startBtn').onclick = async () => {
+  $('startBtn').disabled = true
+  try {
+    const { jobId } = await api('/api/start', {
+      version,
+      sandbox: $('sandboxName').value.trim(),
+      workspace: $('workspace').value.trim(),
+      plugins: [...picked],
+      importSignIn: $('importSignIn').checked,
+    })
+    const result = await watchJob($('startOut'), jobId, '正在启动…')
+    $('startOut').innerHTML = `<div class="ok">沙箱「${escape(result.sandbox)}」已启动。
+      <a href="${result.url}" target="_blank" rel="noreferrer">打开 ${escape(result.url)}</a></div>`
+    await refresh()
+  } catch (error) {
+    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+  } finally {
+    $('startBtn').disabled = false
+  }
+}
+
+function escape(value) {
+  return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+}
+
+refresh().catch((error) => {
+  document.body.insertAdjacentHTML('afterbegin', `<div class="err">${escape(error.message)}</div>`)
+})
+
+// Keep the running list honest without touching what the user is editing:
+// only the two read-only sections are redrawn.
+setInterval(async () => {
+  try {
+    state = await api('/api/state')
+    drawRunning(); drawSandboxes()
+  } catch {
+    // The next tick retries; a dead server shows up on the next click anyway.
+  }
+}, 8000)
+</script>
+</body>
+</html>
