@@ -12,6 +12,7 @@
   "bin": {
     "dsh-box": "bin/cli.js"
   },
+  "files": ["bin", "src"],
   "engines": {
     "node": ">=20"
   },
