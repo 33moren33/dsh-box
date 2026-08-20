@@ -1,0 +1,287 @@
+/**
+ * Starting one sandbox: pick a port, write the plugin overlay, boot the
+ * chosen release, and only report success once the thing is genuinely up.
+ */
+
+import { spawn } from 'node:child_process'
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
+import { dirname, join } from 'node:path'
+import { cleanPath, sandboxPaths, versionDir, versionEntry } from './paths.js'
+import { clearModuleFallback, noteBoot, switchesRelease } from './sandbox.js'
+
+/** dsh's own default; the first port tried so a single sandbox lands where people expect. */
+export const PREFERRED_PORT = 3080
+
+/**
+ * Find a port nothing else is on.
+ *
+ * Availability is decided by binding a socket rather than by consulting a
+ * list of ranges to avoid. On Windows, Hyper-V and Docker reserve blocks of
+ * ports that change between machines and between reboots, and a bind attempt
+ * is the only answer that is correct on every machine.
+ * @param {object} [options]
+ * @param {number} [options.from] - first port to try.
+ * @param {number} [options.tries]
+ * @returns {Promise<number>}
+ */
+export async function findFreePort({ from = PREFERRED_PORT, tries = 200 } = {}) {
+  for (let port = from; port < from + tries; port += 1) {
+    if (await canBind(port)) return port
+  }
+  throw new Error(`在 ${from} 到 ${from + tries} 之间找不到空闲端口`)
+}
+
+/**
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+function canBind(port) {
+  return new Promise((resolve) => {
+    const probe = createServer()
+    probe.once('error', () => resolve(false))
+    probe.once('listening', () => probe.close(() => resolve(true)))
+    probe.listen(port, '127.0.0.1')
+  })
+}
+
+/**
+ * @typedef {object} PluginChoice
+ * @property {string} id - the id the patch entry is keyed by.
+ * @property {string} package - the package name dsh resolves.
+ */
+
+/**
+ * Write the patch overlay that adds the chosen plugins.
+ *
+ * This is an overlay, not a replacement. dsh composes its plugin list as
+ * bundle layers, then the profile's own patch file, then the machine-wide
+ * one, then each `--patch` in argument order — so everything official stays
+ * exactly where it was and these entries are added on top. An empty selection
+ * writes no file at all and the sandbox boots as plain official dsh.
+ * @param {string} file - where to write the overlay.
+ * @param {PluginChoice[]} plugins
+ * @returns {string | null} the file path, or null when nothing was selected.
+ */
+export function writePluginOverlay(file, plugins) {
+  if (plugins.length === 0) return null
+  const lines = [
+    '# Written by dsh-clean-boot for one launch. Applied on top of the official',
+    '# layers, so nothing official is replaced by its presence.',
+    '- insert:',
+  ]
+  for (const plugin of plugins) {
+    lines.push(`    - id: ${JSON.stringify(plugin.id)}`)
+    lines.push(`      name: ${JSON.stringify(plugin.package)}`)
+  }
+  writeFileSync(file, `${lines.join('\n')}\n`)
+  return file
+}
+
+/**
+ * Make the chosen plugin packages resolvable inside the sandbox.
+ *
+ * The overlay refers to a plugin by its package name, and dsh resolves that
+ * name the way Node does: the profile's own `node_modules` first, then the
+ * flat fallback one level up that boot fills with the installed release. A
+ * folder on your disk is in neither, so a link is placed in the first of
+ * them. Linking rather than copying is deliberate — a copy goes stale the
+ * moment you rebuild the plugin, and you would be testing yesterday's code
+ * while looking at today's source.
+ *
+ * The plugin's own peer dependencies (`react`, the client UI packages) are
+ * not linked because they are platform modules: the client loader answers
+ * those imports from its module table, not from disk.
+ * @param {string} home - the sandbox home.
+ * @param {string} profile - profile name.
+ * @param {PluginChoice[]} plugins
+ * @returns {string[]} package names that were linked.
+ */
+export function linkPlugins(home, profile, plugins) {
+  if (plugins.length === 0) return []
+  const modules = join(home, 'profiles', profile, 'node_modules')
+  const linked = []
+  for (const plugin of plugins) {
+    if (typeof plugin.path !== 'string' || plugin.path === '') continue
+    const target = join(modules, ...plugin.package.split('/'))
+    mkdirSync(dirname(target), { recursive: true })
+    if (existsSync(target) || lstatSafe(target) !== null) rmSync(target, { recursive: true, force: true })
+    // `junction` is the one link type Windows creates without elevation, and
+    // it behaves like a directory symlink for resolution purposes.
+    symlinkSync(cleanPath(plugin.path), target, 'junction')
+    linked.push(plugin.package)
+  }
+  return linked
+}
+
+/**
+ * `existsSync` reports false for a link whose target is gone, yet the link
+ * itself still occupies the name and blocks creating a new one.
+ * @param {string} path
+ * @returns {import('node:fs').Stats | null}
+ */
+function lstatSafe(path) {
+  try {
+    return lstatSync(path)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * @typedef {object} LaunchResult
+ * @property {number} pid
+ * @property {number} port
+ * @property {string} url
+ * @property {import('node:child_process').ChildProcess} child
+ */
+
+/**
+ * Boot one sandbox on one release.
+ * @param {object} options
+ * @param {import('./paths.js').BoxLayout} options.layout
+ * @param {string} options.sandbox - sandbox name.
+ * @param {string} options.version - release to boot.
+ * @param {PluginChoice[]} [options.plugins]
+ * @param {string} [options.profile]
+ * @param {string} [options.workspace] - directory dsh treats as the workspace.
+ * @param {boolean} [options.openBrowser] - let dsh open a window on start.
+ * @param {(line: string) => void} [options.onLog]
+ * @returns {Promise<LaunchResult>}
+ */
+export async function launch({
+  layout, sandbox, version, plugins = [], profile = 'web', workspace, openBrowser = false, onLog,
+}) {
+  const entry = versionEntry(layout, version)
+  if (!existsSync(entry)) throw new Error(`版本 ${version} 还没下载`)
+
+  const home = sandboxPaths(layout, sandbox).home
+  if (switchesRelease(layout, sandbox, version)) {
+    // Boot re-points the flat module fallback for every package the running
+    // release knows about, and leaves alone any link naming a package that
+    // release has never heard of. On a normal machine those links dangle
+    // harmlessly because the other installation is gone. Here every release
+    // is kept side by side, so such a link still resolves — to the wrong
+    // release. Between rc.6 and rc.8 that is eleven packages.
+    if (clearModuleFallback(home)) onLog?.('切换版本:已清掉上一版留下的模块链接')
+  }
+
+  const linked = linkPlugins(home, profile, plugins)
+  if (linked.length > 0) onLog?.(`已把 ${linked.length} 个插件包链接进沙箱`)
+
+  const overlay = writePluginOverlay(join(home, 'clean-boot.patch.yml'), plugins)
+  const port = await findFreePort()
+
+  const args = ['--profile', profile]
+  if (overlay !== null) args.push('--patch', overlay)
+  args.push('--port', String(port))
+  // dsh opens a browser on its own. Whether a window appears is the caller's
+  // decision here, because a sandbox is often started to be measured rather
+  // than looked at, and a tab stealing focus mid-run is its own small
+  // disaster. The caller is handed the URL either way.
+  if (!openBrowser) args.push('--no-open')
+
+  onLog?.(`正在启动 ${version},端口 ${port}`)
+  const child = spawn(process.execPath, [entry, ...args], {
+    cwd: cleanPath(workspace ?? process.cwd()),
+    // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
+    // it can arrive from a text field or a drag-and-drop, where a trailing
+    // space survives and turns into a different directory.
+    env: { ...process.env, DSH_HOME: cleanPath(home) },
+    windowsHide: true,
+  })
+
+  child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+  child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+
+  await waitUntilServing(port, child, onLog)
+  noteBoot(layout, sandbox, version)
+  return { pid: child.pid, port, url: `http://127.0.0.1:${port}`, child }
+}
+
+/**
+ * Wait until the sandbox is actually usable.
+ *
+ * An open port proves nothing: the web server starts listening the moment its
+ * own fiber activates, while the rest of the plugin tree is still loading,
+ * and until the frontend claims the fallback route every request is answered
+ * 404. Even a 200 is not enough, because the page is only complete once the
+ * client-modules plugin has injected the boot manifest into it. So readiness
+ * is defined as: the index response carries the boot manifest, and the
+ * process is still alive a moment later — a tree that fails late exits after
+ * having served a page.
+ * @param {number} port
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {(line: string) => void} [onLog]
+ * @param {object} [options]
+ * @param {number} [options.timeoutMs]
+ * @returns {Promise<void>}
+ */
+export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let exited = null
+  child.once('exit', (code) => { exited = code ?? 0 })
+
+  while (Date.now() < deadline) {
+    if (exited !== null) throw new Error(`dsh 还没启动完就退出了,退出码 ${exited}`)
+    if (await servesBootManifest(port)) {
+      // A plugin tree that throws during a later stage can take the process
+      // down after the page is already being served, which is exactly the
+      // failure a port check reports as success.
+      await sleep(1500)
+      if (exited !== null) throw new Error(`dsh 服务完页面之后退出了,退出码 ${exited}`)
+      onLog?.('已就绪:页面带着启动清单,且进程稳定')
+      return
+    }
+    await sleep(400)
+  }
+  throw new Error(`dsh 在 ${Math.round(timeoutMs / 1000)} 秒内没有启动完成`)
+}
+
+/** The marker the host injects into the index page once the client graph is composed. */
+const BOOT_MARKER = '__DSH_BOOT__'
+
+/**
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+async function servesBootManifest(port) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'follow' })
+    if (!response.ok) return false
+    return (await response.text()).includes(BOOT_MARKER)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Stop a sandbox by process id.
+ *
+ * Named explicitly rather than matched by command line: a pattern like
+ * "anything mentioning dsh" also matches the user's own running dsh, and
+ * killing that is not a recoverable mistake.
+ * @param {number} pid
+ * @returns {Promise<void>}
+ */
+export async function stop(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`拒绝停止进程号 ${pid}`)
+  if (process.platform === 'win32') {
+    await new Promise((resolve) => {
+      // The launcher starts a tree; /T reaches the children it spawned.
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }).once('exit', resolve)
+    })
+    return
+  }
+  process.kill(pid, 'SIGTERM')
+}
+
+/**
+ * @param {number} ms
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export { versionDir }
