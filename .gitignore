@@ -1,0 +1,16 @@
+# The data directory this tool creates at runtime. It holds downloaded dsh
+# releases and sandbox homes; a sandbox home can contain a real API key, so it
+# must never reach a commit. The pattern is deliberately broad: users may
+# rename the directory, and "remember to add a line per sandbox" is not a
+# strategy that survives contact with reality.
+dsh_box/
+dsh_box*/
+**/sandboxes/
+**/versions/
+
+node_modules/
+*.log
+
+# Rust build artifacts of the desktop shell.
+src-tauri/target/
+src-tauri/gen/

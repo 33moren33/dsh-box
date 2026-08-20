@@ -1,0 +1,21 @@
+{
+  "name": "dsh-box",
+  "version": "0.1.0",
+  "description": "Launch DeepSeek Harness in isolated sandboxes: pick an official version, pick which extra plugins to load, keep every run out of your real ~/.dsh",
+  "keywords": ["dsh", "deepseek-harness", "launcher", "sandbox", "version-manager"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/33moren33/dsh-box.git"
+  },
+  "type": "module",
+  "bin": {
+    "dsh-box": "bin/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/cli.js"
+  }
+}
