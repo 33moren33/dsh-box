@@ -56,6 +56,7 @@ dsh 本身没有任何平台限制、是纯 JavaScript，所以 Windows、macOS�
 ```
 versions                     看已下载了哪些版本，以及 npm 上有哪些
 pull <版本号>                下载一个官方版本（逐包核对版本）
+drop <版本号>                删掉一个已下载的版本（约 200–260MB）
 plugins                      列出记住的本地插件
 plugins add <目录> [--id x]  记住一个插件目录
 plugins rm <id>              不再记
@@ -72,9 +73,12 @@ ui [--port n]                打开配置窗
 --version <版本>     用哪个版本          --sandbox <名字>   用哪个沙箱
 --new                开全新沙箱          --plugin <id>      勾一个插件，可重复
 --workspace <目录>   dsh 打开哪个目录    --no-sign-in       不导入登录
+--main               不开沙箱，用你真实的 ~/.dsh 启动，勾的插件只在这一次生效
 ```
 
 **`--json` 是通用选项**，任何命令加上它都以 JSON 输出，给脚本和 Agent 用。
+
+`--main` 顺带是个体检：**沙箱开得起来、主机开不起来 —— 恭喜，你本机那台 dsh 里有脏东西。** 有干净的一台当对照，比盯着日志猜快得多。
 
 ## 沙箱是什么
 
