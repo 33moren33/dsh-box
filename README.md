@@ -37,10 +37,12 @@
 ## 快速开始
 
 ```bash
-npx dsh-box ui
+npx dsh-box ui        # 界面开在浏览器里，不用安装
 ```
 
-配置窗就开了：**选一个官方 dsh 版本 → 勾要加载的本地插件 → 起一台沙箱**。第一次会下载所选版本（约 200–260MB），之后复用。
+**想要双击打开的原生小窗，去 [Releases](https://github.com/33moren33/dsh-box/releases) 下安装包。** 两条路是同一个程序的两张皮——同一个本地服务、同一张页面，装了只是多个图标和一个原生的目录选择框。
+
+配置窗打开后是三步：**选一个官方 dsh 版本 → 勾要加载的本地插件 → 起一台沙箱**。第一次会下载所选版本（约 200–260MB），之后复用。
 
 不想用界面就直接给命令，每一步都能单独跑：
 
@@ -52,7 +54,7 @@ npx dsh-box start --version 0.1.0-rc.8 --new --plugin my-plugin
 npx dsh-box sandboxes --json                          # 任何命令加 --json，给脚本和 Agent 用
 ```
 
-要双击的原生小窗，去 [Releases](https://github.com/33moren33/dsh-box/releases) 下安装包。从源码跑就是 `node bin/cli.js ui`。
+从源码跑就是 `node bin/cli.js ui`。
 
 **「沙箱」只是一个独立的 `DSH_HOME`，不是安全隔离。** 它开出来的是一台干净的 dsh，权限和你平时那台一模一样——能读写你的文件，花你真实的钱。隔开的是版本、插件、配置和对话，不是这台电脑。
 
