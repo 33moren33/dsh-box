@@ -34,7 +34,10 @@ export function downloadedVersions(layout) {
     .map((version) => {
       const dir = versionDir(layout, version)
       const report = verifyPinned(dir, version)
-      return { version, dir, pinned: report.ok, packages: report.checked, sizeMb: versionSizeMb(dir) }
+      return {
+        version, dir, pinned: report.ok, packages: report.checked,
+        sizeMb: versionSizeMb(dir, report.checked),
+      }
     })
     .filter((entry) => entry.packages > 0)
     .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))
@@ -66,7 +69,7 @@ export function isDownloaded(layout, version) {
 export async function deleteVersion(layout, version, onLog) {
   const dir = versionDir(layout, version)
   if (!existsSync(dir)) throw new Error(`${version} 本来就没下载`)
-  const mb = versionSizeMb(dir)
+  const mb = versionSizeMb(dir, verifyPinned(dir, version).checked)
   onLog?.(`正在删除 ${version}${mb === null ? '' : `,约 ${mb} MB`}…`)
   const started = Date.now()
   const beat = setInterval(() => {
@@ -91,27 +94,37 @@ const sizing = new Set()
  *
  * A release tree holds tens of thousands of files, and walking it takes
  * seconds — too slow for a state poll. So the walk happens once, in the
- * background, and the result is cached in the directory itself. That is safe
- * because an installed release never changes: it is written once by install
- * and only ever deleted whole. Until the first walk finishes this returns
- * null, and the window shows the size when it has one.
+ * background, and the result is cached in the directory itself.
+ *
+ * Caching only holds while the release is finished, and a download is not:
+ * the directory is created a full minute before npm writes the first file,
+ * so a poll landing in that gap measured nothing and remembered zero for
+ * good — observed on a real rc.6 whose cache was written one second after
+ * the directory and 34 seconds before its first package. The package count
+ * is what says which release this is a measurement of; when it no longer
+ * matches, the old number is not this tree's and the walk runs again. A tree
+ * with no packages in it yet is not measured at all.
  * @param {string} dir - a downloaded release directory.
+ * @param {number} [packages] - release packages found in it just now.
  * @returns {number | null}
  */
-export function versionSizeMb(dir) {
+export function versionSizeMb(dir, packages = 0) {
   const cache = join(dir, SIZE_CACHE)
   if (existsSync(cache)) {
     try {
-      const mb = JSON.parse(readFileSync(cache, 'utf8')).mb
-      if (Number.isFinite(mb)) return mb
+      const remembered = JSON.parse(readFileSync(cache, 'utf8'))
+      if (Number.isFinite(remembered.mb) && remembered.packages === packages) return remembered.mb
     } catch {
       // An unreadable cache is re-measured below.
     }
   }
-  if (!sizing.has(dir)) {
+  if (packages > 0 && !sizing.has(dir)) {
     sizing.add(dir)
     directorySize(dir)
-      .then((bytes) => writeFileSync(cache, `${JSON.stringify({ mb: Math.round(bytes / 1048576) })}\n`))
+      .then((bytes) => {
+        const mb = Math.round(bytes / 1048576)
+        writeFileSync(cache, `${JSON.stringify({ mb, packages })}\n`)
+      })
       .catch(() => {})
       .finally(() => sizing.delete(dir))
   }

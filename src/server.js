@@ -9,6 +9,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
@@ -110,6 +111,8 @@ export const UI_PORT = 10130
 export async function serve(layout, { port = 0, open = true } = {}) {
   if (port === 0) port = await findFreePort({ from: UI_PORT })
   const server = createServer((request, response) => {
+    const refused = refuse(request, port)
+    if (refused !== null) return void json(response, 403, { error: refused })
     handle(layout, request, response).catch((error) => {
       json(response, 500, { error: error.message })
     })
@@ -135,6 +138,47 @@ export async function serve(layout, { port = 0, open = true } = {}) {
 }
 
 /**
+ * The pass this run's page carries, minted fresh at every start.
+ *
+ * The header check below is what actually stops a hostile page, because a
+ * browser will not let a script forge `Origin` or `Host`. This is the second
+ * lock, for the case where that check is defeated: a cross-origin page cannot
+ * read our page's contents, so it cannot learn this value, and without it no
+ * `/api` call is answered. It is deliberately not a login — anything that can
+ * read your files is already past every door this tool could close.
+ */
+const PASS = randomUUID()
+
+/**
+ * Why a request is refused, or null when it may proceed.
+ *
+ * The window is a local web service that starts processes and deletes
+ * sandboxes, on a fixed, publicly known port. Any page in the same browser
+ * can post to it, and a "simple" request crosses origins without asking
+ * permission first — so without this, visiting the wrong site while the
+ * window is open is enough to have conversations deleted or a process
+ * started. `Host` is checked as well as `Origin` because DNS rebinding turns
+ * an attacker's domain into a same-origin one, and the borrowed name is the
+ * only place that shows.
+ * @param {import('node:http').IncomingMessage} request
+ * @param {number} port - the port this window listens on.
+ * @returns {string | null}
+ */
+function refuse(request, port) {
+  const mine = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`])
+  if (!mine.has(request.headers.host ?? '')) return '这个地址不是本机配置窗'
+  const origin = request.headers.origin
+  if (origin !== undefined && !mine.has(origin.replace(/^https?:\/\//, ''))) {
+    return '这个请求来自别的网页,已拒绝'
+  }
+  const path = request.url ?? ''
+  if (path.startsWith('/api/') && request.headers['x-dsh-box-pass'] !== PASS) {
+    return '这个请求没带本次配置窗的通行证,已拒绝'
+  }
+  return null
+}
+
+/**
  * @param {import('./paths.js').BoxLayout} layout
  * @param {import('node:http').IncomingMessage} request
  * @param {import('node:http').ServerResponse} response
@@ -143,7 +187,8 @@ async function handle(layout, request, response) {
   const url = new URL(request.url, 'http://127.0.0.1')
   if (url.pathname === '/') {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
-    return void response.end(readFileSync(join(HERE, 'ui', 'index.html')))
+    const page = readFileSync(join(HERE, 'ui', 'index.html'), 'utf8')
+    return void response.end(page.replace('__DSH_BOX_PASS__', PASS))
   }
   if (url.pathname === '/api/state') return json(response, 200, await state(layout))
   if (url.pathname === '/api/job') {

@@ -126,10 +126,18 @@ let state = null
 let version = ''
 const picked = new Set()
 
+// Served into the page by the window itself; a page from anywhere else
+// cannot read it, and without it the service answers nothing.
+const PASS = '__DSH_BOX_PASS__'
+
 async function api(path, body) {
   const response = await fetch(path, body === undefined
-    ? undefined
-    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    ? { headers: { 'x-dsh-box-pass': PASS } }
+    : {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-dsh-box-pass': PASS },
+      body: JSON.stringify(body),
+    })
   const data = await response.json()
   if (!response.ok) throw new Error(data.error ?? `请求失败(${response.status})`)
   return data

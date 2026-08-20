@@ -184,12 +184,11 @@ function lstatSafe(path) {
  * @param {PluginChoice[]} [options.plugins]
  * @param {string} [options.profile]
  * @param {string} [options.workspace] - directory dsh treats as the workspace.
- * @param {boolean} [options.openBrowser] - let dsh open a window on start.
  * @param {(line: string) => void} [options.onLog]
  * @returns {Promise<LaunchResult>}
  */
 export async function launch({
-  layout, sandbox, home, version, plugins = [], profile = 'web', workspace, openBrowser = false, onLog,
+  layout, sandbox, home, version, plugins = [], profile = 'web', workspace, onLog,
 }) {
   const entry = versionEntry(layout, version)
   if (!existsSync(entry)) throw new Error(`版本 ${version} 还没下载`)
@@ -238,11 +237,6 @@ export async function launch({
   const args = ['--profile', profile]
   if (overlay !== null) args.push('--patch', overlay)
   args.push('--port', String(port))
-  // dsh opens a browser on its own. Whether a window appears is the caller's
-  // decision here, because a sandbox is often started to be measured rather
-  // than looked at, and a tab stealing focus mid-run is its own small
-  // disaster. The caller is handed the URL either way.
-  if (!openBrowser) args.push('--no-open')
 
   onLog?.(`正在启动 ${version},端口 ${port}`)
   const child = spawn(process.execPath, [entry, ...args], {
