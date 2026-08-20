@@ -23,7 +23,7 @@ import {
   adoptSessions, deleteSandbox, ensureSandbox, listSandboxes, suggestSandboxName,
 } from './sandbox.js'
 import { findFreePort, launch, stop } from './launch.js'
-import { downloadedVersions } from './versions.js'
+import { deleteVersion, downloadedVersions } from './versions.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -94,6 +94,16 @@ export async function serve(layout, { port = 0, open = true } = {}) {
       json(response, 500, { error: error.message })
     })
   })
+  // When this process is told to stop, the sandboxes it started must not
+  // outlive it as orphans nobody can see. On Windows the desktop shell uses
+  // a tree kill and this handler never fires; on mac and Linux a plain
+  // SIGTERM is all the shell sends, and this is what makes it sufficient.
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, async () => {
+      for (const entry of running.values()) await stop(entry.pid).catch(() => {})
+      process.exit(0)
+    })
+  }
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {
       const url = `http://127.0.0.1:${server.address().port}`
@@ -127,6 +137,7 @@ async function handle(layout, request, response) {
   switch (url.pathname) {
     case '/api/pull': return json(response, 200, { jobId: startJob((log) => pull(layout, body, log)) })
     case '/api/source': return json(response, 200, setSource(layout, body))
+    case '/api/version/delete': return json(response, 200, { jobId: startJob((log) => dropVersion(layout, body, log)) })
     case '/api/plugin/add': return json(response, 200, addPlugin(layout, body))
     case '/api/plugin/remove': return json(response, 200, dropPlugin(layout, body))
     case '/api/start': return json(response, 200, { jobId: startJob((log) => start(layout, body, log)) })
@@ -194,6 +205,21 @@ async function pull(layout, body, log) {
   mkdirSync(dir, { recursive: true })
   const report = await installRelease(dir, version, { onLog: log, source: readConfig(layout).source })
   return { version, packages: report.checked }
+}
+
+/**
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {{version: string}} body
+ * @param {(line: string) => void} log
+ */
+async function dropVersion(layout, body, log) {
+  const version = String(body.version ?? '').trim()
+  if (!isValidVersion(version)) throw new Error(`「${version}」不是版本号`)
+  for (const entry of running.values()) {
+    if (entry.version === version) throw new Error(`「${entry.sandbox}」正用着 ${version},先停掉它再删`)
+  }
+  await deleteVersion(layout, version, log)
+  return { version }
 }
 
 /**

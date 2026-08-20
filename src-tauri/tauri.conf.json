@@ -1,0 +1,32 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "dsh-clean-boot",
+  "version": "0.1.0",
+  "identifier": "com.dshcleanboot.desktop",
+  "build": {
+    "frontendDist": "../src/ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../bin": "boot/bin",
+      "../src": "boot/src",
+      "../package.json": "boot/package.json"
+    }
+  }
+}

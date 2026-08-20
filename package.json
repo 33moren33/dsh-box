@@ -17,5 +17,8 @@
   },
   "scripts": {
     "start": "node bin/cli.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
   }
 }

@@ -18,12 +18,13 @@ import {
   adoptSessions, deleteSandbox, ensureSandbox, inspectSandbox, listSandboxes, suggestSandboxName,
 } from '../src/sandbox.js'
 import { launch, stop } from '../src/launch.js'
-import { downloadedVersions } from '../src/versions.js'
+import { deleteVersion, downloadedVersions } from '../src/versions.js'
 
 const USAGE = `dsh 沙箱启动器 —— 在隔离沙箱里跑 DeepSeek Harness
 
   versions                     看已下载了哪些版本,以及 npm 上有哪些
   pull <版本号>                下载一个官方版本(逐包核对版本)
+  drop <版本号>                删掉一个已下载的版本(约 200–260MB)
   plugins                      列出记住的本地插件
   plugins add <目录> [--id x]  记住一个插件目录
   plugins rm <id>              不再记
@@ -65,6 +66,7 @@ async function main(positional, opts) {
   switch (command) {
     case 'versions': return showVersions(layout)
     case 'pull': return pull(layout, rest[0])
+    case 'drop': return drop(layout, rest[0])
     case 'plugins': return plugins(layout, rest)
     case 'sandboxes': return showSandboxes(layout, opts)
     case 'start': return start(layout, opts)
@@ -135,6 +137,17 @@ async function pull(layout, version) {
     source: readConfig(layout).source,
   })
   console.log(`\n  ${version} 已就绪\n`)
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} version
+ */
+async function drop(layout, version) {
+  if (version === undefined) throw new Error('要删哪个版本? 用 versions 查看')
+  console.log()
+  await deleteVersion(layout, version, (line) => console.log(`  ${line}`))
+  console.log('  已用它的沙箱下次启动前要重新下载\n')
 }
 
 /**

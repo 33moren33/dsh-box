@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The window's page is served by the local Node service, which to Tauri is a remote origin — so the grants below must name it explicitly. Only the folder-picking dialog is exposed; the page needs nothing else from the shell.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": ["core:default", "dialog:allow-open"]
+}

@@ -1,0 +1,17 @@
+[package]
+name = "dsh-clean-boot-shell"
+version = "0.1.0"
+description = "dsh 沙箱启动器的桌面壳:开一个原生小窗,里面还是同一个 Node 服务"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-dialog = "2"
