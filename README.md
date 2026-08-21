@@ -28,6 +28,8 @@
 
   <p><sub>Fable 5 辅助</sub></p>
 
+  <p>中文 | <a href="README.en.md">English</a></p>
+
 </div>
 
 ---
