@@ -142,9 +142,12 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
 ///
 /// Two worlds: run from the repository (development), the entry sits next to
 /// this crate and data goes wherever it always went — the repository's own
-/// `dsh_box`. Installed, the scripts travel as bundled resources and data
-/// goes to the per-user app directory, because an installed program's own
-/// folder is not writable.
+/// `dsh-box/data`. Installed or unzipped, the layout beside the exe is one
+/// `dsh-box` folder holding `boot` (the program, replaced on upgrade) and
+/// `data` (the user's things, never touched) — the whole point of the
+/// portable form is that the folders you can see are the folders that hold
+/// everything. Only when the exe sits somewhere unwritable (Program Files)
+/// does data retreat to the per-user app directory.
 fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathBuf>), String> {
     if let Ok(exe) = std::env::current_exe() {
         for ancestor in exe.ancestors() {
@@ -159,9 +162,24 @@ fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathB
             .resource_dir()
             .map_err(|error| format!("找不到资源目录:{error}"))?,
     );
-    let entry = resources.join("boot").join("bin").join("cli.js");
+    let entry = resources
+        .join("dsh-box")
+        .join("boot")
+        .join("bin")
+        .join("cli.js");
     if !entry.exists() {
         return Err(format!("安装包里缺了启动脚本:{}", entry.display()));
+    }
+    if let Some(beside) = box_beside_exe() {
+        // The service runs where the exe lives, two levels up from
+        // `dsh-box/data`, so anything resolved against the working
+        // directory stays in the visible folder.
+        let cwd = beside
+            .parent()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| beside.clone());
+        return Ok((entry, cwd, Some(beside)));
     }
     let data = plain(
         app.path()
@@ -169,8 +187,31 @@ fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathB
             .map_err(|error| format!("找不到数据目录:{error}"))?,
     );
     std::fs::create_dir_all(&data).map_err(|error| format!("建不了数据目录:{error}"))?;
-    let box_dir = data.join("dsh_box");
+    // Inside the per-user app directory the app's folder role is already
+    // taken by the directory itself, so the data folder sits directly in it.
+    let box_dir = data.join("data");
     Ok((entry, data, Some(box_dir)))
+}
+
+/// The data directory beside the exe, when that location can actually hold
+/// data. The layout is `dsh-box/boot` for the program and `dsh-box/data` for
+/// everything the user accumulates: replacing the program means replacing
+/// `boot`, and `data` is never touched by an upgrade or an uninstall.
+///
+/// Writability is proved by writing: create the directory and put a probe
+/// file inside, because on Windows the only honest answer to "may I write
+/// here?" is the attempt itself. An unwritable location (Program Files
+/// without elevation) fails the probe and the caller falls back to the
+/// per-user app directory.
+fn box_beside_exe() -> Option<PathBuf> {
+    let exe = plain(std::env::current_exe().ok()?);
+    let dir = exe.parent()?;
+    let candidate = dir.join("dsh-box").join("data");
+    std::fs::create_dir_all(&candidate).ok()?;
+    let probe = candidate.join(".write-probe");
+    std::fs::write(&probe, b"probe").ok()?;
+    let _ = std::fs::remove_file(&probe);
+    Some(candidate)
 }
 
 /// Strip Windows' `\\?\` verbatim prefix.

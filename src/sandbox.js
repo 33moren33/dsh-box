@@ -49,6 +49,7 @@ export const HOME_PATCH_FILE = 'cordis.patch.yml'
  * @property {boolean} hasCredentials
  * @property {number} sessionGroups - workspaces that have conversations here.
  * @property {number} sessions - conversations in this home, across all workspaces.
+ * @property {RunningRecord | null} running - the live dsh on this home, if any.
  */
 
 /**
@@ -70,6 +71,93 @@ export function inspectSandbox(layout, name) {
     hasCredentials: existsSync(join(paths.home, CREDENTIALS_FILE)),
     sessionGroups: countSessionGroups(paths.home),
     sessions: countSessions(paths.home),
+    running: runningRecord(layout, name),
+  }
+}
+
+/**
+ * @typedef {object} RunningRecord
+ * @property {number} pid
+ * @property {number} port
+ * @property {string} url
+ * @property {string} version
+ * @property {string} startedAt - ISO timestamp.
+ */
+
+/**
+ * The live dsh on this sandbox, if any — read from the on-disk ledger and
+ * verified against a real process before being believed.
+ *
+ * The ledger lives on disk rather than in anyone's memory so that every
+ * entrance — the config window, the CLI, an agent's one-shot command — sees
+ * the same answer. A record whose process is gone is deleted on sight: a
+ * ledger that is only cleaned by the process that wrote it goes stale the
+ * first time that process is killed instead of exiting.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} name
+ * @returns {RunningRecord | null}
+ */
+export function runningRecord(layout, name) {
+  const file = runningFile(layout, name)
+  if (!existsSync(file)) return null
+  const record = readState(file)
+  if (Number.isInteger(record.pid) && record.pid > 0 && pidAlive(record.pid)) {
+    return /** @type {RunningRecord} */ (record)
+  }
+  rmSync(file, { force: true })
+  return null
+}
+
+/**
+ * Record a successful boot in the sandbox's running ledger.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} name
+ * @param {{pid: number, port: number, url: string, version: string}} record
+ */
+export function noteRunning(layout, name, record) {
+  writeFileSync(
+    runningFile(layout, name),
+    `${JSON.stringify({ ...record, startedAt: new Date().toISOString() }, null, 2)}\n`,
+  )
+}
+
+/**
+ * Clear the running ledger, but only for the process that owns the entry —
+ * a late exit event from a previous dsh must not erase the record of the
+ * one currently running.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} name
+ * @param {number} [pid] - only clear if the ledger names this process.
+ */
+export function clearRunning(layout, name, pid) {
+  const file = runningFile(layout, name)
+  if (pid !== undefined && readState(file).pid !== pid) return
+  rmSync(file, { force: true })
+}
+
+/**
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} name
+ * @returns {string}
+ */
+function runningFile(layout, name) {
+  return join(sandboxPaths(layout, name).root, 'running.json')
+}
+
+/**
+ * Whether a process id currently names a live process. Signal 0 performs the
+ * permission check without delivering anything; EPERM therefore still means
+ * "alive". A recycled pid can in principle impersonate a dead dsh, which is
+ * accepted: the cost is one refused launch, not lost data.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return /** @type {NodeJS.ErrnoException} */ (error).code === 'EPERM'
   }
 }
 

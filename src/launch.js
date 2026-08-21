@@ -8,7 +8,9 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, wr
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { cleanPath, sandboxPaths, versionDir, versionEntry } from './paths.js'
-import { clearModuleFallback, noteBoot, switchesRelease } from './sandbox.js'
+import {
+  clearModuleFallback, clearRunning, noteBoot, noteRunning, runningRecord, switchesRelease,
+} from './sandbox.js'
 
 /** dsh's own default. Reserved for the user's real environment. */
 export const PREFERRED_PORT = 3080
@@ -194,7 +196,21 @@ export async function launch({
   if (!existsSync(entry)) throw new Error(`版本 ${version} 还没下载`)
 
   const direct = home !== undefined
-  if (!direct) home = sandboxPaths(layout, sandbox).home
+  if (!direct) {
+    // One home, one dsh. Two instances on the same filing cabinet stomp on
+    // each other's session files — the same class of damage as the 08-18
+    // incident where a half-written session blocked a home from loading at
+    // all. The ledger lives on disk and is verified against a live process,
+    // so every entrance (window, CLI, agent) sees the same answer.
+    const running = runningRecord(layout, sandbox)
+    if (running !== null) {
+      throw new Error(
+        `沙箱「${sandboxPaths(layout, sandbox).name}」已经开着:${running.url}(进程 ${running.pid})。`
+        + '同一个沙箱同时只能跑一台,两台会互踩同一份档案柜——要并行就换个沙箱,要重启就先停掉它',
+      )
+    }
+    home = sandboxPaths(layout, sandbox).home
+  }
   if (direct || switchesRelease(layout, sandbox, version)) {
     // Boot re-points the flat module fallback for every package the running
     // release knows about, and leaves alone any link naming a package that
@@ -267,8 +283,17 @@ export async function launch({
   }
 
   await waitUntilServing(port, child, onLog)
-  if (!direct) noteBoot(layout, sandbox, version)
-  return { pid: child.pid, port, url: `http://127.0.0.1:${port}`, child }
+  const url = `http://127.0.0.1:${port}`
+  if (!direct) {
+    noteBoot(layout, sandbox, version)
+    noteRunning(layout, sandbox, { pid: child.pid, port, url, version })
+    // Best-effort: when the launcher lives long enough to see dsh exit, the
+    // ledger is cleared at once. A launcher killed outright leaves the entry
+    // behind — harmless, because every reader verifies the pid before
+    // believing it and deletes what proves dead.
+    child.once('exit', () => clearRunning(layout, sandbox, child.pid))
+  }
+  return { pid: child.pid, port, url, child }
 }
 
 /**

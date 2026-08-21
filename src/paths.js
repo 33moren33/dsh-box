@@ -11,13 +11,19 @@ import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'nod
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
 
-/** Default name of the data directory created next to wherever the tool runs. */
-export const DEFAULT_BOX_NAME = 'dsh_box'
+/**
+ * Default location of the data directory, relative to wherever the tool
+ * runs: a `data` folder inside the tool's own `dsh-box` folder. `dsh-box`
+ * (hyphen) is the product's home, `data` is the user's things — the old
+ * single `dsh_box` (underscore) name was one keystroke away from the product
+ * name and confused everyone it met.
+ */
+export const DEFAULT_BOX_NAME = 'dsh-box/data'
 
 /**
  * Marker file that identifies a directory as ours. Its presence is the only
  * thing that authorizes writing into an existing directory, so a user who
- * already owns a folder called `dsh_box` never has it silently absorbed.
+ * already owns a folder by our default name never has it silently absorbed.
  */
 export const BOX_MARKER = '.dsh-box'
 

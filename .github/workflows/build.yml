@@ -37,6 +37,13 @@ jobs:
       - run: npm ci
       - run: npx tauri build --bundles ${{ matrix.bundles }}
 
+      # 便携包(解压即用,数据长在 exe 旁)。借出货脚本的布局定义,只跳过构建
+      # 那一步,免得同一套布局写两遍。必须在这里打而不是本地打:本地构建会把
+      # 构建机的用户名写进 Rust 的 panic 路径。
+      - name: Windows portable zip
+        if: runner.os == 'Windows'
+        run: node tools/build-releases.mjs --skip-build
+
       - uses: actions/upload-artifact@v4
         with:
           name: dsh-box-${{ runner.os }}
@@ -45,4 +52,5 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.dmg
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/deb/*.deb
+            Releases/*-portable.zip
           if-no-files-found: error

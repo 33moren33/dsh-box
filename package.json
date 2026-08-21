@@ -1,6 +1,6 @@
 {
   "name": "dsh-box",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Launch DeepSeek Harness in isolated sandboxes: pick an official version, pick which extra plugins to load, keep every run out of your real ~/.dsh",
   "keywords": ["dsh", "deepseek-harness", "launcher", "sandbox", "version-manager"],
   "license": "MIT",

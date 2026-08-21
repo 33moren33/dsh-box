@@ -43,7 +43,7 @@ start 的选项:
   --main             非沙箱:用真实的 ~/.dsh 启动,插件仅本次生效
 
 通用选项: --json 以 JSON 输出结果(给脚本和 Agent 用)。
-数据默认放在 ./dsh_box(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。
+数据默认放在 ./dsh-box/data(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。
 `
 
 const argv = process.argv.slice(2)
@@ -194,6 +194,7 @@ function showSandboxes(layout, opts = {}) {
       `${box.sessions} 条对话`,
       box.hasCredentials ? '已登录' : '未登录',
     ]
+    if (box.running !== null) bits.unshift(`正在跑 ${box.running.url}`)
     console.log(`    ${box.name.padEnd(24)} ${bits.join('  ·  ')}`)
   }
   console.log()

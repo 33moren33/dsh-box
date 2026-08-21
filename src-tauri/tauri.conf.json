@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "dsh-box",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.dshbox.desktop",
   "build": {
     "frontendDist": "../src/ui"
@@ -30,9 +30,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../bin": "boot/bin",
-      "../src": "boot/src",
-      "../package.json": "boot/package.json"
+      "../bin": "dsh-box/boot/bin",
+      "../src": "dsh-box/boot/src",
+      "../package.json": "dsh-box/boot/package.json"
     }
   }
 }
