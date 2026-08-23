@@ -12,6 +12,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { clockNow, stampNow } from './clock.js'
 
 /**
  * Add one line to a log, timestamped, without ever failing the caller.
@@ -23,7 +24,10 @@ import { dirname, join } from 'node:path'
  */
 export function appendLog(file, line) {
   try {
-    appendFileSync(file, `${new Date().toISOString().slice(11, 19)} ${line}\n`)
+    // ⛔ The machine's own clock, not UTC. This prefix is compared against the
+    // clock in the corner of somebody's screen while a download is still
+    // running; `toISOString().slice(11,19)` put it eight hours in the past.
+    appendFileSync(file, `${clockNow()} ${line}\n`)
   } catch {
     // Deliberately silent: see above.
   }
@@ -50,8 +54,9 @@ export const KEEP_LOGS = 20
 export function newLaunchLog(dir, label = 'start') {
   mkdirSync(dir, { recursive: true })
   prune(dir, KEEP_LOGS - 1)
-  const stamp = new Date().toISOString().slice(0, 19).replace('T', '_').replaceAll(':', '-')
-  return join(dir, `${stamp}_${label.replace(/[^\w.-]+/g, '-')}.log`)
+  // Local as well: this name is how a person finds the launch they are thinking
+  // of, and `prune`/`latestLog` still sort by it because the units descend.
+  return join(dir, `${stampNow()}_${label.replace(/[^\w.-]+/g, '-')}.log`)
 }
 
 /**
@@ -83,6 +88,37 @@ export function versionLog(boxRoot, version) {
  */
 export function newVersionLog(boxRoot, version) {
   const file = versionLog(boxRoot, version)
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, '')
+  return file
+}
+
+/**
+ * Where the progress of downloading one plugin package is written.
+ *
+ * The same arrangement as {@link versionLog}, for the same reason: fetching a
+ * big aggregate (390 packages) takes minutes, most of them spent by npm
+ * resolving a graph in silence, so an entrance that simply waits cannot tell
+ * work from a hang. Named after the package rather than the moment, so whoever
+ * asked for the install already knows where to look — which is what lets the
+ * config window watch a download it did not perform. Kept in its own
+ * sub-directory for the same reason the version logs are.
+ * @param {string} boxRoot - the data directory.
+ * @param {string} name - the package name, `@scope/` and all.
+ * @returns {string}
+ */
+export function packageLog(boxRoot, name) {
+  return join(boxRoot, 'logs', 'packages', `${name.replace(/[^\w.-]+/g, '-')}.log`)
+}
+
+/**
+ * The same path, emptied and ready to be written to.
+ * @param {string} boxRoot
+ * @param {string} name
+ * @returns {string}
+ */
+export function newPackageLog(boxRoot, name) {
+  const file = packageLog(boxRoot, name)
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, '')
   return file

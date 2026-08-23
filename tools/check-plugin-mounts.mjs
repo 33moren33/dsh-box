@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
+import { boxLayout, cabinetLedgerFile, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -126,25 +126,27 @@ const dshDefault = '# Your patch layer for this dsh profile, applied after every
   + '# a top-level YAML array of loader patch entries (id-targeted config\n'
   + '# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n'
 writeFileSync(patch, dshDefault)
-const outsideBlock = () => {
-  const text = readPatch()
-  const start = text.indexOf('# >>> dsh-box')
-  const end = text.indexOf('# <<< dsh-box')
-  const rest = start === -1 ? text : text.slice(0, start) + text.slice(end === -1 ? text.length : end)
-  return rest.split('\n').map((line) => line.trim()).filter((line) => line !== '')
+const patchLines = () => readPatch().split('\n').map((line) => line.trim()).filter((line) => line !== '')
+const ledgerOf = (home) => {
+  const file = cabinetLedgerFile(layout, home)
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { profiles: {} }
 }
 await cli('plugins', 'install', makePlugin('delta-plugin'), '--sandbox', 'w1')
-check('⛔⛔ 装进 dsh 自己写的默认配置后,块外不再留着那个 [](留着 dsh 就整份拒绝解析)',
-  !outsideBlock().includes('[]'), JSON.stringify(outsideBlock()))
-check('⭐ 块里记着这份空清单是我们收走的,所以卸的时候知道要还回去',
-  readPatch().includes('# dsh-box: empty-list'))
+check('⛔⛔ 装进 dsh 自己写的默认配置后,文件里不再留着那个 [](留着 dsh 就整份拒绝解析)',
+  !patchLines().includes('[]'), JSON.stringify(patchLines()))
+check('⭐ 账里记着这份空清单是我们收走的,所以卸的时候知道要还回去',
+  ledgerOf(sandboxHome).profiles.web?.absorbedEmptyList === true,
+  JSON.stringify(ledgerOf(sandboxHome).profiles.web ?? null))
 await cli('plugins', 'install', makePlugin('epsilon-plugin'), '--sandbox', 'w1')
-check('⛔ 装第二个的时候没把它漏回去', !outsideBlock().includes('[]'))
+check('⛔ 装第二个的时候没把它漏回去', !patchLines().includes('[]'))
 await cli('plugins', 'uninstall', 'delta-plugin', '--sandbox', 'w1')
-check('⛔ 只卸掉一个的时候不还,因为块还在', !outsideBlock().includes('[]'))
+check('⛔ 只卸掉一个的时候不还,因为还有我们的行在', !patchLines().includes('[]'))
 await cli('plugins', 'uninstall', 'epsilon-plugin', '--sandbox', 'w1')
 check('⛔⛔ 全卸掉之后逐字节回到 dsh 写的原样,不多不少一个 []',
   readPatch() === dshDefault, JSON.stringify(readPatch().slice(-16)))
+// ⭐⭐ 这一条是刀 4 的整个理由:文件里从头到尾没有一个字是 dsh-box 写给自己看的,
+//    所以它是一份可以整份复制到别的档案柜去的插件名单。
+check('⭐⭐ 全程没往别人的文件里写过任何 dsh-box 标记', !readPatch().includes('dsh-box'))
 removeTree(join(layout.sandboxes, 'w1'))
 
 // 1. A fresh workspace has nothing, and says so rather than failing.
@@ -196,10 +198,16 @@ check('⭐ 沙箱一份备份都不留', (await cli('plugins', 'backups', '--san
 const dailyPatch = join(fakeDaily, 'profiles', 'web', 'cordis.patch.yml')
 const readDaily = () => (existsSync(dailyPatch) ? readFileSync(dailyPatch, 'utf8') : '')
 writeFileSync(dailyPatch, "# 假装这是日常档案柜\n- insert:\n    - id: theirs\n      name: 'their-plugin'\n")
-await cli('plugins', 'install', makePlugin('daily-plugin'), '--main')
+// ⭐ From here on the daily cabinet is being written, and **every** write to it
+// now needs a person in the window (`check-daily-gate` is where that rule is
+// asserted). So the seat is held for this stretch — which is also the honest
+// picture: this is what the window does when somebody clicks.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
+await cli('plugins', 'install', makePlugin('daily-plugin'), '--main', '--approved')
 const backups = await cli('plugins', 'backups', '--main')
 check('日常档案柜改过配置就有备份可还原', backups.backups.length > 0, `${backups.backups.length} 份`)
-const restored = await cli('plugins', 'restore', '--main')
+const restored = await cli('plugins', 'restore', '--main', '--approved')
 check('还原回得去', restored.ok === true, restored.code ?? restored.from)
 check('还原之后回到装之前', !readDaily().includes('daily-plugin'))
 check('还原也不会弄丢别人那条', readDaily().includes('their-plugin'))
@@ -208,7 +216,7 @@ check('还原也不会弄丢别人那条', readDaily().includes('their-plugin'))
 //    二十份,备份从前不设上限也没有任何命令删得掉——于是 agent 只能伸手去 rm,
 //    而窗口对那个动作一无所知。
 for (let round = 0; round < 8; round += 1) {
-  await cli('plugins', 'install', makePlugin(`churn-${round}`), '--main')
+  await cli('plugins', 'install', makePlugin(`churn-${round}`), '--main', '--approved')
 }
 const capped = await cli('plugins', 'backups', '--main')
 check('⭐ 备份不会只涨不减,到上限就丢最老的',
@@ -220,6 +228,10 @@ check('删完真的少了一份', (await cli('plugins', 'backups', '--main')).ba
 const pruned = await cli('plugins', 'backups', 'prune', '--keep', '0', '--main')
 check('⭐ 也清得干净', pruned.ok === true && (await cli('plugins', 'backups', '--main')).backups.length === 0,
   `清掉 ${pruned.removed?.length} 份`)
+// ⛔ Give the seat back. Everything below asserts that a flag alone is not
+// approval, and that only holds while nobody is sitting there — leaving it held
+// would turn those checks green for the opposite reason.
+rmSync(uiSeatFile(layout), { force: true })
 
 // 8. The bundle list is read and never written. ⛔ It was written, briefly, and
 //    a real `~/.dsh` said no: a profile dsh's own tooling has touched holds
@@ -235,7 +247,7 @@ writeFileSync(profilePackage, `${JSON.stringify({
   dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@someone/theirs'] } },
 }, null, 2)}\n`)
 const { cabinetPlugins } = await import('../src/mounts.js')
-const withBundles = cabinetPlugins(sandboxHome)
+const withBundles = cabinetPlugins(layout, sandboxHome)
 check('bundles 里的都算这个工作区自己的,我们不认领',
   withBundles.theirs.includes('@someone/theirs')
   && !withBundles.ours.some((entry) => entry.package === '@someone/theirs'),
@@ -296,8 +308,44 @@ check('指向同一份东西时当作已完成,不当成冲突',
   sameFolder.ok === true && sameFolder.alreadyThere === true, sameFolder.code ?? 'ok')
 check('「已完成」那条路也确实什么都没写', readFileSync(w3Patch, 'utf8') === theirPatch)
 
+// 10b. ⛔⛔ 我们**自己**装过的那一份,再装一遍。
+//      `claimOn` 一直认得这一种(判决 `ours`),但命令行只处理了 unreadable /
+//      taken / same 三种,`ours` 一路掉进下面的 link + mount —— 而 mountPlugin 是
+//      追加,于是 patch 里多出一行一模一样的 insert。实测撞到过:窗口里同一个插件
+//      列了两次,而登记表里只有一个。
+//      ⭐ 这两条在修之前必然失败,在修之后必然通过 —— 旧套件全绿是因为它从没装过第二遍。
+const w5Patch = join(layout.sandboxes, 'w5', 'home', 'profiles', 'web', 'cordis.patch.yml')
+const w5Slot = join(layout.sandboxes, 'w5', 'home', 'profiles', 'web', 'node_modules', 'twice-plugin')
+const twice = makePlugin('twice-plugin')
+await cli('plugins', 'install', twice, '--sandbox', 'w5')
+const afterFirst = readFileSync(w5Patch, 'utf8')
+const rows = (text) => (text.match(/name:\s*"?twice-plugin"?/g) ?? []).length
+check('装第一遍:patch 里有它,一行', rows(afterFirst) === 1, `${rows(afterFirst)} 行`)
+
+const twiceAgain = await cli('plugins', 'install', twice, '--sandbox', 'w5')
+check('⛔⛔ 装第二遍:说「已经装着」,而不是默默再装一次',
+  twiceAgain.ok === true && twiceAgain.alreadyThere === true && twiceAgain.relinked === false,
+  twiceAgain.code ?? JSON.stringify(twiceAgain.relinked))
+check('⛔⛔ patch 逐字节没变 —— 没有第二行', readFileSync(w5Patch, 'utf8') === afterFirst,
+  `${rows(readFileSync(w5Patch, 'utf8'))} 行`)
+
+// 10c. 另一半:行还在、链接断了。⭐ 这一条防的是"一刀切跳过"——那样断链永远修不回来,
+//      而且工具会一边说「已经装好了」一边让 dsh 加载不到它。
+removeTree(w5Slot)
+const repaired = await cli('plugins', 'install', twice, '--sandbox', 'w5')
+check('⭐ 行还在但链接断了:重新指好,并且说出来了',
+  repaired.ok === true && repaired.alreadyThere === true && repaired.relinked === true,
+  repaired.code ?? JSON.stringify(repaired.relinked))
+check('⭐ 链接真的回来了', existsSync(join(w5Slot, 'package.json')))
+check('⛔ 修链接也没有往 patch 里多加一行', rows(readFileSync(w5Patch, 'utf8')) === 1,
+  `${rows(readFileSync(w5Patch, 'utf8'))} 行`)
+
 // 11. An unreadable patch must stop the install above the link too — that check
 //     used to live in `mountPlugin`, one line after the damage was done.
+//     ⛔ Since 刀 4 there is exactly one thing that makes a patch unreadable, and
+//     this is it: a block a *previous version* wrote, opened and never closed.
+//     Not understanding the YAML is not it — the scanner carries anything it
+//     does not understand through byte for byte, so that case is the normal one.
 const w4Home = join(layout.sandboxes, 'w4', 'home')
 const w4Patch = join(w4Home, 'profiles', 'web', 'cordis.patch.yml')
 mkdirSync(join(w4Home, 'profiles', 'web'), { recursive: true })
@@ -376,7 +424,13 @@ check('包真的从磁盘上没了',
 
 // ⛔ 那道闸门:人指的是登记表里的一行,而动作伸到了他没点名的日常档案柜。
 const reaching = makePlugin('reaching-plugin')
-await cli('plugins', 'install', reaching, '--main')
+// ⚠ Putting it there is itself a change to the daily cabinet, so the seat is
+// held for that one step and given straight back — the checks below need it
+// empty, since what they assert is that a flag alone is not approval.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10131' }, null, 2)}\n`)
+await cli('plugins', 'install', reaching, '--main', '--approved')
+rmSync(uiSeatFile(layout), { force: true })
 await cli('plugins', 'install', 'reaching-plugin', '--sandbox', 'w6')
 const halted = await cli('plugins', 'rm', 'reaching-plugin')
 check('⛔ 会动到日常档案柜时先拦下来',
@@ -412,7 +466,12 @@ check('⛔ 别人本来就有的那条照旧没动', readFileSync(dailyPatch, 'u
 // 自己少点一次而勾的框,顺带把同一扇门交给了机器上跑着的任何东西。现在它只
 // 说一件事:窗口不必再问我。命令行这一侧照拦不误。
 await cli('config', 'ask-on-daily', 'off')
-await cli('plugins', 'install', makePlugin('quiet-plugin'), '--main')
+// ⚠ Same as above: getting it in there needs the seat; taking it out is what
+// this checks, and that has to happen with the seat empty.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10132' }, null, 2)}\n`)
+await cli('plugins', 'install', makePlugin('quiet-plugin'), '--main', '--approved')
+rmSync(uiSeatFile(layout), { force: true })
 const quiet = await cli('plugins', 'rm', 'quiet-plugin')
 check('⛔⛔ 关掉「再问一次」之后,命令行照样拦——那是窗口的偏好,不是给外面的通行证',
   quiet.ok === false && quiet.code === 'NEEDS_APPROVAL', quiet.code ?? 'ok')

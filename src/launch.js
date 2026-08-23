@@ -9,6 +9,7 @@ import {
 } from 'node:fs'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
+import { repointDownloads } from './engines.js'
 import { BoxError } from './errors.js'
 import { engineRecord } from './host.js'
 import { tailLines } from './logs.js'
@@ -214,6 +215,17 @@ export async function launch({
       }), { sandbox: sandboxPaths(layout, sandbox).name })
   }
   try {
+    if (!direct) {
+      // ⭐ The moment "which version" becomes true for downloaded plugins. The
+      // junction a sandbox holds for an npm-fetched plugin is aimed at the farm
+      // of the engine about to boot, so its parent-walk meets parts of exactly
+      // this release. Every sandbox launch comes through here, which is what
+      // keeps the farm from ever being stale — and why the daily cabinet does
+      // not take this road (it is booted by `dsh` typed by hand, with nobody
+      // here to re-aim anything; its downloads are copies inside the cabinet).
+      const repointed = repointDownloads(layout, home, profile, engine)
+      if (repointed.length > 0) onLog?.(t('launch.repointedDownloads', { count: repointed.length }))
+    }
     if (direct || switchesEngine(layout, sandbox, engine)) {
       // Boot re-points the flat module fallback for every package the running
       // release knows about, and leaves alone any link naming a package that

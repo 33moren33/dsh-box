@@ -269,6 +269,12 @@ const BOX_GITIGNORE = `# Everything in this directory is reproducible except one
  * @property {string} gitignore - the generated ignore file.
  * @property {string} backups - untouched copies of workspace config, before we changed it.
  * @property {string} packages - plugins fetched from npm, kept in our own tree.
+ * @property {string} cabinets - one ledger per filing cabinet: which rows in its
+ * plugin config this tool wrote.
+ * @property {string} engines - one derived tree per dsh installation: hardlinks
+ * of downloaded plugins with a version-matched shelf of official packages beside
+ * them. Entirely rebuildable from `packages` and the installation, so deleting
+ * it costs a re-stage and never data.
  */
 
 /**
@@ -287,7 +293,26 @@ export function boxLayout(dir) {
     gitignore: join(root, '.gitignore'),
     backups: join(root, 'backups'),
     packages: join(root, 'packages'),
+    cabinets: join(root, 'cabinets'),
+    engines: join(root, 'engines'),
   }
+}
+
+/**
+ * One filing cabinet's name in this tool's own directories.
+ *
+ * ⛔ The readable part is truncated to 64 characters, and two homes can differ
+ * in the middle of a long path — so on names alone they can collide, and then
+ * one cabinet's records would be read as another's. The digest is what actually
+ * keeps them apart; the readable part is only so a person can tell whose file
+ * they are looking at.
+ * @param {string} home - the `DSH_HOME` being named.
+ * @returns {string}
+ */
+export function homeKey(home) {
+  const full = resolve(cleanPath(home))
+  const fingerprint = createHash('sha1').update(full).digest('hex').slice(0, 8)
+  return `${safeName(full) || 'home'}-${fingerprint}`
 }
 
 /**
@@ -302,14 +327,35 @@ export function boxLayout(dir) {
  * @returns {string}
  */
 export function backupDir(layout, home) {
-  const full = resolve(cleanPath(home))
-  // ⛔ The readable part is truncated to 64 characters, and two sandbox homes
-  // differ in the middle of a long path — so on names alone they can land in
-  // the same pile, and a restore would then put one workspace's file into
-  // another's. The digest is what actually keeps them apart; the readable part
-  // is only so a person can tell whose pile they are looking at.
-  const fingerprint = createHash('sha1').update(full).digest('hex').slice(0, 8)
-  return join(layout.backups, `${safeName(full) || 'home'}-${fingerprint}`)
+  return join(layout.backups, homeKey(home))
+}
+
+/**
+ * Where this tool's record of one cabinet lives.
+ *
+ * ⭐⭐ **The record is here rather than in the cabinet's own file**, and that is
+ * a decision rather than a detail (CEO 2026-08-23). Ownership used to be written
+ * into `cordis.patch.yml` as marker comments, which had the property that the
+ * two could never drift. What it cost was that the file stopped being a plain
+ * list of plugins: our comments were in it, and a great many plugin conflicts
+ * out there are caused by exactly that kind of decoration. Without markers the
+ * YAML is a portable name-list — **the same file can be copied straight from a
+ * daily cabinet into a sandbox** — and that is worth more than the guarantee.
+ *
+ * ⛔ The accepted cost, stated plainly so nobody re-litigates it later: **lose
+ * this directory and the rows stay behind, unattributed.** They keep working;
+ * this tool simply no longer claims them, and `uninstall` says so instead of
+ * guessing. It is not this tool's job to recover from its own data directory
+ * being deleted.
+ *
+ * ⚠️ Named by the same key as {@link backupDir}, so one cabinet has one name
+ * everywhere in here.
+ * @param {BoxLayout} layout
+ * @param {string} home
+ * @returns {string}
+ */
+export function cabinetLedgerFile(layout, home) {
+  return join(layout.cabinets, `${homeKey(home)}.json`)
 }
 
 /**

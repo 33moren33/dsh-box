@@ -110,6 +110,26 @@ export const COMMANDS = {
       ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
     ],
   },
+  // Two entries rather than one with a flag: they are opposite actions, and a
+  // recorded history reads as what happened rather than as what was passed.
+  'plugins.disable': {
+    mutates: true,
+    booleans: ['main'],
+    values: ['sandbox'],
+    line: (args) => [
+      'plugins', 'disable', args.id ?? args.target,
+      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
+    ],
+  },
+  'plugins.enable': {
+    mutates: true,
+    booleans: ['main'],
+    values: ['sandbox'],
+    line: (args) => [
+      'plugins', 'enable', args.id ?? args.target,
+      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
+    ],
+  },
   history: {
     mutates: false,
     booleans: ['shape'],
@@ -288,7 +308,9 @@ export const COMMANDS = {
   logs: {
     mutates: false,
     booleans: ['shape', 'errors', 'all', 'main'],
-    values: ['lines', 'version'],
+    // `package` names a plugin download's log the way `version` names a
+    // release's: by the thing asked about, so the asker needs no job id.
+    values: ['lines', 'version', 'package'],
   },
   attach: {
     mutates: false,

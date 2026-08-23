@@ -300,6 +300,20 @@
       <button class="chip" id="pluginBrowse" hidden data-i18n="ui.browse"></button>
       <button class="chip" id="addPluginBtn" data-cmd data-mark="go:addPlugin" data-i18n="ui.addPlugin"></button>
     </div>
+    <!--
+      The other way in: a published package, fetched by name. The command line
+      has had this road for a while (`plugins install <name> --sandbox <名>`);
+      this is the same road with the same words, aimed at the sandbox selected
+      above. First edition deliberately stops at sandboxes — installing into
+      the daily cabinet has its own approval gate, and the note below says
+      where that door is rather than pretending there is none.
+    -->
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="npmName" data-cmd data-mark="go:npmName" data-i18n-placeholder="ui.npmNamePh" style="flex:1;min-width:280px">
+      <button class="chip" id="npmInstallBtn" data-cmd data-mark="go:npmInstall" data-i18n="ui.npmInstall"></button>
+    </div>
+    <p class="sub" style="margin:6px 0 0" data-i18n="ui.npmNote"></p>
+    <div id="npmOut"></div>
   </section>
 
   <section class="card">
@@ -450,6 +464,20 @@ function applyI18n() {
 applyI18n()
 
 let state = null
+/**
+ * What was on screen when the last download this window watched ended.
+ *
+ * ⛔ Kept in a variable rather than written straight into the element, because
+ * the two-second poll redraws that element: an ending written directly would
+ * survive until the next tick and no longer. Null means "nothing to say once the
+ * live view goes away" — the state before the first install and after a reload.
+ *
+ * ⛔ Declared up here with the other page state, not beside the handler that
+ * sets it: `refresh()` runs on load and calls `drawDownload`, and a `let` further
+ * down the file is still in its dead zone at that moment. This file has been
+ * bitten by module-level evaluation order before.
+ */
+let finalDownload = null
 /**
  * Which machine to launch on: '' means the dsh this computer already has, and
  * any other value names a release dsh-box downloaded. Empty is not "nothing
@@ -629,7 +657,7 @@ async function refresh() {
   for (const id of [...picked]) if (!known.has(id)) picked.delete(id)
   $('importSignIn').checked = state.last.importSignIn !== false
   $('boxPath').textContent = t('ui.boxPath', { box: state.box })
-  drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton()
+  drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton(); drawDownload()
   // Last, because the frames are drawn onto the controls the lines above just
   // rebuilt.
   drawAgent()
@@ -798,7 +826,10 @@ function drawPlugins() {
   for (const entry of here.ours) {
     const going = dropping.has(entry.package)
     row({
-      title: entry.package,
+      // The version rides on the name when the folder answers with one — read
+      // off disk by the service at every snapshot, never stored. No version is
+      // shown as nothing at all: a placeholder would read as a fact.
+      title: entry.version == null ? entry.package : `${entry.package} ${entry.version}`,
       note: going ? t('ui.willRemoveNote') : (entry.path ?? t('ui.installedHereNote')),
       tick: 'have',
       tag: going ? t('ui.tagGoing') : t('ui.tagHave'),
@@ -832,7 +863,7 @@ function drawPlugins() {
   // The registry: what this tool knows about and this workspace does not have.
   for (const plugin of state.plugins.filter((entry) => !already.has(entry.package))) {
     const label = row({
-      title: plugin.label,
+      title: plugin.version == null ? plugin.label : `${plugin.label} ${plugin.version}`,
       note: plugin.path,
       tick: 'add',
       tag: picked.has(plugin.id) ? t('ui.tagAdd') : t('ui.tagNot'),
@@ -1094,7 +1125,13 @@ function markKeys(action) {
       return ['go:pluginDir', 'go:addPlugin']
     case 'plugins.rm':
       return [`plugin:${args.id ?? args.target}`]
-    case 'plugins.install': case 'plugins.uninstall':
+    case 'plugins.install':
+      // The npm box and its button are this command's home on the page. Like
+      // `adopt`, they light for every install — including one the window could
+      // not have made (a registered id, a local folder, `--main`): the frame
+      // says where the command lives, not that a person could have clicked it.
+      return [`plugin:${args.id ?? args.target}`, workspace, 'go:npmName', 'go:npmInstall']
+    case 'plugins.uninstall':
       return [`plugin:${args.id ?? args.target}`, workspace]
     case 'signin': case 'signout':
       // One control for both directions, and the cabinet it belongs to. The
@@ -1517,6 +1554,79 @@ $('addPluginBtn').onclick = async () => {
   }
 }
 
+/**
+ * What npm allows a package to be called — the same rule `plugins install`
+ * checks. Copied here only so an impossible name is refused in place, before a
+ * process is started for it; the command line keeps the real check either way.
+ */
+const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+
+// Download by name, into the sandbox selected above — the same `plugins
+// install` an agent would run, through the same channel. The busy state is the
+// pull button's, exactly: the command journals its progress into a file named
+// after the package (heartbeat included, because npm resolves a big graph in
+// minutes of silence), and this tails it with `logs --package` while the
+// install runs — the same lines anyone in another terminal would read.
+$('npmInstallBtn').onclick = async () => {
+  const name = $('npmName').value.trim()
+  const out = $('npmOut')
+  if (name === '') return
+  if (!PACKAGE_NAME.test(name)) {
+    out.innerHTML = `<div class="err">${t('ui.npmBadName', { name: escape(name) })}</div>`
+    return
+  }
+  // First edition: sandboxes only. The daily cabinet's install has an approval
+  // gate of its own, and this button quoting `--approved` at it would be the
+  // window handing itself the answer. Said in place instead of greyed out,
+  // because a refusal that explains beats a control that ignores.
+  if (workspace === null) {
+    out.innerHTML = `<div class="err">${t('ui.npmMainRefused')}</div>`
+    return
+  }
+  $('npmInstallBtn').disabled = true
+  // ⭐ No `watchLog` here, unlike the pull button beside it. The progress of a
+  // download is drawn by `drawDownload` off the ordinary snapshot, so it appears
+  // whether this button started it or an agent did — one mechanism for one
+  // question, which is the whole point of the two faces sharing a disk. Tailing
+  // it a second time from here would put two writers on this element and cost a
+  // command-line process every 800ms for the length of the install.
+  finalDownload = null
+  try {
+    const result = await run(['plugins', 'install', name, '--sandbox', workspace])
+    $('npmName').value = ''
+    const brought = (result.brought ?? []).length
+    finalDownload = `<div class="ok">${t('ui.npmInstalled', { name: escape(name), cabinet: escape(result.cabinet ?? workspace) })}`
+      + `${brought > 0 ? ` ${t('ui.npmBrought', { count: brought })}` : ''}</div>`
+    await refresh()
+  } catch (error) {
+    finalDownload = `<div class="err">${escape(error.message)}</div>`
+  } finally {
+    $('npmInstallBtn').disabled = false
+    drawDownload()
+  }
+}
+
+/**
+ * The npm download in flight, from the snapshot — nobody's in particular.
+ *
+ * ⭐⭐ This is the answer to "the window has nothing to say while an agent
+ * downloads" (`box-dual-view.md` §2.2). The lines are the same lines the same
+ * log gives `logs --package` in any terminal; the window is reading, not being
+ * told, so there is no channel here that the command line does not have.
+ */
+function drawDownload() {
+  const out = $('npmOut')
+  const live = state?.download ?? null
+  if (live === null) {
+    out.innerHTML = finalDownload ?? ''
+    return
+  }
+  out.innerHTML = `<div class="ok">${t('ui.npmInstallingHead', { name: escape(live.name) })}</div>`
+    + `<pre>${escape((live.lines ?? []).join('\n'))}</pre>`
+  const log = out.querySelector('pre')
+  log.scrollTop = log.scrollHeight
+}
+
 // Naming a new workspace selects it; it comes into existence when it is
 // started, which is what `--sandbox` has always done. Nothing is created by
 // typing, so nothing here needs to be a command.
@@ -1849,7 +1959,9 @@ const polling = setInterval(async () => {
     // Plugins are redrawn too: another entrance can install one, and the ticks
     // are read from variables rather than off the page, so a redraw cannot
     // disturb a choice being made.
-    drawRunning(); drawWorkspaces(); drawPlugins(); drawAgent()
+    // `drawDownload` is here for the same reason the plugin rows are: another
+    // entrance can start an install, and this tick is how the window finds out.
+    drawRunning(); drawWorkspaces(); drawPlugins(); drawDownload(); drawAgent()
   } catch {
     // The next tick retries; a dead server shows up on the next click anyway.
   }

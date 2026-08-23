@@ -148,8 +148,30 @@ const MESSAGES = {
 不是只在从这里启动时才有。要拿掉用 plugins uninstall。
 ⭐ 改这个文件之前会先整份备份(plugins backups 看得到,plugins restore 还原)。
 ⛔ 只删得掉我们写进去的那几条;那个档案柜本来就有的插件不归我们动。`,
-    'cmd.plugins.uninstall.usage': 'plugins uninstall <id> --sandbox <名> | --main',
+    'cmd.plugins.uninstall.usage': 'plugins uninstall <id|包名> --sandbox <名> | --main',
     'cmd.plugins.uninstall.summary': '把插件从某个档案柜拿掉',
+    'cmd.plugins.uninstall.notes': `一个档案柜有三处能写插件,这条命令三处都管:
+  · 我们写进 profile 配置的行 —— 整行删掉
+  · 聚合包 —— 它带进来的十几行一起拿掉
+  · profile 的 dsh.profile.bundles —— 从 bundles 和 dependencies **两处**摘掉
+
+⛔ 只摘 bundles 是白摘:dsh 每跑一条 dsh plugin 命令都会照 dependencies 对账,
+   还在那儿又还声明 dsh.bundle 的包会被加回来。所以两处一起,不然等于没删。
+⛔ 包体本身不删——那要在你的 profile 里跑包管理器,而「只需要 Node 20+」是这个
+   工具少数几个能拿得出手的地方。剩下什么会当场说清楚。
+⚠️ 不是我们装的、也不是 bundle 的行,拿不掉——那是别人写进去的。用 plugins
+   disable 把它关掉,那是这个格式里「删」唯一的拼法。`,
+    'cmd.plugins.disable.usage': 'plugins disable <id> --sandbox <名> | --main',
+    'cmd.plugins.disable.summary': '把某一行关掉,不管它是谁写进来的',
+    'cmd.plugins.disable.notes': `⭐⭐ 这是唯一能动「不是我们装的东西」的办法,也是这个格式里「删」的拼法:
+   patch 里根本没有 remove,下层的行只能被上层盖掉,盖不掉就删不掉。
+   profile 配置排在所有 bundle 层之后,所以这里写一行 disabled: true 关得掉
+   bundle 带进来的插件——官方关自己的遥测用的就是这一招。
+
+⛔ 只关得回我们自己关的。别人写的 disabled 是别人的决定,悄悄给他打开就是替他
+   做主。`,
+    'cmd.plugins.enable.usage': 'plugins enable <id> --sandbox <名> | --main',
+    'cmd.plugins.enable.summary': '把 disable 关掉的那一行放回来',
 
     'cmd.history.usage': 'history [--lines N] [--shape]',
     'cmd.history.summary': '看这个数据目录里做过的所有事(持久记录)',
@@ -279,8 +301,8 @@ const MESSAGES = {
 ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,沙箱照跑。`,
     'cmd.status.usage': 'status',
     'cmd.status.summary': '此刻的全景:数据目录、版本、沙箱、谁在跑',
-    'cmd.logs.usage': 'logs <沙箱名> [选项]',
-    'cmd.logs.summary': '看某台沙箱最近一次启动说了什么',
+    'cmd.logs.usage': 'logs <沙箱名> [选项] | logs --package <包名>',
+    'cmd.logs.summary': '看某台沙箱最近一次启动说了什么;--package 看某个 npm 插件的下载进度',
     'cmd.logs.notes': `  --shape            只报形状(多少行/多大/几行像出错/最后一行),不吐正文
   --errors           只要像出错的行,各带前后三行
   --lines <n>        要多少行(默认 50 行或 4000 字符,谁先到算谁)
@@ -542,6 +564,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
 
     'cabinet.bothFlags': '--main 和 --sandbox 说的是同一件事的两个答案:哪个档案柜。只能给一个',
     'cabinet.which': '装到哪个档案柜? --sandbox <名字> 某台沙箱,--main 你日常的 ~/.dsh',
+    'cabinet.dailyNeedsApproval': '这一步会改你日常的 ~/.dsh —— 你自己敲 dsh 时读的就是它,所以要有人在配置窗里点过头才执行:dsh-box ui,选日常档案柜,弹窗会说清会动哪几处、备份在哪。\n  自己带 --approved 不算数,只有配置窗起的那次才算。沙箱这边不用点头,删掉就没了。',
 
     'plugins.addWhich': '哪个目录? 例如: plugins add ../my-plugin',
     'plugins.remembered': '已记住 {package},id 为「{id}」',
@@ -553,6 +576,11 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.theirsLine': '{name}  ← 这个档案柜本来就有,不归这里动',
     'plugins.platform': '官方基座(每个 profile 都有):{names}',
     'plugins.patchAt': '配置在 {file}',
+    'plugins.bundleLine': '{name}  ← 一整层,里面可能不止一个插件',
+    'plugins.offLine': '(已关)',
+    'plugins.overrideLine': '{id}  ← 改的是已有的这一行,不是装一个插件',
+    'plugins.fromHome': '(来自档案柜根上那份 patch,每个 profile 都吃)',
+    'plugins.platformFolded': '另有 {count} 处官方基座,没列出来',
     'plugins.registryHeader': '记住的插件(这是登记表,还没装进任何档案柜)',
     'plugins.registryEmpty': '(没有 —— 试试: plugins add <目录>)',
     'plugins.missingLine': '{package}  ← 文件夹已不在',
@@ -573,6 +601,8 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.nameTakenAt': '「{package}」这个名字在{cabinet}里已经被别的东西占着了,指向 {points}。\n  没有动它——那不是 dsh-box 装的,换掉就撤不回来了。\n  真要换成 {wanted},得先由装它的人把原来那个卸掉。',
     'plugins.nameTakenGone': '「{package}」这个名字在{cabinet}里已经被别的东西占着了,而它指向的地方已经不在了。\n  没有动它——那不是 dsh-box 装的,换掉就撤不回来了。\n  真要换成 {wanted},得先由装它的人把原来那个卸掉。',
     'plugins.alreadyThere': '{cabinet}里已经装着「{package}」,而且指的就是 {points}',
+    'plugins.alreadyOurs': '{cabinet} 里已经装着「{package}」了,是我们装的那一份',
+    'plugins.relinked': '{cabinet} 里本来就登记着「{package}」,只是链接断了 —— 已经重新指好,没有多加一行',
     'plugins.nothingDone': '什么都没做',
     'plugins.raceTaken': '「{package}」在这中间被别的东西登记进{cabinet}了',
     'plugins.raceCheck': 'patch 没有改动,但链接已经建了。核对一下这个名字现在指向哪:',
@@ -580,6 +610,14 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.badPackageName': '「{name}」既不是存在的目录,也不像一个 npm 包名。目录要有 package.json;包名只能是小写字母、数字和 . _ -,可以带 @scope/',
     'packages.treeDescription': 'dsh-box 替你下载的插件都放在这儿',
     'plugins.downloading': '正在从 {registry} 下载 {name}',
+    'plugins.stillDownloading': '还在下载,已 {seconds} 秒',
+    'plugins.installInFlight': '这会儿正在装「{other}」。一次只能装一个——两个 npm 同时写同一个包目录会把它写坏。等它装完再来,或者先看看它到哪了:logs --package {other}',
+    'plugins.retryOfficial': '{mirror} 没给全,换官方源重来一次(镜像是按快慢选的,快不等于全)',
+    'plugins.mirrorHint': '你把源固定成镜像了。镜像可能缺包或还没同步完,换回来试试:config source auto',
+    'plugins.installReady': '{name} 已装进「{cabinet}」',
+    'logs.wherePackage': '插件包 {name}',
+    'logs.whatPackage': '最近一次下载安装',
+    'logs.neverPackage': '它还没从 npm 下载过',
     'npm.saidOkButEmpty': 'npm 说装好了,但 {dir} 里没有东西',
     'plugins.downloaded': '下载好了,在 {dir}',
     'npm.installExit': 'npm 装不上(退出码 {code})——{last}',
@@ -587,6 +625,33 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.uninstallWhich': '拿掉哪个? 用 plugins --sandbox <名> 看这个档案柜装着什么',
     'plugins.notOurs': '「{id}」是{cabinet}本来就装着的,不是 dsh-box 装的——我们不动别人写进去的东西。要拿掉它请用装它的那个办法',
     'plugins.notInstalled': '{cabinet}里没有 dsh-box 装的「{id}」——用 plugins {flags} 看看有什么',
+
+    'aggregate.expanded': '「{name}」是聚合包,按它自带的 {file} 展开成 {count} 个:',
+    'aggregate.alsoRemoved': '它带进来的 {count} 个也一起拿掉了:',
+    'aggregate.notInlineable': '「{name}」这个聚合包不能展开进 profile 配置:它自带的 {file} 里有冲着已有 id 去的行({ids})。\n  官方把每个 bundle 当独立一层、放在 profile 配置之前,我们展开进去就落在后面——同一行在两个位置盖到的不是同一个东西。\n  只加不改的聚合包可以展开,这一种不行,所以宁可不装也不装成看着对的样子。',
+    'aggregate.memberMissing': '「{aggregate}」点名了「{member}」,但从 {dir} 解析不到它。\n  这是那个包自己的问题:它把成员写进了名单却没随包发出来(常见写法是放进 devDependencies,而 devDependencies 对下游是不装的)。\n  dsh 用的是同一套解析方式,所以它也找不到。请找那个包的作者。',
+    'aggregate.memberTaken': '「{aggregate}」要带进来的「{member}」,这个档案柜里已经被别的东西占着了。整包都没装——装一半会留下一个没人收拾得了的状态。',
+
+    'plugins.staged': '连它需要的依赖一共 {count} 个包,已放进这个档案柜的 _local —— dsh 只加载得了住在 profiles 里面的插件',
+    'staging.nameTaken': '这个档案柜的 _local 里已经有一个叫「{package}」的东西了({dir}),而且不是 dsh-box 放的。没有动它——那可能是你自己在开发的插件。要装这个 npm 包,先把那个挪走或改名',
+    'staging.notDownloaded': '「{package}」不在下载仓里,可能被 packages rm 删掉了。重新 plugins install 一次就有',
+    'launch.repointedDownloads': '{count} 个 npm 插件已对准这台 dsh 的零件',
+
+    'plugins.disableWhich': '关掉哪一行? 用 plugins --sandbox <名> 看有哪些 id',
+    'plugins.enableWhich': '放回哪一行? 用 plugins --sandbox <名> 看有哪些 id',
+    'plugins.noSuchRow': '{cabinet}里没有 id 是「{id}」的行。这个格式允许你冲着一个不存在的 id 写规则,它什么也不会做,所以宁可现在拒绝——用 plugins {flags} 看看有哪些',
+    'plugins.enableNotOurs': '「{id}」在{cabinet}里是别人关掉的,不是 dsh-box 关的。替他打开就是替他做主,所以不动——要开请用当初关它的那个办法',
+    'plugins.switchedOff': '{cabinet}里的「{id}」已关掉',
+    'plugins.switchedOffWhere': '写的是 {file} 里的一行 disabled: true —— 下层那一行本身没动,这个格式里没有「删」',
+    'plugins.switchedOn': '{cabinet}里的「{id}」已放回来',
+    'plugins.alreadyOff': '{cabinet}里的「{id}」本来就是关的,什么都没做',
+    'plugins.alreadyOn': '{cabinet}里的「{id}」本来就是开的,什么都没做',
+    'plugins.viaBundleLine': '{name}(随上面那个包进来的)',
+    'bundles.unreadable': '读不懂 {file},所以不去改它。JSON 坏了的话先看看那个文件',
+    'bundles.removed': '已把「{name}」从{cabinet}的 bundles 里拿掉',
+    'bundles.bothPlaces': 'bundles 和 dependencies 两处都摘了({file})—— 只摘一处的话,下次任何一条 dsh plugin 命令都会把它加回来',
+    'bundles.bundlesOnly': '从 bundles 里摘了({file});它本来就不在 dependencies 里,所以不会被加回来',
+    'bundles.filesLeft': '包体还留在 {dir} —— 现在没有任何东西声明它、也没有任何东西加载它。要腾地方请自己删,我们不替官方跑包管理器',
 
     'backups.unknownAction': 'plugins backups 只认 rm 和 prune,不认「{action}」',
     'backups.header': '{cabinet} 的插件配置备份',
@@ -756,6 +821,14 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.pluginDirPh': '插件目录路径(里面要有 package.json)',
     'ui.browse': '浏览…',
     'ui.addPlugin': '添加',
+    'ui.npmNamePh': 'npm 包名(如 dsh-memory-pyramid)',
+    'ui.npmInstall': '从 npm 装入',
+    'ui.npmNote': '从 npm 下载并装进上面选中的沙箱档案柜。日常档案柜走命令行:plugins install <包名> --main',
+    'ui.npmBadName': '「{name}」不是合法的 npm 包名,没有发出命令。',
+    'ui.npmMainRefused': '窗口这条路只装进沙箱。要装进日常档案柜,用命令行:plugins install <包名> --main',
+    'ui.npmInstallingHead': '正在从 npm 下载并装入 {name}…(可能要几分钟)',
+    'ui.npmInstalled': '「{name}」已装进「{cabinet}」。',
+    'ui.npmBrought': '这个包带来了 {count} 个插件。',
     'ui.runningCard': '正在运行',
     'ui.quit': '退出 dsh-box',
     'ui.lockedHint': 'agent 正在控制,这个操作暂不执行 —— 要自己动手,先按上面的「停止并收回」',
@@ -922,8 +995,33 @@ out with plugins uninstall.
   them, plugins restore puts one back).
 ⛔ Only the lines we wrote come out again; plugins the cabinet already had are
   not ours to touch.`,
-    'cmd.plugins.uninstall.usage': 'plugins uninstall <id> --sandbox <name> | --main',
+    'cmd.plugins.uninstall.usage': 'plugins uninstall <id|package> --sandbox <name> | --main',
     'cmd.plugins.uninstall.summary': 'Take a plugin out of one cabinet',
+    'cmd.plugins.uninstall.notes': `A cabinet names plugins in three places, and this covers all three:
+  · a row we wrote into the profile patch — the row is removed
+  · an aggregate — the dozen-odd rows it brought go with it
+  · dsh.profile.bundles in the profile — taken out of **both** bundles and dependencies
+
+⛔ Out of bundles alone is out of nothing: dsh reconciles against dependencies
+   after every dsh plugin command and puts back anything still declared there
+   that still exports a patch. So both, or it did not happen.
+⛔ The package files stay. Deleting them means running a package manager inside
+   your profile, and "all you need is Node 20+" is one of the few things this
+   tool can claim. Whatever is left over is said plainly.
+⚠️ A row that is neither ours nor a bundle cannot be taken out — somebody else
+   wrote it. Use plugins disable, which is how "remove" is spelled in this format.`,
+    'cmd.plugins.disable.usage': 'plugins disable <id> --sandbox <name> | --main',
+    'cmd.plugins.disable.summary': 'Switch one row off, whoever put it there',
+    'cmd.plugins.disable.notes': `⭐⭐ The only way to act on something this tool did not install, and the way
+   "remove" is spelled here: the patch format has no remove at all. A row in a
+   lower layer can be overridden and never deleted. The profile patch sits after
+   every bundle layer, so a disabled: true row here reaches a plugin a bundle
+   brought in — which is exactly how upstream switches off its own telemetry.
+
+⛔ Only what we switched off can be switched back on. A disabled row somebody
+   else wrote is their decision, and undoing it quietly is overruling them.`,
+    'cmd.plugins.enable.usage': 'plugins enable <id> --sandbox <name> | --main',
+    'cmd.plugins.enable.summary': 'Put back a row that disable switched off',
 
     'cmd.history.usage': 'history [--lines N] [--shape]',
     'cmd.history.summary': 'Everything ever done in this data directory (the permanent record)',
@@ -1095,8 +1193,8 @@ Ctrl+C on the ui process is not a quit; it ends that one command, and the
 sandboxes keep running.`,
     'cmd.status.usage': 'status',
     'cmd.status.summary': 'The whole picture right now: data directory, releases, sandboxes, what is running',
-    'cmd.logs.usage': 'logs <sandbox> [options]',
-    'cmd.logs.summary': 'What a sandbox said the last time it started',
+    'cmd.logs.usage': 'logs <sandbox> [options] | logs --package <name>',
+    'cmd.logs.summary': 'What a sandbox said the last time it started; --package shows an npm plugin download',
     'cmd.logs.notes': `  --shape             the shape only (how many lines / how big / how many look
                       like errors / the last line), without the body
   --errors            only the lines that look like errors, three lines either side
@@ -1365,6 +1463,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
 
     'cabinet.bothFlags': '--main and --sandbox are two answers to the same question: which cabinet. Give only one',
     'cabinet.which': 'Which cabinet? --sandbox <name> for a sandbox, --main for your everyday ~/.dsh',
+    'cabinet.dailyNeedsApproval': 'This changes your everyday ~/.dsh — the one your own `dsh` reads — so it runs only after a person has agreed in the config window: dsh-box ui, pick the everyday cabinet, and the dialog says what will be touched and where the backup goes.\n  Passing --approved yourself does not count; only a run started by the config window does. A sandbox needs none of this: delete it and it is gone.',
 
     'plugins.addWhich': 'Which folder? For example: plugins add ../my-plugin',
     'plugins.remembered': 'Remembered {package}, with id "{id}"',
@@ -1376,6 +1475,11 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'plugins.theirsLine': '{name}  ← already in this cabinet; not ours to touch',
     'plugins.platform': 'Official base (in every profile): {names}',
     'plugins.patchAt': 'Config at {file}',
+    'plugins.bundleLine': '{name}  ← a whole layer, and it may hold more than one plugin',
+    'plugins.offLine': '(switched off)',
+    'plugins.overrideLine': '{id}  ← changes a row that is already there, rather than adding a plugin',
+    'plugins.fromHome': "(from the patch at the cabinet's root, which every profile reads)",
+    'plugins.platformFolded': '{count} more official base rows, not listed',
     'plugins.registryHeader': 'Registered plugins (the registry — none of this is installed anywhere yet)',
     'plugins.registryEmpty': '(none — try: plugins add <folder>)',
     'plugins.missingLine': '{package}  ← folder no longer exists',
@@ -1396,6 +1500,8 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'plugins.nameTakenAt': 'The name "{package}" is already taken by something else in {cabinet}, pointing at {points}.\n  It was left alone — dsh-box did not install it, and replacing it cannot be taken back.\n  To really replace it with {wanted}, whoever installed the original has to take it out first.',
     'plugins.nameTakenGone': 'The name "{package}" is already taken by something else in {cabinet}, and what it points at no longer exists.\n  It was left alone — dsh-box did not install it, and replacing it cannot be taken back.\n  To really replace it with {wanted}, whoever installed the original has to take it out first.',
     'plugins.alreadyThere': '{cabinet} already has "{package}", pointing at exactly {points}',
+    'plugins.alreadyOurs': '{cabinet} already has "{package}" — the copy we installed',
+    'plugins.relinked': '{cabinet} already listed "{package}"; only its link was broken — re-aimed, and no second row added',
     'plugins.nothingDone': 'Nothing was done',
     'plugins.raceTaken': 'Something else registered "{package}" into {cabinet} in the meantime',
     'plugins.raceCheck': 'The patch was not changed, but the link was made. Check where the name points now:',
@@ -1403,6 +1509,14 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'plugins.badPackageName': '"{name}" is neither an existing folder nor something that looks like an npm package name. A folder needs a package.json; a package name may only use lowercase letters, digits and . _ -, optionally with @scope/',
     'packages.treeDescription': 'Plugins dsh-box downloaded for you live here',
     'plugins.downloading': 'Downloading {name} from {registry}',
+    'plugins.stillDownloading': 'Still downloading, {seconds}s so far',
+    'plugins.installInFlight': '"{other}" is being installed right now. Only one at a time — two npm runs writing the same package directory corrupt it. Wait for it to finish, or watch where it has got to: logs --package {other}',
+    'plugins.retryOfficial': '{mirror} did not have all of it. Trying the official registry instead — the mirror was picked for speed, and fast is not the same as complete',
+    'plugins.mirrorHint': 'Your source is pinned to the mirror. Mirrors can lag or miss a package; try letting it choose: config source auto',
+    'plugins.installReady': '{name} is now installed in "{cabinet}"',
+    'logs.wherePackage': 'plugin package {name}',
+    'logs.whatPackage': 'its last download and install',
+    'logs.neverPackage': 'it has never been downloaded from npm',
     'npm.saidOkButEmpty': 'npm said it installed, but there is nothing in {dir}',
     'plugins.downloaded': 'Downloaded, at {dir}',
     'npm.installExit': 'npm could not install it (exit code {code}) — {last}',
@@ -1410,6 +1524,33 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'plugins.uninstallWhich': 'Which one? See what this cabinet has with plugins --sandbox <name>',
     'plugins.notOurs': '"{id}" was already in {cabinet} before dsh-box; what someone else wrote in is not ours to remove. Take it out the way it was put in',
     'plugins.notInstalled': 'There is no dsh-box-installed "{id}" in {cabinet} — see what is there with plugins {flags}',
+
+    'aggregate.expanded': '"{name}" is an aggregate; expanded to {count} rows from its own {file}:',
+    'aggregate.alsoRemoved': 'The {count} it brought with it went too:',
+    'aggregate.notInlineable': '"{name}" cannot be expanded into the profile patch: its own {file} has rows aimed at existing ids ({ids}).\n  dsh applies each bundle as its own layer, before the profile patch; expanding puts them after it — and at a different layer such a row lands on something else.\n  An aggregate that only adds can be expanded; this one cannot, so it is left alone rather than installed into something that merely looks right.',
+    'aggregate.memberMissing': '"{aggregate}" names "{member}", but it cannot be resolved from {dir}.\n  This is that package\'s own problem: it lists the member and does not ship it (the usual cause is devDependencies, which consumers never install).\n  dsh resolves the same way, so it will not find it either. Take it up with that package\'s author.',
+    'aggregate.memberTaken': '"{member}", which "{aggregate}" would bring in, is already held by something else in this cabinet. Nothing was installed — half of an aggregate is a state nobody can clean up.',
+
+    'plugins.staged': 'It and what it needs — {count} packages — are now in this cabinet\'s _local; dsh can only load plugins that live inside profiles',
+    'staging.nameTaken': 'This cabinet\'s _local already holds something called "{package}" ({dir}), and dsh-box did not put it there. It was left alone — it may be a plugin you are working on. To install the npm package, move or rename that one first',
+    'staging.notDownloaded': '"{package}" is not in the download tree; packages rm may have removed it. Run plugins install again to fetch it',
+    'launch.repointedDownloads': 'Aimed {count} downloaded plugin(s) at this dsh installation',
+
+    'plugins.disableWhich': 'Switch which row off? See the ids with plugins --sandbox <name>',
+    'plugins.enableWhich': 'Switch which row back on? See the ids with plugins --sandbox <name>',
+    'plugins.noSuchRow': 'No row with the id "{id}" in {cabinet}. The format lets you write a rule against an id that is not there and it simply does nothing, so this is refused now instead — see what is there with plugins {flags}',
+    'plugins.enableNotOurs': '"{id}" was switched off in {cabinet} by somebody else, not by dsh-box. Switching it back on would be overruling them, so nothing was done — turn it on the way it was turned off',
+    'plugins.switchedOff': '"{id}" is now off in {cabinet}',
+    'plugins.switchedOffWhere': 'Written as one `disabled: true` row in {file} — the row underneath is untouched; this format has no "remove"',
+    'plugins.switchedOn': '"{id}" is back on in {cabinet}',
+    'plugins.alreadyOff': '"{id}" was already off in {cabinet}; nothing done',
+    'plugins.alreadyOn': '"{id}" was already on in {cabinet}; nothing done',
+    'plugins.viaBundleLine': '{name} (came in with the package above)',
+    'bundles.unreadable': '{file} cannot be read, so it will not be changed. If the JSON is broken, look at that file first',
+    'bundles.removed': '"{name}" removed from {cabinet}\'s bundles',
+    'bundles.bothPlaces': 'Taken out of both bundles and dependencies ({file}) — out of one only, the next dsh plugin command would put it back',
+    'bundles.bundlesOnly': 'Taken out of bundles ({file}); it was not a dependency, so nothing will put it back',
+    'bundles.filesLeft': 'The package files are still in {dir} — nothing declares them now and nothing loads them. Delete them yourself if you want the space; this tool does not run a package manager on upstream\'s behalf',
 
     'backups.unknownAction': 'plugins backups knows only rm and prune, not "{action}"',
     'backups.header': 'Plugin config backups for {cabinet}',
@@ -1581,6 +1722,14 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'ui.pluginDirPh': 'plugin folder path (it needs a package.json)',
     'ui.browse': 'Browse…',
     'ui.addPlugin': 'Add',
+    'ui.npmNamePh': 'npm package name (e.g. dsh-memory-pyramid)',
+    'ui.npmInstall': 'Install from npm',
+    'ui.npmNote': 'Downloads from npm into the sandbox cabinet selected above. For the daily cabinet use the command line: plugins install <name> --main',
+    'ui.npmBadName': '"{name}" is not a valid npm package name; no command was sent.',
+    'ui.npmMainRefused': 'This road only installs into a sandbox. For the daily cabinet, use the command line: plugins install <name> --main',
+    'ui.npmInstallingHead': 'Downloading and installing {name} from npm… (this can take a few minutes)',
+    'ui.npmInstalled': '"{name}" is now installed in "{cabinet}".',
+    'ui.npmBrought': 'This package brought {count} plugins.',
     'ui.runningCard': 'Running',
     'ui.quit': 'Quit dsh-box',
     'ui.lockedHint': 'An agent is in control, so this action was not run — to take over, press "Stop and take back control" above',

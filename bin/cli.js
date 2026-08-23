@@ -23,10 +23,17 @@ import {
   backupDir, boxLayout, ensureBox, pickFreeBoxDir, resolveBoxDir, sandboxPaths, userDshHome, versionDir,
 } from '../src/paths.js'
 import {
-  claimOn, DEFAULT_PROFILE, KEEP_BACKUPS, listBackups, mountPlugin, pruneBackups, removeBackup,
-  restoreBackup, unmountPlugin, cabinetPlugins,
+  bundleNames, claimOn, DEFAULT_PROFILE, KEEP_BACKUPS, listBackups, mountPlugin, profilePackageFile,
+  pruneBackups, removeBackup, removeBundle, restoreBackup, setDisabled, unmountPlugin, cabinetInventory,
+  cabinetPlugins,
 } from '../src/mounts.js'
-import { isOurDownload, listPackages, packageRoot, removePackage } from '../src/packages.js'
+import { aggregateOf } from '../src/aggregate.js'
+import { stageIntoCabinet, unstageFromCabinet } from '../src/staging.js'
+import { dropFromFarms } from '../src/engines.js'
+import {
+  downloadInFlight, installClaimFile, isOurDownload, listPackages, packageRoot, pluginVersion,
+  removePackage,
+} from '../src/packages.js'
 import { addProject, listProjects } from '../src/workspaces.js'
 import {
   describePlugin, partitionPlugins, readConfig, removePlugin, SETTINGS, updateConfig, upsertPlugin,
@@ -42,14 +49,16 @@ import {
   attach, controlStatus, detach, finishCommand, journalShape, noteCommand, readJournal, readSession, record,
 } from '../src/journal.js'
 import {
-  appendLog, latestLog, listLogs, logShape, newLaunchLog, newVersionLog, readTail, troubleLines,
+  appendLog, latestLog, listLogs, logShape, newLaunchLog, newPackageLog, newVersionLog, packageLog, readTail,
+  troubleLines,
   versionLog,
 } from '../src/logs.js'
-import { installRelease, listReleases, npmInvocation, resolveSource } from '../src/registry.js'
+import { installRelease, listReleases, npmInvocation, resolveSource, SOURCES } from '../src/registry.js'
+import { showInstant } from '../src/clock.js'
 import {
-  adoptSessions, approvedByWindow, clearMainRunning, clearRunning, createNewSandbox, deleteSandbox,
-  ensureSandbox, hasCredentials, importCredentials, listSandboxes, mainDshRunning, mainRunningRecord,
-  removeCredentials, runningRecord, runningSandboxes,
+  adoptSessions, approvedByWindow, claimPath, clearMainRunning, clearRunning, createNewSandbox,
+  deleteSandbox, describeClaim, ensureSandbox, hasCredentials, importCredentials, listSandboxes,
+  mainDshRunning, mainRunningRecord, releasePath, removeCredentials, runningRecord, runningSandboxes,
 } from '../src/sandbox.js'
 import { launch, linkPlugins, stop } from '../src/launch.js'
 import { deleteVersion, downloadedVersions } from '../src/versions.js'
@@ -306,7 +315,7 @@ async function showStatus(layout, opts) {
     // tool knows about. This is what the user's own filing cabinet actually has,
     // read from that home's files, and it is the only one that answers "will
     // typing `dsh` load it".
-    mainPlugins: cabinetPlugins(userDshHome()),
+    mainPlugins: cabinetPlugins(layout, userDshHome()),
     // The window has always shown these; this reader did not, so an agent could
     // not tell whether closing the window would ask first. Two readers of the
     // same files reporting different subsets is how they start to disagree.
@@ -327,7 +336,7 @@ async function showStatus(layout, opts) {
   // these labels are Chinese and a Chinese character takes two of them.
   const label = (text) => padWide(text, 12)
   console.log(`\n  ${label(t('status.labelDataDir'))}${layout.root}`)
-  console.log(`  ${label(t('status.labelAgent'))}${status.agent === null ? t('status.agentNone') : t('status.agentSince', { at: status.agent.startedAt })}`)
+  console.log(`  ${label(t('status.labelAgent'))}${status.agent === null ? t('status.agentNone') : t('status.agentSince', { at: showInstant(status.agent.startedAt) })}`)
   console.log(`  ${label(t('status.labelHost'))}${hostLine(status.host)}`)
   console.log(`  ${label(t('status.labelDownloaded'))}${status.downloaded.map((v) => v.version).join('、') || t('status.none')}  ${t('status.downloadedHint')}`)
   console.log(`  ${label(t('status.labelPlugins'))}${live.map((p) => p.id).join('、') || t('status.none')}${missing.length > 0 ? `  ${t('status.foldersGone', { count: missing.length })}` : ''}`)
@@ -380,7 +389,7 @@ function showLogs(layout, name, opts) {
     if (opts.json === true) return void emit({ sandbox: where, logs: files })
     console.log(`\n  ${t('logs.kept', { where, count: files.length })}`)
     for (const entry of files) {
-      console.log(`    ${t('logs.fileLine', { at: entry.at, bytes: String(entry.bytes).padStart(8), file: entry.file })}`)
+      console.log(`    ${t('logs.fileLine', { at: showInstant(entry.at), bytes: String(entry.bytes).padStart(8), file: entry.file })}`)
     }
     return void console.log()
   }
@@ -452,6 +461,18 @@ function logTarget(layout, name, opts) {
       never: t('logs.neverVersion'),
     }
   }
+  // A plugin download's log, named by the package the same way a release's is
+  // named by the version — so the window can watch an install it asked for
+  // without a job id, exactly as it watches a `pull`.
+  if (typeof opts.package === 'string') {
+    return {
+      where: t('logs.wherePackage', { name: opts.package }),
+      what: t('logs.whatPackage'),
+      file: packageLog(layout.root, opts.package),
+      dir: null,
+      never: t('logs.neverPackage'),
+    }
+  }
   if (opts.main === true) {
     // Only the launch logs. This directory also holds `actions.log`, which is
     // appended to by every command and so is always the newest file in it.
@@ -520,7 +541,7 @@ function showMemory(layout, opts) {
   const holding = controlStatus(layout)
   if (opts.json === true) return void emit({ session, active: holding })
   if (session === null) return void console.log(`\n  ${t('memory.none')}\n`)
-  console.log(`\n  ${t('memory.header', { session: session.session, at: session.startedAt })}`)
+  console.log(`\n  ${t('memory.header', { session: session.session, at: showInstant(session.startedAt) })}`)
   console.log(`  ${session.endedAt === null ? t('memory.stillOpen') : t('memory.endedAt', { at: session.endedAt, how: endedWords(session.endedBy) })}`)
   for (const entry of session.actions) {
     const how = entry.ok ? t('memory.ok') : t('memory.refused', { code: entry.code })
@@ -714,12 +735,29 @@ function snapshotDir(layout, target) {
   return target.main ? backupDir(layout, target.home) : null
 }
 
-function cabinetTarget(layout, opts) {
+function cabinetTarget(layout, opts, writes = false) {
   const main = opts.main === true
   if (main && typeof opts.sandbox === 'string') {
     throw new BoxError('BAD_FLAG', t('cabinet.bothFlags'))
   }
-  if (main) return { main: true, label: t('cabinet.daily'), home: userDshHome(), sandbox: null }
+  if (main) {
+    // ⭐⭐ The gate lives here rather than at each command, and that is the
+    // whole point: this function is the one place a cabinet gets chosen, so a
+    // command added next month inherits the rule without anybody remembering
+    // it. The previous shape asked each caller to decide, and `plugins install
+    // --main` and `plugins uninstall --main` were both missed — measured, not
+    // supposed: installing into the real `~/.dsh` answered `ok:true` and wrote
+    // the file with nobody asked.
+    //
+    // ⚠️ `writes` is the whole distinction. Looking is never gated: an agent
+    // must be able to read a cabinet and report what it found, and a refusal to
+    // *look* would push it straight back to `cat`, which is the one place this
+    // tool cannot show what happened.
+    if (writes && !approvedByWindow(layout, opts.approved === true)) {
+      throw new BoxError('NEEDS_APPROVAL', t('cabinet.dailyNeedsApproval'), { main: true })
+    }
+    return { main: true, label: t('cabinet.daily'), home: userDshHome(), sandbox: null }
+  }
   if (typeof opts.sandbox !== 'string' || opts.sandbox === '') {
     throw new BoxError('MISSING_ARGUMENT', t('cabinet.which'))
   }
@@ -737,6 +775,7 @@ function plugins(layout, rest, opts) {
   const [action, value] = rest
   if (action === 'install') return installPlugin(layout, value, opts)
   if (action === 'uninstall') return uninstallPlugin(layout, value, opts)
+  if (action === 'disable' || action === 'enable') return switchPlugin(layout, value, action === 'disable', opts)
   if (action === 'backups') return showBackups(layout, rest.slice(1), opts)
   if (action === 'restore') return restoreCabinet(layout, opts)
   if (action === 'add') {
@@ -757,24 +796,59 @@ function plugins(layout, rest, opts) {
   // answers, and conflating them is what made "is it installed?" unanswerable.
   if (opts.main === true || typeof opts.sandbox === 'string') {
     const target = cabinetTarget(layout, opts)
-    const mounted = cabinetPlugins(target.home)
+    const mounted = cabinetPlugins(layout, target.home)
+    // ⭐ Read from the protocol rather than from our own bookkeeping: whoever
+    // put a plugin here — us, `dsh plugin add`, or a hand edit — had to follow
+    // the same format, so one reader finds all of them. Nobody has to re-enter
+    // what the cabinet already knows.
+    const inventory = cabinetInventory(target.home)
+    const ours = new Set(mounted.ours.map((plugin) => plugin.id))
     if (opts.json === true) {
-      return void emit({ cabinet: target.label, home: target.home, ...mounted })
+      return void emit({ cabinet: target.label, home: target.home, ...mounted, inventory })
     }
     console.log(`\n  ${t('plugins.cabinetHeader', { cabinet: target.label })}`)
     if (!mounted.readable) console.log(`    ${t('plugins.unreadableWarn')}`)
-    if (mounted.ours.length === 0 && mounted.theirs.length === 0) console.log(`    ${t('plugins.cabinetEmpty')}`)
-    for (const plugin of mounted.ours) console.log(`    ${padWide(plugin.id, 24)} ${t('plugins.oursLine', { package: plugin.package })}`)
-    for (const name of mounted.theirs) console.log(`    ${padWide('', 24)} ${t('plugins.theirsLine', { name })}`)
-    if (mounted.platform.length > 0) console.log(`\n  ${t('plugins.platform', { names: mounted.platform.join('、') })}`)
+    if (inventory.rows.length === 0 && inventory.bundles.every((one) => one.platform)) {
+      console.log(`    ${t('plugins.cabinetEmpty')}`)
+    }
+    for (const one of inventory.rows) {
+      const note = one.kind === 'override'
+        ? t('plugins.overrideLine', { id: one.id })
+        : (ours.has(one.id ?? '')
+          ? t('plugins.oursLine', { package: one.name })
+          : t('plugins.theirsLine', { name: one.name }))
+      const marks = [
+        one.disabled === true ? t('plugins.offLine') : '',
+        one.source === 'homePatch' ? t('plugins.fromHome') : '',
+      ].filter((mark) => mark !== '').join(' ')
+      console.log(`    ${padWide(one.id ?? '', 24)} ${note}${marks === '' ? '' : ` ${marks}`}`)
+    }
+    for (const one of inventory.bundles.filter((bundle) => !bundle.platform)) {
+      console.log(`    ${padWide('', 24)} ${t('plugins.bundleLine', { name: one.name })}`)
+      // ⭐ Opened, not named. A bundle is a whole layer — one line saying
+      // `@linxin666/dsh-web-ui-all` is one word standing where seventeen
+      // plugins are, and the ids under it are what `disable` takes.
+      for (const row of one.rows) {
+        console.log(`    ${padWide(row.id, 24)} ${t('plugins.viaBundleLine', { name: row.package })}`
+          + `${row.disabled ? ` ${t('plugins.offLine')}` : ''}`)
+      }
+    }
+    if (inventory.platform > 0) console.log(`\n  ${t('plugins.platformFolded', { count: inventory.platform })}`)
     return void console.log(`\n  ${t('plugins.patchAt', { file: mounted.patchFile })}\n`)
   }
 
   const { live, missing } = partitionPlugins(config)
-  if (opts.json === true) return void emit({ plugins: live, missingPlugins: missing })
+  // The version is read off each folder's own package.json at the moment of
+  // asking, never stored: the registry row is a pointer, and what it points at
+  // is where the truth about the version lives. `null` prints as nothing — a
+  // folder without a readable version is not a fact worth a placeholder.
+  const rows = live.map((plugin) => ({ ...plugin, version: pluginVersion(plugin.path) }))
+  if (opts.json === true) return void emit({ plugins: rows, missingPlugins: missing })
   console.log(`\n  ${t('plugins.registryHeader')}`)
-  if (live.length === 0 && missing.length === 0) console.log(`    ${t('plugins.registryEmpty')}`)
-  for (const plugin of live) console.log(`    ${plugin.id.padEnd(24)} ${plugin.package}`)
+  if (rows.length === 0 && missing.length === 0) console.log(`    ${t('plugins.registryEmpty')}`)
+  for (const plugin of rows) {
+    console.log(`    ${plugin.id.padEnd(24)} ${plugin.package}${plugin.version === null ? '' : ` ${plugin.version}`}`)
+  }
   for (const plugin of missing) console.log(`    ${plugin.id.padEnd(24)} ${t('plugins.missingLine', { package: plugin.package })}`)
   console.log(`\n  ${t('plugins.installHint')}`)
   console.log()
@@ -851,14 +925,23 @@ function removeEverywhere(layout, id, opts) {
 
   const detached = []
   for (const place of places) {
-    const result = unmountPlugin({ home: place.home, id, backupDir: snapshotDir(layout, place) })
-    if (result.removed !== null) detached.push({ cabinet: place.label, backup: result.backup })
+    const result = unmountPlugin({ layout, home: place.home, id, backupDir: snapshotDir(layout, place) })
+    if (result.removed === null) continue
+    // The copy staged inside that cabinet goes with it. Leaving it would be
+    // exactly the litter this command exists to stop: files nothing loads, in
+    // somebody's home, with no command that can see them. A no-op wherever the
+    // cabinet held a junction rather than a copy.
+    unstageFromCabinet(place.home, DEFAULT_PROFILE, result.removed.package)
+    detached.push({ cabinet: place.label, backup: result.backup })
   }
   updateConfig(layout, (current) => removePlugin(current, id))
   // Deleted last, and only after every link to it is gone: a package removed
   // while something still names it leaves that workspace resolving to nothing,
   // which dsh answers by refusing to load the whole plugin tree.
   const deleted = ours && removePackage(layout, known.package)
+  // The farms hold hardlinks into the bytes just unlinked; without the store
+  // copy they are orphans no launch can refresh.
+  if (deleted) dropFromFarms(layout, known.package)
 
   recordResolved({
     id, package: known?.package ?? null, cabinets: detached.map((one) => one.cabinet), deleted,
@@ -888,7 +971,7 @@ function removeEverywhere(layout, id, opts) {
  * @returns {{label: string, home: string, main: boolean, sandbox: string | null}[]}
  */
 function pluginPlaces(layout, id, name) {
-  return everyCabinet(layout).filter((workspace) => cabinetPlugins(workspace.home).ours
+  return everyCabinet(layout).filter((workspace) => cabinetPlugins(layout, workspace.home).ours
     .some((entry) => entry.id === id || (name !== undefined && entry.package === name)))
 }
 
@@ -908,7 +991,7 @@ async function installPlugin(layout, source, opts) {
   if (source === undefined) {
     throw new BoxError('MISSING_ARGUMENT', t('plugins.installWhich'))
   }
-  const target = cabinetTarget(layout, opts)
+  const target = cabinetTarget(layout, opts, true)
   const config = readConfig(layout)
   const known = config.plugins.find((entry) => entry.id === source)
   // Three kinds of thing can be named, and they are told apart by what they
@@ -930,17 +1013,30 @@ async function installPlugin(layout, source, opts) {
  * @param {string} dir
  * @param {{main: boolean, label: string, home: string, sandbox: string | null}} target
  * @param {Record<string, unknown>} opts
- * @param {{id?: string, source?: string}} [about]
+ * @param {{id?: string, source?: string, store?: string, logFile?: string}} [about] - `store` is
+ * where our own copy of a downloaded package lives, when the cabinet got a
+ * staged copy instead. The registry records the store — it is one list across
+ * every cabinet, and `isOurDownload` (which decides whether `plugins rm` may
+ * delete the package) reads exactly that field — while `dir` is what dsh loads.
+ * `logFile` is where the download that preceded this was journalled, when there
+ * was one; it rides into the `--json` answer so a caller knows where to look.
  */
-function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
+function installFromFolder(layout, dir, target, opts, { id, source, store, logFile } = {}) {
   // Described afresh even when it is already registered: what was checked when
   // it was added was that folder as it was then, and "is this still a loadable
   // plugin" is only true at the moment it is asked.
   const plugin = describePlugin(dir, { id })
+  // ⭐⭐ One npm package can be seventeen plugins. Read before anything is
+  // checked or linked, because what follows has to be checked and linked for
+  // every one of the seventeen — `@linxin666/dsh-web-ui-all` installed as one
+  // row boots a healthy dsh with one plugin in it and warns about nothing.
+  // Refusals for an aggregate that cannot be inlined are thrown from in here,
+  // above every write, which is where they belong.
+  const family = aggregateOf(plugin.path, plugin.package)
   // ⭐ Every refusal has to happen here, above the link. `linkPlugins` replaces
   // whatever holds that name without looking at it, so any check placed after it
   // can only describe a loss already taken.
-  const claim = claimOn({ home: target.home, package: plugin.package, path: plugin.path })
+  const claim = claimOn({ layout, home: target.home, package: plugin.package, path: plugin.path })
   if (claim.verdict === 'unreadable') {
     throw new BoxError(
       'UNREADABLE_PATCH',
@@ -959,9 +1055,55 @@ function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
       { plugin: plugin.package, wanted: plugin.path, points: claim.points, slot: claim.slot },
     )
   }
+  const registered = { ...plugin, path: store ?? plugin.path }
   updateConfig(layout, (current) => (current.plugins.some((entry) => entry.id === plugin.id)
     ? current
-    : upsertPlugin(current, plugin)))
+    : upsertPlugin(current, registered)))
+  // ⛔⛔ Already ours in this cabinet. Without this branch the verdict fell
+  // through to the link and the mount below, and `mountPlugin` appends — so
+  // installing the same plugin twice wrote a **second identical row** into the
+  // patch, which is what the window showed as one plugin listed twice. The row
+  // is already there; the only thing that can still be missing is the link.
+  if (claim.verdict === 'ours') {
+    if (claim.linked !== true) {
+      // The row survived but the link did not, so there is real work — and it is
+      // only the link. ⭐ Said out loud rather than folded into "already there":
+      // the premise of "nothing done" is that nothing was done.
+      linkPlugins(target.home, DEFAULT_PROFILE, [plugin])
+      if (opts.json === true) {
+        return void emit({
+          action: 'plugins.install',
+          cabinet: target.label,
+          home: target.home,
+          plugin,
+          added: false,
+          alreadyThere: true,
+          relinked: true,
+          backup: null,
+          logFile: logFile ?? null,
+        })
+      }
+      console.log(`\n  ${t('plugins.relinked', { cabinet: target.label, package: plugin.package })}\n`)
+      return
+    }
+    if (opts.json === true) {
+      return void emit({
+        action: 'plugins.install',
+        cabinet: target.label,
+        home: target.home,
+        plugin,
+        added: false,
+        alreadyThere: true,
+        relinked: false,
+        backup: null,
+        logFile: logFile ?? null,
+      })
+    }
+    console.log(`\n  ${t('plugins.alreadyOurs', { cabinet: target.label, package: plugin.package })}`)
+    console.log(`  ${t('plugins.nothingDone')}\n`)
+    return
+  }
+
   // Already resolving to this very folder, and already named in the workspace's
   // patch: there is nothing to do, and this is the one branch entitled to say so
   // — nothing has been touched at the point it is said.
@@ -975,6 +1117,7 @@ function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
         added: false,
         alreadyThere: true,
         backup: null,
+        logFile: logFile ?? null,
       })
     }
     console.log(`\n  ${t('plugins.alreadyThere', { cabinet: target.label, package: plugin.package, points: claim.points })}`)
@@ -982,14 +1125,25 @@ function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
     return
   }
 
-  linkPlugins(target.home, DEFAULT_PROFILE, [plugin])
+  // ⛔ Every member gets its own link, and that half is not optional: dsh
+  // resolves a row's `name:` through `profiles/<profile>/node_modules`, so a row
+  // whose package is not linked there loads on the server and never appears in
+  // the browser — silently, and the negative result is cached by name and not
+  // retried.
+  const brings = family === null
+    ? []
+    : family.rows.map((row) => ({ id: row.id, package: row.package, kind: 'link', path: row.path }))
+  linkPlugins(target.home, DEFAULT_PROFILE, brings.length === 0 ? [plugin] : brings)
   const result = mountPlugin({
+    layout,
     home: target.home,
     plugin: { id: plugin.id, package: plugin.package, kind: 'link', path: plugin.path },
+    brings,
     backupDir: snapshotDir(layout, target),
   })
   recordResolved({
     id: plugin.id, package: plugin.package, source: source ?? plugin.path, main: target.main, sandbox: target.sandbox,
+    brought: brings.length,
   })
 
   if (opts.json === true) {
@@ -1000,6 +1154,12 @@ function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
       plugin,
       added: result.added,
       backup: result.backup,
+      // Named, not counted: an aggregate is the one install where what arrived
+      // is not what was asked for, so the answer has to list it.
+      brought: brings.map((one) => ({ id: one.id, package: one.package })),
+      // Where the download before this was journalled — null for a local
+      // folder, which downloads nothing and writes no log.
+      logFile: logFile ?? null,
     })
   }
   // Reachable only if something else claimed this name between the check above
@@ -1013,6 +1173,10 @@ function installFromFolder(layout, dir, target, opts, { id, source } = {}) {
     return
   }
   console.log(`\n  ${t('plugin.installed', { name: plugin.package, where: target.label })}`)
+  if (brings.length > 0) {
+    console.log(`  ${t('aggregate.expanded', { name: plugin.package, count: brings.length, file: family.file })}`)
+    for (const one of brings) console.log(`    ${padWide(one.id, 30)} ${one.package}`)
+  }
   console.log(`  ${t('plugin.installedWhere', { file: result.patchFile })}`)
   if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
   console.log(`  ${t('plugin.removeHint', { id: plugin.id, cabinet: target.main ? '--main' : `--sandbox ${target.label}` })}\n`)
@@ -1049,27 +1213,155 @@ async function installPackage(layout, name, target, opts) {
   if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name)) {
     throw new BoxError('BAD_PACKAGE_NAME', t('plugins.badPackageName', { name }), { name })
   }
-  const say = opts.json === true ? () => {} : (line) => console.log(line)
   // Our own little package tree, shared by every workspace: a plugin fetched
   // once is linked wherever it is wanted, and its dependencies resolve from
   // beside it because Node resolves through a link to where the folder really is.
   mkdirSync(layout.packages, { recursive: true })
+  // ⛔⛔ Only one npm may be writing this tree. Two of them break each other for
+  // real — measured, `EBUSY … rename 'node_modules/cloudflared'` — because the
+  // dependency they collide over need not be one either of them was asked for.
+  //
+  // Taken before the log is opened, and that order is the point: opening the log
+  // truncates it, so a refused second run must not reach that line, or it would
+  // wipe the progress of the run it just lost to. Ask, then act, with nothing in
+  // between — `claimPath` creates with `wx`, so the question and the taking are
+  // one operation.
+  const claim = installClaimFile(layout)
+  const busy = downloadInFlight(layout)
+  if (!claimPath(claim, { name, log: packageLog(layout.root, name) })) {
+    throw new BoxError('INSTALL_IN_FLIGHT', t('plugins.installInFlight', {
+      other: busy === null ? name : busy.name,
+    }), { other: busy?.name ?? null })
+  }
+  try {
+    return await downloadThenInstall(layout, name, target, opts)
+  } finally {
+    // Released however this ended, including a crash on the way out: a claim
+    // outliving its process is only survivable because the next reader checks
+    // the pid, and leaning on that would turn a safety net into the mechanism.
+    releasePath(claim)
+  }
+}
+
+/**
+ * The download itself, with the tree already claimed for this process.
+ *
+ * Split out only so the claim above can be released on every exit — there are
+ * four, counting the two refusals npm's answer can produce.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} name
+ * @param {{main: boolean, label: string, home: string, sandbox: string | null}} target
+ * @param {Record<string, unknown>} opts
+ */
+async function downloadThenInstall(layout, name, target, opts) {
+  // Every progress line goes to a file as well as to the console, exactly as a
+  // release download's does: the file is what lets another entrance — the
+  // window, a second terminal — watch a download it did not perform. In
+  // `--json` mode the console stays silent and the file is the only witness.
+  const logFile = newPackageLog(layout.root, name)
+  const say = (line) => {
+    appendLog(logFile, line.trim())
+    if (opts.json !== true) console.log(line)
+  }
   if (!existsSync(join(layout.packages, 'package.json'))) {
     writeFileSync(join(layout.packages, 'package.json'), `${JSON.stringify({
       name: 'dsh-box-plugins', private: true, description: t('packages.treeDescription'),
     }, null, 2)}\n`)
   }
-  const registry = await resolveSource(readConfig(layout).source, say)
-  say(`\n  ${t('plugins.downloading', { registry, name })}`)
-  await runNpm(layout.packages, ['install', name, '--no-audit', '--no-fund', '--registry', registry], say)
+  const chosen = readConfig(layout).source
+  const registry = await resolveSource(chosen, say)
+  // npm says almost nothing while it resolves the graph — minutes, for a big
+  // aggregate — so the log gets a heartbeat, the same one deleting a release
+  // has: a watcher tells "still working" from "hung" by whether the file moves.
+  const started = Date.now()
+  const beat = setInterval(() => {
+    appendLog(logFile, t('plugins.stillDownloading', { seconds: Math.round((Date.now() - started) / 1000) }))
+  }, 3000)
+  /** @param {string} from */
+  const fetchFrom = async (from) => {
+    say(`\n  ${t('plugins.downloading', { registry: from, name })}`)
+    await runNpm(layout.packages, ['install', name, '--no-audit', '--no-fund', '--registry', from], say,
+      (npm) => describeClaim(installClaimFile(layout), { npm }))
+  }
+  try {
+    try {
+      await fetchFrom(registry)
+    } catch (error) {
+      // ⛔⛔ **One missing tarball must not throw away a three-minute install.**
+      // Measured: `@linxin666/dsh-web-ui-all` resolved 314 packages against the
+      // mirror and then died on a single 404 from `cdn.npmmirror.com` — for a
+      // tarball that answered 200 twenty minutes later. A mirror that has the
+      // metadata but not yet the file is a *transient* state, and npm treats 404
+      // as final because from where it stands it is.
+      //
+      // ⭐ The retry is only legitimate because the mirror was never asked for:
+      // `auto` picked it, on speed alone, and speed was never the same question
+      // as completeness. Somebody who wrote `config source mirror` gets told
+      // instead — overriding an explicit choice would make the same command mean
+      // different things on different days.
+      if (chosen !== 'auto' || registry === SOURCES.official) throw error
+      say(`\n  ${t('plugins.retryOfficial', { mirror: registry })}`)
+      appendLog(logFile, error.message)
+      await fetchFrom(SOURCES.official)
+    }
+  } catch (error) {
+    // The one line the log must not be missing: whoever is tailing it watches
+    // the download stop, and deserves to read why in the same place.
+    appendLog(logFile, error.message)
+    if (chosen === 'mirror') say(`\n  ${t('plugins.mirrorHint')}`)
+    throw error
+  } finally {
+    clearInterval(beat)
+  }
 
   const dir = join(layout.packages, 'node_modules', ...name.split('/'))
   if (!existsSync(join(dir, 'package.json'))) {
+    appendLog(logFile, t('npm.saidOkButEmpty', { name, dir }))
     throw new BoxError('NPM_FAILED', t('npm.saidOkButEmpty', { name, dir }), { name, dir })
   }
   say(`  ${t('plugins.downloaded', { dir })}`)
-  // From here it is a folder like any other, checks and all.
-  return installFromFolder(layout, dir, target, opts, { source: name })
+  if (target.main) {
+    // ⛔⛔ The daily cabinet gets a **copy inside itself**, because where the
+    // files physically sit decides which shelf their imports meet: a package
+    // left in our tree resolves its `@deepseek-ai/*` imports from its real
+    // directory, the walk from there never crosses `$DSH_HOME/profiles/`, and
+    // dsh refuses the whole plugin tree. The copy is also what makes the daily
+    // cabinet self-sufficient — `dsh` typed by hand loads it, and deleting this
+    // tool's data directory costs it nothing. Upstream's own shape: junctions
+    // into `<profile>/_local/`.
+    const staged = stageIntoCabinet({ layout, home: target.home, profile: DEFAULT_PROFILE, package: name })
+    if (staged.copied.length > 1) say(`  ${t('plugins.staged', { count: staged.copied.length })}`)
+    return finishInstall(layout, staged.dir, target, opts, { source: name, store: dir, logFile }, name)
+  }
+  // A sandbox keeps the junction aimed at our tree for now; every launch
+  // re-aims it at the farm of the engine about to boot (`src/engines.js`),
+  // which is what lets one download serve every version without a copy.
+  return finishInstall(layout, dir, target, opts, { source: name, logFile }, name)
+}
+
+/**
+ * The linking half of a package install, with its ending written to the log.
+ *
+ * A wrapper and nothing more: the download's log has to say how the story
+ * ended, whichever way it ended, because a tail that just stops reads as a
+ * hang — and the refusals `installFromFolder` throws (name taken, unreadable
+ * patch) happen after the minutes-long part a watcher has been staring at.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} dir
+ * @param {{main: boolean, label: string, home: string, sandbox: string | null}} target
+ * @param {Record<string, unknown>} opts
+ * @param {{source: string, store?: string, logFile: string}} about
+ * @param {string} name
+ */
+function finishInstall(layout, dir, target, opts, about, name) {
+  try {
+    const done = installFromFolder(layout, dir, target, opts, about)
+    appendLog(about.logFile, t('plugins.installReady', { name, cabinet: target.label }))
+    return done
+  } catch (error) {
+    appendLog(about.logFile, error.message)
+    throw error
+  }
 }
 
 /**
@@ -1079,12 +1371,20 @@ async function installPackage(layout, name, target, opts) {
  * @param {(line: string) => void} say
  * @returns {Promise<void>}
  */
-function runNpm(dir, args, say) {
+function runNpm(dir, args, say, born = () => {}) {
   const [command, ...rest] = npmInvocation(args)
   return new Promise((resolve, reject) => {
     // Arguments go across as a vector, never as one string for a shell to
     // re-read — the package name came from a caller.
     const child = spawn(command, rest, { cwd: dir, windowsHide: true })
+    // ⛔⛔ Who is *actually* writing the tree is this process, not us. Killing a
+    // process does not kill its children on Windows, so this one outlives its
+    // parent whenever the parent is killed rather than interrupted — measured
+    // twice in one day, once on this tool's own acceptance script. A claim that
+    // only knew the parent's pid would go stale while npm was still writing, and
+    // the next install would be waved through into exactly the collision the
+    // claim exists to prevent.
+    if (typeof child.pid === 'number') born(child.pid)
     const tail = []
     for (const stream of [child.stdout, child.stderr]) {
       stream?.on('data', (chunk) => {
@@ -1110,6 +1410,71 @@ function runNpm(dir, args, say) {
 }
 
 /**
+ * Switch one row off, or back on.
+ *
+ * ⭐⭐ The one action that reaches something this tool did not install, and the
+ * reason it exists: the format has no `remove`, so `disabled: true` in a later
+ * layer is what "take that out" is spelled as — and the profile patch sits after
+ * every bundle layer, which is what lets it reach a row a bundle brought in.
+ * Upstream switches off its own telemetry exactly this way.
+ *
+ * Without it, an agent that finds a plugin conflict in the daily cabinet has
+ * nothing to do about it but open a shell, which is the one place this tool
+ * cannot show what happened.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} id
+ * @param {boolean} off
+ * @param {Record<string, unknown>} opts
+ */
+function switchPlugin(layout, id, off, opts) {
+  if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t(off ? 'plugins.disableWhich' : 'plugins.enableWhich'))
+  const target = cabinetTarget(layout, opts, true)
+  // ⛔ Refused for an id nothing in this cabinet has. Writing an override
+  // against a row that is not there is legal in the format and does nothing at
+  // all — upstream warns and skips — so it would answer `ok:true` for a typo.
+  const inventory = cabinetInventory(target.home)
+  const known = [
+    ...inventory.rows.map((row) => row.id),
+    ...inventory.bundles.flatMap((bundle) => bundle.rows.map((row) => row.id)),
+  ]
+  if (!known.includes(id)) {
+    throw new BoxError(
+      'UNKNOWN_ROW',
+      t('plugins.noSuchRow', { id, cabinet: target.label, flags: target.main ? '--main' : `--sandbox ${target.label}` }),
+      { row: id, cabinet: target.sandbox, main: target.main },
+    )
+  }
+  const result = setDisabled({
+    layout, home: target.home, id, off, backupDir: snapshotDir(layout, target),
+  })
+  if (!result.changed && result.theirs) {
+    throw new BoxError(
+      'NOT_OURS',
+      t('plugins.enableNotOurs', { id, cabinet: target.label }),
+      { row: id, cabinet: target.sandbox, main: target.main },
+    )
+  }
+  recordResolved({ id, off, main: target.main, sandbox: target.sandbox })
+  if (opts.json === true) {
+    return void emit({
+      action: off ? 'plugins.disable' : 'plugins.enable',
+      cabinet: target.label,
+      home: target.home,
+      row: id,
+      changed: result.changed,
+      already: result.already,
+      backup: result.backup,
+    })
+  }
+  console.log(`\n  ${result.already
+    ? t(off ? 'plugins.alreadyOff' : 'plugins.alreadyOn', { id, cabinet: target.label })
+    : t(off ? 'plugins.switchedOff' : 'plugins.switchedOn', { id, cabinet: target.label })}`)
+  if (result.changed && off) console.log(`  ${t('plugins.switchedOffWhere', { file: result.patchFile })}`)
+  if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
+  console.log()
+}
+
+/**
  * Take one back out of a workspace.
  * @param {import('../src/paths.js').BoxLayout} layout
  * @param {string} id
@@ -1117,9 +1482,16 @@ function runNpm(dir, args, say) {
  */
 function uninstallPlugin(layout, id, opts) {
   if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t('plugins.uninstallWhich'))
-  const target = cabinetTarget(layout, opts)
+  const target = cabinetTarget(layout, opts, true)
   const backups = snapshotDir(layout, target)
-  const result = unmountPlugin({ home: target.home, id, backupDir: backups })
+  const result = unmountPlugin({ layout, home: target.home, id, backupDir: backups })
+  // ⭐ A bundle is the third place a cabinet can name a plugin, and taking one
+  // out is a different edit to a different file — so it is tried here rather
+  // than made a separate command. "Take this out of that cabinet" is one thing
+  // to a person, and which of the three files it lives in is our problem.
+  if (result.removed === null && bundleNames(profilePackageFile(target.home)).includes(id)) {
+    return dropBundle(layout, target, id, backups, opts)
+  }
   if (result.removed === null) {
     // Two different nothings, and telling them apart is the whole point of
     // keeping track of who put what there.
@@ -1133,17 +1505,69 @@ function uninstallPlugin(layout, id, opts) {
       { plugin: id, cabinet: target.label },
     )
   }
-  recordResolved({ id: result.removed.id, main: target.main, sandbox: target.sandbox })
+  // The staged copy goes with the row that owns it. Keyed by the package that
+  // was asked for, so taking one member out of an aggregate finds nothing and
+  // leaves the family's subtree alone — only removing the aggregate itself
+  // takes the whole thing. A no-op for sandboxes, whose downloads are junctions.
+  const unstaged = unstageFromCabinet(target.home, DEFAULT_PROFILE, result.removed.package)
+  recordResolved({
+    id: result.removed.id, main: target.main, sandbox: target.sandbox, alsoRemoved: result.alsoRemoved.length, unstaged,
+  })
   if (opts.json === true) {
     return void emit({
       action: 'plugins.uninstall',
       cabinet: target.label,
       home: target.home,
       plugin: result.removed,
+      // ⭐ Naming an aggregate takes its whole family, so what left has to be
+      // said rather than counted — an answer of `ok:true` after sixteen rows
+      // silently went is the shape of every bug this tool has had.
+      alsoRemoved: result.alsoRemoved.map((one) => ({ id: one.id, package: one.package })),
       backup: result.backup,
     })
   }
   console.log(`\n  ${t('plugin.uninstalled', { name: result.removed.package, where: target.label })}`)
+  if (result.alsoRemoved.length > 0) {
+    console.log(`  ${t('aggregate.alsoRemoved', { count: result.alsoRemoved.length })}`)
+    for (const one of result.alsoRemoved) console.log(`    ${padWide(one.id, 30)} ${one.package}`)
+  }
+  if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
+  console.log()
+}
+
+/**
+ * Take a bundle out of the profile's own package list, for real.
+ *
+ * ⛔⛔ Two places, because one is not durable: dsh's `reconcilePlugins` walks
+ * `dependencies` after every `dsh plugin` command and pushes back anything still
+ * declared there that still exports a patch. Removing only from
+ * `dsh.profile.bundles` therefore removes nothing that lasts, and the person is
+ * left believing otherwise.
+ *
+ * ⛔ The files stay on disk. Deleting them means running the package manager
+ * inside somebody's profile, which is the dependency this tool exists without —
+ * so what is left is said plainly instead of being cleaned up by surprise.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {{main: boolean, label: string, home: string, sandbox: string | null}} target
+ * @param {string} name
+ * @param {string | null} backups
+ * @param {Record<string, unknown>} opts
+ */
+function dropBundle(layout, target, name, backups, opts) {
+  const result = removeBundle({ layout, home: target.home, name, backupDir: backups })
+  recordResolved({ bundle: name, main: target.main, sandbox: target.sandbox })
+  if (opts.json === true) {
+    return void emit({
+      action: 'plugins.uninstall',
+      cabinet: target.label,
+      home: target.home,
+      bundle: name,
+      ...result,
+    })
+  }
+  console.log(`\n  ${t('bundles.removed', { name, cabinet: target.label })}`)
+  console.log(`  ${t(result.fromDependencies ? 'bundles.bothPlaces' : 'bundles.bundlesOnly', { file: result.file })}`)
+  if (result.filesLeft !== null) console.log(`  ${t('bundles.filesLeft', { dir: result.filesLeft })}`)
   if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
   console.log()
 }
@@ -1226,7 +1650,7 @@ function pruneOldBackups(layout, target, dir, opts) {
  * @param {Record<string, unknown>} opts
  */
 function restoreCabinet(layout, opts) {
-  const target = cabinetTarget(layout, opts)
+  const target = cabinetTarget(layout, opts, true)
   const result = restoreBackup({
     home: target.home,
     backupDir: backupDir(layout, target.home),
@@ -1289,7 +1713,7 @@ function showHistory(layout, opts) {
     : t('history.header', { count: entries.length })}`)
   if (entries.length === 0) console.log(`    ${t('history.empty')}`)
   for (const entry of shown) {
-    const at = String(entry.at ?? '').replace('T', ' ').slice(0, 19)
+    const at = showInstant(entry.at)
     const line = commandLine(entry.command, entry.args ?? {}) ?? entry.command
     console.log(`    ${at}  ${entry.ok === false ? '✗' : ' '} ${line}`)
     if (entry.ok === false && entry.code !== undefined) console.log(`    ${' '.repeat(19)}    ${entry.code}`)
@@ -1317,8 +1741,10 @@ function showHistory(layout, opts) {
  * @param {Record<string, unknown>} opts
  */
 function workspaces(layout, rest, opts) {
-  const target = cabinetTarget(layout, opts)
   const [action, where] = rest
+  // `use` rewrites dsh's own workspace table inside the cabinet; the bare form
+  // only reads it.
+  const target = cabinetTarget(layout, opts, action === 'use')
 
   if (action === 'use') {
     if (where === undefined) {
@@ -1387,6 +1813,7 @@ function packages(layout, rest, opts) {
       )
     }
     removePackage(layout, name)
+    dropFromFarms(layout, name)
     recordResolved({ action: 'packages.rm', name })
     if (opts.json === true) return void emit({ action: 'packages.rm', removed: [name] })
     return void console.log(`\n  ${t('packages.removed', { name })}\n`)
@@ -1394,7 +1821,10 @@ function packages(layout, rest, opts) {
 
   if (action === 'prune') {
     const going = all.filter((one) => one.usedBy.length === 0)
-    for (const one of going) removePackage(layout, one.name)
+    for (const one of going) {
+      removePackage(layout, one.name)
+      dropFromFarms(layout, one.name)
+    }
     recordResolved({ action: 'packages.prune', removed: going.length })
     if (opts.json === true) {
       return void emit({ action: 'packages.prune', removed: going.map((one) => one.name) })
@@ -1434,7 +1864,7 @@ function packages(layout, rest, opts) {
 function packageUsers(layout) {
   const users = new Map()
   for (const workspace of everyCabinet(layout)) {
-    for (const entry of cabinetPlugins(workspace.home).ours) {
+    for (const entry of cabinetPlugins(layout, workspace.home).ours) {
       if (!isOurDownload(layout, entry.path ?? '')) continue
       users.set(entry.package, [...(users.get(entry.package) ?? []), workspace.label])
     }
@@ -1695,9 +2125,17 @@ async function start(layout, opts) {
   // that moved, a config we cannot read), and refusing before a dsh exists is
   // the difference between "nothing happened" and "something is half done".
   const home = main ? userDshHome() : sandboxPaths(layout, boxName).home
+  // ⛔ Starting the daily cabinet is not a change to it — it is what typing
+  // `dsh` does, and gating that would be absurd. **Carrying a `--plugin` or an
+  // `--unplug` is a change**, and it lands in the file the person's own `dsh`
+  // reads afterwards, so it goes through the same door as every other write.
+  if (main && (chosen.length > 0 || asList(opts.unplug).length > 0)
+    && !approvedByWindow(layout, opts.approved === true)) {
+    throw new BoxError('NEEDS_APPROVAL', t('cabinet.dailyNeedsApproval'), { main: true })
+  }
   const backups = snapshotDir(layout, { main, home })
   for (const id of asList(opts.unplug)) {
-    const dropped = unmountPlugin({ home, id, backupDir: backups })
+    const dropped = unmountPlugin({ layout, home, id, backupDir: backups })
     if (dropped.removed !== null) say(`  ${t('start.unplugged', { package: dropped.removed.package })}`)
     else if (dropped.theirs) say(`  ${t('start.unplugTheirs', { id })}`)
     else say(`  ${t('start.unplugMissing', { id })}`)
@@ -1706,6 +2144,7 @@ async function start(layout, opts) {
     linkPlugins(home, DEFAULT_PROFILE, chosen)
     for (const plugin of chosen) {
       const added = mountPlugin({
+        layout,
         home,
         plugin: { id: plugin.id, package: plugin.package, kind: 'link', path: plugin.path },
         backupDir: backups,
@@ -1713,7 +2152,7 @@ async function start(layout, opts) {
       say(`  ${t(added.added ? 'start.pluginAdded' : 'start.pluginAlready', { package: plugin.package })}`)
     }
   }
-  const mounted = cabinetPlugins(home)
+  const mounted = cabinetPlugins(layout, home)
   if (mounted.ours.length === 0 && mounted.theirs.length === 0) say(`  ${t('sandbox.plain')}`)
   else say(`  ${t('sandbox.holds', { names: [...mounted.ours.map((p) => p.package), ...mounted.theirs].join('、') })}`)
 

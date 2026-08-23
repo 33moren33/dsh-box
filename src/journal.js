@@ -22,6 +22,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { instantNow } from './clock.js'
 
 /** Directory holding the agent's own state, inside the data directory. */
 function agentDir(layout) {
@@ -133,7 +134,7 @@ export function journalShape(layout) {
 export function attach(layout) {
   mkdirSync(agentDir(layout), { recursive: true })
   const record = {
-    startedAt: new Date().toISOString(),
+    startedAt: instantNow(),
     session: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   }
   writeFileSync(activeFile(layout), `${JSON.stringify(record, null, 2)}\n`)
@@ -153,7 +154,7 @@ export function detach(layout, reason = 'done') {
   if (held === null) return null
   const session = readSession(layout)
   if (session !== null && session.session === held.session) {
-    writeSession(layout, { ...session, endedAt: new Date().toISOString(), endedBy: reason })
+    writeSession(layout, { ...session, endedAt: instantNow(), endedBy: reason })
   }
   return held
 }
@@ -189,7 +190,7 @@ export function activeControl(layout) {
 export function noteCommand(layout, name, flags = {}) {
   const held = activeControl(layout)
   if (held === null) return
-  const lastCommand = { name, flags, at: new Date().toISOString(), finishedAt: null, ok: null }
+  const lastCommand = { name, flags, at: instantNow(), finishedAt: null, ok: null }
   writeFileSync(activeFile(layout), `${JSON.stringify({ ...held, lastCommand }, null, 2)}\n`)
 }
 
@@ -203,7 +204,7 @@ export function noteCommand(layout, name, flags = {}) {
 export function finishCommand(layout, ok, code) {
   const held = activeControl(layout)
   if (held === null || held.lastCommand === undefined || held.lastCommand === null) return
-  const lastCommand = { ...held.lastCommand, finishedAt: new Date().toISOString(), ok, code: code ?? null }
+  const lastCommand = { ...held.lastCommand, finishedAt: instantNow(), ok, code: code ?? null }
   writeFileSync(activeFile(layout), `${JSON.stringify({ ...held, lastCommand }, null, 2)}\n`)
 }
 
@@ -264,7 +265,7 @@ export function record(layout, entry) {
     ? previous
     : { session: held.session, startedAt: held.startedAt, endedAt: null, endedBy: null, actions: [] }
   const seq = session.actions.length + 1
-  session.actions.push({ seq, at: new Date().toISOString(), ...entry })
+  session.actions.push({ seq, at: instantNow(), ...entry })
   writeSession(layout, session)
   return seq
 }
@@ -303,7 +304,7 @@ function appendJournal(layout, entry) {
     if (existsSync(file) && statSync(file).size > JOURNAL_MAX_BYTES) {
       renameSync(file, `${file}.1`)
     }
-    appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`)
+    appendFileSync(file, `${JSON.stringify({ at: instantNow(), ...entry })}\n`)
   } catch {
     // Losing a journal line must never be the reason a command fails.
   }

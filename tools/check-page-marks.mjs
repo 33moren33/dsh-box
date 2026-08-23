@@ -83,8 +83,22 @@ const DECISIONS = {
   'drop.@': { mark: 'machine:' },
   'plugins.add.@': { mark: 'go:addPlugin' },
   'plugins.rm.@': { mark: 'plugin:' },
-  'plugins.install.@': { mark: 'plugin:' },
+  // The npm box and its button (2026-08-23). The window's half of this command
+  // is deliberately narrow: it downloads a package by name into the sandbox
+  // selected above, and nothing else. Frames land on the button for every
+  // install, `adopt`-style — the button is where the command lives on the page,
+  // even for an install only the command line could have made.
+  'plugins.install.@': { mark: 'go:npmInstall', cliOnly: '按钮只把 npm 包名装进当前选中的沙箱;装本地目录、已登记的 id,或装进日常档案柜(--main 带批准),只有命令行做得到' },
   'plugins.uninstall.@': { mark: 'plugin:' },
+  // ⚠️ Deliberately command-line only, for now. The window's plugin list is a
+  // list of the things *we* installed, one tick each; switching off a row we did
+  // not install is a different idea and needs a different control. And the one
+  // thing this repository knows for certain about its own window is that page
+  // interaction has no automated acceptance at all — so a new control there
+  // would ship unverified, on the eve of a release. Written down rather than
+  // left implicit: the window may be a subset of the command line, on purpose.
+  'plugins.disable.@': { offPage: '窗口的插件表列的是「我们装的」,关掉别人写的行是另一件事,还没有控件' },
+  'plugins.enable.@': { offPage: '同上' },
   'plugins.backups.rm.@': { offPage: '备份那张表窗口上没有' },
   'plugins.backups.prune.@': { offPage: '同上' },
   'plugins.restore.@': { offPage: '窗口上没有还原这个动作,命令行独有' },
@@ -128,7 +142,8 @@ const DECISIONS = {
   'plugins.add.#1': { mark: 'go:pluginDir' },
   'plugins.add.id': { mark: 'go:addPlugin' },
   'plugins.rm.#1': { mark: 'plugin:' },
-  'plugins.install.#1': { mark: 'plugin:' },
+  // The name being installed: the npm input box is where a person types it.
+  'plugins.install.#1': { mark: 'go:npmName' },
   'plugins.uninstall.#1': { mark: 'plugin:' },
   'plugins.backups.rm.#1': { offPage: '备份那张表窗口上没有' },
   'packages.rm.#1': { offPage: '下载的包那张表窗口上没有' },
@@ -146,6 +161,12 @@ const DECISIONS = {
   'plugins.install.id': { mark: 'plugin:' },
   'plugins.uninstall.main': { mark: 'cabinet:' },
   'plugins.uninstall.sandbox': { mark: 'cabinet:' },
+  'plugins.disable.#1': { offPage: '同上,整条命令窗口上都没有' },
+  'plugins.disable.main': { offPage: '同上' },
+  'plugins.disable.sandbox': { offPage: '同上' },
+  'plugins.enable.#1': { offPage: '同上' },
+  'plugins.enable.main': { offPage: '同上' },
+  'plugins.enable.sandbox': { offPage: '同上' },
   'plugins.backups.rm.main': { offPage: '备份是命令行独有的一摊,窗口上没有这张表' },
   'plugins.backups.rm.sandbox': { offPage: '同上' },
   'plugins.backups.prune.main': { offPage: '同上' },

@@ -18,7 +18,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { linkPlugins } from '../src/launch.js'
 import { mountPlugin, profilePatchFile } from '../src/mounts.js'
-import { removeTree } from '../src/paths.js'
+import { boxLayout, removeTree } from '../src/paths.js'
 
 // Resolved, because a link is created with the path it is handed and a
 // relative one resolves against the link's own folder rather than against here.
@@ -60,8 +60,9 @@ check('它是个链接不是拷贝',
   existsSync(scoped) && lstatSync(scoped).isSymbolicLink())
 check('不带 scope 的照旧', existsSync(join(modules, 'dsh-memory-pyramid')))
 
+const layout = boxLayout(join(root, 'data'))
 for (const plugin of plugins) {
-  mountPlugin({ home, plugin: { ...plugin, kind: 'link' }, backupDir: join(root, 'backups') })
+  mountPlugin({ layout, home, plugin: { ...plugin, kind: 'link' }, backupDir: join(root, 'backups') })
 }
 const patch = readFileSync(profilePatchFile(home), 'utf8')
 // dsh resolves the row by this exact string, so a mangled name here is a

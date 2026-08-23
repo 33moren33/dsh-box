@@ -26,6 +26,7 @@ import {
   boxLayout, copyTree, removeTree, sandboxNameProblem, sandboxPaths, safeName, uiSeatFile,
   userDshHome,
 } from './paths.js'
+import { dateNow, instantNow } from './clock.js'
 
 /**
  * The only file copied out of the user's real dsh home.
@@ -87,7 +88,7 @@ export function inspectSandbox(layout, name) {
     sessionGroups: countSessionGroups(paths.home),
     sessions: countSessions(paths.home),
     running: runningRecord(layout, name),
-    plugins: cabinetPlugins(paths.home),
+    plugins: cabinetPlugins(layout, paths.home),
   }
 }
 
@@ -147,13 +148,32 @@ export function runningRecord(layout, name) {
 }
 
 /**
- * A record whose process is still there, or null.
+ * The fields of a record that may name a process worth waiting for.
+ *
+ * ⛔⛔ More than one, because the process that *holds* a claim is not always the
+ * process doing the work. `plugins install` takes the claim and then spawns npm
+ * to write the tree; killing the holder leaves that npm running, since on
+ * Windows a process's children outlive it — measured twice in one day, once on
+ * this repository's own acceptance script, where the surviving npm made a
+ * cleanup fail with the same `EBUSY` the claim exists to prevent. A record is
+ * therefore stale only when **every** process it names is gone.
+ *
+ * ⚠️ Records that carry only `pid` are unaffected: a missing field is not a
+ * living process.
+ */
+const PID_FIELDS = ['pid', 'npm']
+
+/**
+ * A record with at least one of its processes still there, or null.
  * @param {Record<string, unknown>} record
  * @returns {Record<string, unknown> | null}
  */
 function aliveRecord(record) {
-  const { pid } = record
-  return Number.isInteger(pid) && Number(pid) > 0 && pidAlive(Number(pid)) ? record : null
+  const anyAlive = PID_FIELDS.some((field) => {
+    const pid = record[field]
+    return Number.isInteger(pid) && Number(pid) > 0 && pidAlive(Number(pid))
+  })
+  return anyAlive ? record : null
 }
 
 /**
@@ -208,7 +228,7 @@ export function releaseStart(layout, name) {
  * @returns {boolean} whether this process now holds it.
  */
 export function claimPath(file, extra = {}) {
-  const mine = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ...extra }, null, 2)}\n`
+  const mine = `${JSON.stringify({ pid: process.pid, startedAt: instantNow(), ...extra }, null, 2)}\n`
   // Twice: once to try, once more after clearing a dead claim. A third would
   // mean somebody is racing us to create and abandon claims, and losing to that
   // is the correct outcome.
@@ -305,7 +325,7 @@ function startingFile(layout, name) {
  * engine: {kind: string, version: string | null, dir: string}}} record
  */
 export function noteRunning(layout, name, record) {
-  const written = `${JSON.stringify({ ...record, startedAt: new Date().toISOString() }, null, 2)}\n`
+  const written = `${JSON.stringify({ ...record, startedAt: instantNow() }, null, 2)}\n`
   writeFileSync(runningFile(layout, name), written)
   // The same fact, kept beside what it is about. ⚠️ Only ever for sandboxes:
   // the daily workspace is the user's own home and this tool writes nothing
@@ -400,7 +420,7 @@ export function mainRunningRecord(layout) {
 export function noteMainRunning(layout, record) {
   writeFileSync(
     mainRunningFile(layout),
-    `${JSON.stringify({ ...record, startedAt: new Date().toISOString() }, null, 2)}\n`,
+    `${JSON.stringify({ ...record, startedAt: instantNow() }, null, 2)}\n`,
   )
 }
 
@@ -486,7 +506,7 @@ export function runningSandboxes(layout) {
  * @returns {{info: SandboxInfo, created: boolean, signInImported: boolean}}
  */
 export function createNewSandbox(layout, { prefix = 'box', importSignIn = true, env = process.env } = {}) {
-  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const stamp = dateNow()
   mkdirSync(layout.sandboxes, { recursive: true })
   for (let n = 1; n <= 999; n += 1) {
     const paths = sandboxPaths(layout, safeName(`${prefix}-${stamp}-${n}`))
@@ -514,7 +534,7 @@ export function createNewSandbox(layout, { prefix = 'box', importSignIn = true, 
  */
 export function suggestSandboxName(layout, prefix = 'box') {
   const taken = new Set(listSandboxes(layout).map((s) => s.name))
-  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+  const stamp = dateNow()
   for (let n = 1; ; n += 1) {
     const candidate = safeName(`${prefix}-${stamp}-${n}`)
     if (!taken.has(candidate)) return candidate
@@ -627,7 +647,7 @@ export function noteBoot(layout, name, engine) {
     // Kept for the listing, which shows a number rather than an identity.
     lastVersion: engine.version ?? null,
     lastEngine: engineRecord(engine),
-    lastUsed: new Date().toISOString(),
+    lastUsed: instantNow(),
   }, null, 2)}\n`)
 }
 

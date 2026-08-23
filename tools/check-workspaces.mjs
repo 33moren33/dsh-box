@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
+import { boxLayout, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -34,6 +34,13 @@ removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
+// ⭐ This whole file writes dsh's workspace table inside the daily cabinet, and
+// every write to that cabinet now needs a person in the window. So the seat is
+// held for the run and the commands carry `--approved` — which is exactly what
+// the window does when somebody clicks. The rule itself is asserted in
+// `check-daily-gate`; here it is only the standing condition.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10140' }, null, 2)}\n`)
 
 let failures = 0
 const check = (what, passed, detail = '') => {
@@ -85,7 +92,7 @@ check('还没有表时报「一个都没有」而不是出错',
 // 2. 指一个,文件按 dsh 的 schema 长出来。⛔ 字段是照 dsh-workspace 的 zod
 //    schema 抄的,不是照别人的数据抄的 —— 头一版漏了 createdAt/updatedAt,真
 //    dsh 当场 exit 1 报 invalid-record。
-const first = await cli('workspaces', 'use', projectA, '--main')
+const first = await cli('workspaces', 'use', projectA, '--main', '--approved')
 check('指得上', first.ok === true && first.added === true, first.code ?? 'ok')
 const raw = read()
 check('外层是 dsh 认的那个 unit',
@@ -98,14 +105,14 @@ check('顺序表里也有它,而且 initialized 是真',
   raw.global.initialized === true && raw.global.workspaceIds.length === 1)
 
 // 3. 再指一个,新的排在最前 —— dsh 打开的就是第一条。
-await cli('workspaces', 'use', projectB, '--main')
+await cli('workspaces', 'use', projectB, '--main', '--approved')
 const two = await cli('workspaces', '--main')
 check('⭐ 后指的那个排在最前,也就是下次打开进的那个',
   two.projects[0].path === projectB && two.projects[0].current === true, two.projects[0]?.path)
 check('先指的那个还在,没被顶掉', two.projects.length === 2)
 
 // 4. 切回去:同一个目录不重复登记,只是提到最前。
-const back = await cli('workspaces', 'use', projectA, '--main')
+const back = await cli('workspaces', 'use', projectA, '--main', '--approved')
 check('⭐ 切回已登记的那个,是提到最前而不是加一条',
   back.added === false && back.moved === true, `added=${back.added} moved=${back.moved}`)
 check('总数没变,一条都没多', (await cli('workspaces', '--main')).projects.length === 2)
@@ -116,7 +123,7 @@ const idA = Object.keys(withSessions.tables.workspaces)
   .find((id) => withSessions.tables.workspaces[id].path === projectA)
 withSessions.tables.workspaces[idA].sessionIds = ['session-别动我']
 writeFileSync(table, `${JSON.stringify(withSessions, null, 2)}\n`)
-await cli('workspaces', 'use', projectB, '--main')
+await cli('workspaces', 'use', projectB, '--main', '--approved')
 check('⛔ 对话归属一个字没动', read().tables.workspaces[idA].sessionIds[0] === 'session-别动我')
 
 // 6. ⛔⛔ 版本号不认识就拒绝,绝不硬写。dsh 升过级、这张表换了形状时,写进旧
@@ -124,21 +131,21 @@ check('⛔ 对话归属一个字没动', read().tables.workspaces[idA].sessionId
 const future = read()
 future.unit.version = 99
 writeFileSync(table, `${JSON.stringify(future, null, 2)}\n`)
-const refusedVersion = await cli('workspaces', 'use', projectA, '--main')
+const refusedVersion = await cli('workspaces', 'use', projectA, '--main', '--approved')
 check('⛔⛔ 表的版本不认识就拒绝',
   refusedVersion.ok === false && refusedVersion.code === 'PROJECT_LIST_UNKNOWN', refusedVersion.code)
 check('⛔ 拒绝时那个文件一个字节没动', read().unit.version === 99)
 
 // 7. 读不懂也一样:不覆盖看不懂的东西 —— 这是全项目同一条纪律。
 writeFileSync(table, '{ 这不是 JSON')
-const refusedBroken = await cli('workspaces', 'use', projectA, '--main')
+const refusedBroken = await cli('workspaces', 'use', projectA, '--main', '--approved')
 check('⛔ 读不懂就拒绝,不拿新的盖回去',
   refusedBroken.ok === false && refusedBroken.code === 'PROJECT_LIST_UNREADABLE', refusedBroken.code)
 check('⛔ 那份坏的原样留着', readFileSync(table, 'utf8') === '{ 这不是 JSON')
 
 // 8. 指一个不存在的目录,当场说清楚。
 rmSync(table, { force: true })
-const missing = await cli('workspaces', 'use', join(root, '根本没有这个目录'), '--main')
+const missing = await cli('workspaces', 'use', join(root, '根本没有这个目录'), '--main', '--approved')
 check('目录不存在就拒绝', missing.ok === false && missing.code === 'DIR_NOT_FOUND', missing.code)
 check('⛔ 而且没有因此造出一张空表', !existsSync(table))
 

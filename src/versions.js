@@ -5,6 +5,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { dropReleaseFarm } from './engines.js'
 import { BoxError } from './errors.js'
 import { t } from './messages.js'
 import { removeTree, versionDir } from './paths.js'
@@ -110,6 +111,10 @@ export async function deleteVersion(layout, version, onLog) {
   } finally {
     clearInterval(beat)
   }
+  // The farm mirroring this release is junctions into a tree that is now gone;
+  // derived, so it simply goes too and the next launch on this version (after a
+  // re-download) rebuilds it.
+  dropReleaseFarm(layout, version)
   onLog?.(t('version.deleted', { version }))
 }
 

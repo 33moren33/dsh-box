@@ -7,9 +7,10 @@
  * the file that remembers it is theirs, not ours.
  */
 
-import { existsSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { BoxError } from './errors.js'
+import { withFileLock, writeAtomic } from './file-lock.js'
 import { LANGS, systemLang, t } from './messages.js'
 import { cleanPath, safeName } from './paths.js'
 
@@ -189,23 +190,15 @@ function parseConfig(layout, text) {
  * other 丙, both wrote the whole file back and one of the two additions was
  * gone, with both commands reporting success.
  *
- * Two separate mechanisms, because they solve different halves and neither
- * covers the other:
- * - **the lock** keeps two read-alter-write cycles from interleaving, which is
- *   what stops an update from being lost;
- * - **the atomic rename** (below) keeps a reader from ever seeing half a file,
- *   which is what stops the corruption the lock cannot prevent — a process
- *   killed mid-write.
- *
- * Not invented here: an exclusive create plus staleness, and a temp file
- * renamed into place, are what git and npm do to the same files.
+ * The lock and the atomic rename it stands on live in `file-lock.js`; the
+ * cabinet ledger is the other caller.
  * @template T
  * @param {import('./paths.js').BoxLayout} layout
  * @param {(config: Config) => Config} change
  * @returns {Config} what was written.
  */
 export function updateConfig(layout, change) {
-  return withConfigLock(layout, () => {
+  return withFileLock(layout.config, () => {
     const next = change(readConfig(layout))
     writeConfig(layout, next)
     return next
@@ -222,94 +215,6 @@ export function writeConfig(layout, config) {
   // rows go back where they came from, and the helper key never lands on disk.
   const body = { ...rest, plugins: [...config.plugins, ...unknownPlugins] }
   writeAtomic(layout.config, `${JSON.stringify(body, null, 2)}\n`)
-}
-
-/**
- * Write by another name, then take the name over.
- *
- * A direct `writeFileSync` is not one step: the file is truncated, then filled.
- * Anything reading in between sees an empty or half-written file — and this
- * tool's own answer to an unreadable config is now to refuse, so a reader
- * catching that window would stop rather than proceed. Rename within a
- * directory is atomic, so a reader sees either the old file or the new one.
- * @param {string} file
- * @param {string} text
- */
-function writeAtomic(file, text) {
-  const temp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}`
-  try {
-    writeFileSync(temp, text)
-    renameSync(temp, file)
-  } catch (error) {
-    rmSync(temp, { force: true })
-    throw error
-  }
-}
-
-/** How long before a lock is assumed to belong to a process that died holding it. */
-const LOCK_STALE_MS = 10_000
-
-/** How long to wait for somebody else's turn before giving up. */
-const LOCK_WAIT_MS = 5_000
-
-/**
- * Hold the config against other processes for the length of one change.
- *
- * ⚠️ This is a lock between *this tool's own processes*, and nothing more. It
- * does not stop a person editing the file in an editor, and it is not supposed
- * to: this computer is theirs. What it covers is the case the design created —
- * one process per button.
- *
- * A stale lock is taken over rather than waited on forever, because the holder
- * may have been killed; the pid and time inside are there so a person can see
- * whose it was.
- * @template T
- * @param {import('./paths.js').BoxLayout} layout
- * @param {() => T} work
- * @returns {T}
- */
-function withConfigLock(layout, work) {
-  const lock = `${layout.config}.lock`
-  const deadline = Date.now() + LOCK_WAIT_MS
-  for (;;) {
-    try {
-      // Exclusive create is the one operation the filesystem makes indivisible
-      // for us: whoever's call succeeds is the holder, with no window between
-      // checking and taking.
-      writeFileSync(lock, `${process.pid} ${new Date().toISOString()}\n`, { flag: 'wx' })
-      break
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error
-      const held = statSync(lock, { throwIfNoEntry: false })
-      if (held === undefined) continue
-      if (Date.now() - held.mtimeMs > LOCK_STALE_MS) {
-        rmSync(lock, { force: true })
-        continue
-      }
-      if (Date.now() > deadline) {
-        throw new BoxError(
-          'CONFIG_BUSY',
-          t('config.busy', { seconds: LOCK_WAIT_MS / 1000, lock }),
-          { lock },
-        )
-      }
-      sleepSync(50)
-    }
-  }
-  try {
-    return work()
-  } finally {
-    rmSync(lock, { force: true })
-  }
-}
-
-/**
- * Wait without an event loop turn — the callers here are synchronous top to
- * bottom, and making them async to sleep would change every one of them.
- * @param {number} ms
- */
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
 /**

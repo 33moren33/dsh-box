@@ -34,17 +34,19 @@
 
 ---
 
-**0.2.0 is a small refactor that starts from the command line.**
+**0.3.3: plugins from npm now install — and actually boot.**
 
-The previous version had two faces: one set of logic in the window, another in the command line, the same job written twice. They drifted — a sandbox started from the command line did not exist as far as the window was concerned. This version demotes the window to another view of the command line: **reads go to disk, writes go through a command**. Every button starts a process and runs the command you could have typed yourself.
+Most third-party plugins on npm ship without their official dependencies: they expect to borrow parts from whichever dsh is running. Installed through dsh-box, such a package used to make dsh refuse its whole plugin tree — the parts were never findable. This release fixes that at the root: **one download, and each dsh release gets its own version-matched shelf of official parts beside it** (hardlinks, no extra disk), so a sandbox stays correct whichever release boots it. **Installing into your daily cabinet copies the whole thing in** — after that your own `dsh` loads it, and deleting dsh-box costs it nothing.
 
-That is what the real new feature grew out of: **an agent can drive this tool, and you can watch it work.**
+The window caught up too: install a plugin **from npm by name**, watch the download live, and see each plugin's version in its row. As always, every button is a command you could have typed.
 
 ## Quick Start
 
 ```bash
 npx dsh-box ui        # the window opens in your browser, nothing to install
 ```
+
+**Mind which directory you type that in** — the data lands in `dsh-box/data` under it. Run from one folder today and another tomorrow and you get two data directories that cannot see each other; sandboxes look "gone" when they are simply elsewhere. To pin it down, see [The Data Directory](#the-data-directory).
 
 **For a double-clickable native window, grab an installer from [Releases](https://github.com/33moren33/dsh-box/releases).** Both routes are the same program: the same local service, the same page.
 
@@ -61,6 +63,7 @@ Skip the window and give commands instead — every step stands on its own:
 npx dsh-box versions                                  # what npm has, what is already downloaded
 npx dsh-box pull 0.1.1-rc.2                           # download an official release
 npx dsh-box plugins add ./my-plugin                   # remember a local plugin folder
+npx dsh-box plugins install dsh-memory-pyramid --sandbox trial   # install a plugin from npm into a sandbox
 npx dsh-box start --new --plugin my-plugin            # new sandbox, with that plugin installed
 npx dsh-box status --json                             # add --json to any command, for scripts and agents
 ```
@@ -113,6 +116,8 @@ Not to the launch. A plugin installed into a cabinet is written into that cabine
 - `--plugin <id>` adds, `--unplug <id>` removes, **naming neither changes nothing**.
 - Want plain official dsh? Make a new sandbox.
 - Local folders and npm packages both work. A local one is linked, so editing the source is live on the next launch.
+- An npm package downloads once and serves every sandbox and every dsh release; each launch aims it at that release's own official parts automatically.
+- Installing into the daily cabinet copies the whole thing in — after that your own `dsh` loads it without dsh-box, and deleting dsh-box changes nothing.
 - Every change is backed up first and `plugins restore` puts the whole file back. Uninstalling returns it **byte for byte** — verified by hash, not by eye.
 
 ## Commands
@@ -146,12 +151,14 @@ The command line and the config window change together. The switch in the top ri
 
 ## The Data Directory
 
-Downloaded releases, every sandbox, and the process logs all live in one folder called `data`. **The data travels with the program:**
+Downloaded releases, every sandbox, plugin packages and the process logs all live in one folder called `data`. **The data travels with the program, and none of it lives in the browser** — the config window is only a view, so clearing browser data and cookies loses nothing:
 
 - Run through `npx` or from source and it is created under your current directory, at `dsh-box/data`.
 - Install the desktop build or unpack the portable one and it sits next to the exe, in `dsh-box/`. That folder holds two things: `boot` is the program, `data` is your belongings. **Unpacking over the top is the upgrade — `boot` is replaced, `data` is untouched.** Only when the exe lives somewhere unwritable (Program Files, say) does the data fall back to your user directory.
 
-To put it elsewhere use `--box <folder>` or the `DSH_BOX_HOME` environment variable. If a folder of that name is already there, has things in it, and was not made by this tool, the tool picks another name rather than writing into someone else's directory.
+**If you run through `npx`, pin the location down**: either always run from the same folder, or set `DSH_BOX_HOME=<folder>` once (`--box <folder>` works for a single command) and every run finds the same data wherever you type it. Missing a sandbox? Look at the **first field** of any command's output — that is the data directory it is using.
+
+If a folder of that name is already there, has things in it, and was not made by this tool, the tool picks another name rather than writing into someone else's directory.
 
 ## What You Need
 

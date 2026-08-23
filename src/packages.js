@@ -22,6 +22,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
 import { removeTree } from './paths.js'
+import { liveClaim } from './sandbox.js'
 
 /** Where npm puts what it fetches for us. */
 export function packageRoot(layout) {
@@ -128,6 +129,89 @@ export function removePackage(layout, name) {
     if (existsSync(scopeDir) && readdirSync(scopeDir).length === 0) removeTree(scopeDir)
   }
   return true
+}
+
+/**
+ * The version a plugin folder claims, read off the disk at the moment of asking.
+ *
+ * Never stored anywhere: a version written into the config would be a second
+ * copy that goes stale the moment the folder is updated, and the folder's own
+ * `package.json` is already the one place the answer lives. `null` — not `'?'`
+ * — when there is nothing to read: a listing prints nothing for it, because a
+ * placeholder on the screen reads as a fact about the plugin.
+ * @param {string} dir
+ * @returns {string | null}
+ */
+export function pluginVersion(dir) {
+  // ⛔ An empty or missing path must answer null here, not fall through: with
+  // `dir` empty, `join('', 'package.json')` names a file in the *working
+  // directory*, and the number on screen would be whatever package the tool
+  // happens to be running from — dsh-box's own version, presented as a plugin's.
+  if (typeof dir !== 'string' || dir === '') return null
+  try {
+    const version = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version
+    return typeof version === 'string' && version !== '' ? version : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The one file that says a download is happening right now, and which one.
+ *
+ * ⛔ **It exists because two npm runs in this tree break each other**, measured:
+ * a second `plugins install` started while the first was still resolving died on
+ * `EBUSY … rename 'node_modules/cloudflared'`, because both were writing the
+ * same dependency. npm takes no cross-process lock of its own, and this tree is
+ * shared by every cabinet by design, so the exclusion has to live here.
+ *
+ * ⭐ One claim for the whole tree, not one per package: the collisions are
+ * between *dependencies*, which two unrelated plugins can easily share — so
+ * per-package exclusion would have let through exactly the case that was
+ * measured. It also removes, rather than patches, the reason two writers could
+ * ever land in one package log: with no concurrency there is nothing to interleave.
+ *
+ * ⭐ It answers a second question for free. Because the claim names the package
+ * and its log, whoever holds it is also the answer to "is a download in flight,
+ * and where do I watch it" — which is what lets the window show a download it
+ * did not start, without inventing a job id the command line knows nothing about.
+ *
+ * Kept beside the tree it guards rather than in the data directory's root, for
+ * the same reason a sandbox's running mark sits inside the sandbox: a file next
+ * to the thing it describes gets deleted together with it, or not at all.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {string}
+ */
+export function installClaimFile(layout) {
+  return join(layout.packages, 'installing.json')
+}
+
+/**
+ * The download in flight this second, or null.
+ *
+ * ⛔ Liveness is the holder's pid, never the age of the log. A heartbeat in the
+ * log says "still working" to a reader; it cannot say "nobody is working" — a
+ * process killed between beats leaves a file that reads as three seconds fresh
+ * forever. This tool settled that question once already, for running sandboxes,
+ * and settles it the same way here.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {{name: string, log: string, startedAt: string} | null}
+ */
+export function downloadInFlight(layout) {
+  const file = installClaimFile(layout)
+  // ⛔⛔ Two pids, and either one alive means the tree is busy. The claim holder
+  // is the command line; `npm` is the process actually writing, and it is a
+  // *child* — on Windows, killing a parent leaves its children running, which
+  // was measured twice in one day. Trusting only the holder's pid would let the
+  // claim go stale while npm was still unpacking, and wave the next install
+  // straight into the collision this file exists to prevent.
+  const held = liveClaim(file)
+  if (held === null || typeof held.name !== 'string' || held.name === '') return null
+  return {
+    name: held.name,
+    log: typeof held.log === 'string' ? held.log : '',
+    startedAt: typeof held.startedAt === 'string' ? held.startedAt : '',
+  }
 }
 
 /**

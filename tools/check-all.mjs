@@ -60,11 +60,33 @@ try {
   // control that will never light up should not be found after nine slow checks.
   if (!run('check-page-marks.mjs', [])) failed.push('check-page-marks')
 
+  // Static too, and third for the same reason: a clock that renders in the wrong
+  // timezone makes every log and every filename below it misleading, and none of
+  // those checks would notice — they compare bytes, never meaning.
+  if (!run('check-clock.mjs', [])) failed.push('check-clock')
+
   // Static as well: nobody has gone back to the built-in recursive calls. Runs
   // before the ones that need a disk, because every check below cleans up with
   // the replacement — a new caller of the built-in would make their cleanup a
   // lie rather than a failure.
   if (!run('check-no-recursive-fs.mjs', [])) failed.push('check-no-recursive-fs')
+
+  // Reads embedded samples and, where they exist, real files on this machine —
+  // but writes nothing anywhere. Early because everything that edits a user's
+  // patch file stands on it.
+  if (!run('check-patch-file.mjs', [])) failed.push('check-patch-file')
+
+  // Builds a cabinet by hand — never with dsh-box — and reads it back, because
+  // a cabinet this tool built would only prove we can read our own handwriting.
+  const inventory = mkdtempSync(join(tmpdir(), 'dsh-box-inventory-'))
+  disposable.push(inventory)
+  if (!run('check-inventory.mjs', [inventory])) failed.push('check-inventory')
+
+  // Its own box and its own throwaway `DSH_HOME`, because it drives commands
+  // that would otherwise write the real one.
+  const gate = mkdtempSync(join(tmpdir(), 'dsh-box-gate-'))
+  disposable.push(gate)
+  if (!run('check-daily-gate.mjs', [gate])) failed.push('check-daily-gate')
 
   // Needs a directory and nothing else. Third because a broken delete makes
   // every check after it lie about what it cleaned up.
@@ -101,6 +123,42 @@ try {
   const mounts = mkdtempSync(join(tmpdir(), 'dsh-box-mounts-'))
   disposable.push(mounts)
   if (!run('check-plugin-mounts.mjs', [mounts])) failed.push('check-plugin-mounts')
+
+  // The other half of the same subject: the file above stays plain, and the
+  // record of who wrote what is somewhere else. Deletes and corrupts that
+  // record on purpose, so it gets a directory of its own.
+  const ledgers = mkdtempSync(join(tmpdir(), 'dsh-box-ledger-'))
+  disposable.push(ledgers)
+  if (!run('check-cabinet-ledger.mjs', [ledgers])) failed.push('check-cabinet-ledger')
+
+  // The per-installation farm and the copy road: hardlinks, junction shelves,
+  // per-launch re-pointing and the `_local` copy, all on a hand-made store and
+  // hand-made engines. Resolution is proven by running a real `node` on a real
+  // probe file — never by asking an API.
+  const engines = mkdtempSync(join(tmpdir(), 'dsh-box-engines-'))
+  disposable.push(engines)
+  if (!run('check-engines.mjs', [engines])) failed.push('check-engines')
+
+  // The gate standing in front of that tree: one npm at a time, and a window
+  // that can see whose. Its own directory because it deliberately leaves a claim
+  // from a dead pid lying about for a while.
+  const installLock = mkdtempSync(join(tmpdir(), 'dsh-box-lock-'))
+  disposable.push(installLock)
+  if (!run('check-install-lock.mjs', [installLock])) failed.push('check-install-lock')
+
+  // One npm package that is really seventeen plugins. Its fixture is upstream's
+  // own patch file, so this is the one check here that reads something outside
+  // the repository when that checkout is present.
+  const aggregate = mkdtempSync(join(tmpdir(), 'dsh-box-aggregate-'))
+  disposable.push(aggregate)
+  if (!run('check-aggregate.mjs', [aggregate])) failed.push('check-aggregate')
+
+  // The third place a cabinet names a plugin, and the only one this tool can
+  // act on without having installed it. Builds a cabinet as dsh's own tooling
+  // would leave one, and its own throwaway `DSH_HOME` for the daily half.
+  const bundles = mkdtempSync(join(tmpdir(), 'dsh-box-bundles-'))
+  disposable.push(bundles)
+  if (!run('check-bundles.mjs', [bundles])) failed.push('check-bundles')
 
   // Also builds its own box, and breaks the config inside it on purpose, so it
   // cannot be handed one anything else is still reading.

@@ -42,9 +42,10 @@ import { partitionPlugins, readConfig, SETTINGS } from './config.js'
 import { BoxError } from './errors.js'
 import { detectHostDsh } from './host.js'
 import { controlStatus, readSession } from './journal.js'
+import { readTail } from './logs.js'
 import { LANGS, messagesFor, setLang, systemLang, t } from './messages.js'
 import { cabinetPlugins } from './mounts.js'
-import { isOurDownload } from './packages.js'
+import { downloadInFlight, isOurDownload, pluginVersion } from './packages.js'
 import { nameRule, uiSeatFile, userDshHome } from './paths.js'
 import { listReleases } from './registry.js'
 import {
@@ -330,22 +331,42 @@ async function snapshot(layout) {
     // `downloaded` says whose files these are, which is the only thing that
     // decides what removing one does — so the page can word its button
     // accordingly instead of guessing from the path.
-    plugins: live.map((plugin) => ({ ...plugin, downloaded: isOurDownload(layout, plugin.path) })),
+    // `version` is read from each folder's package.json at every snapshot, the
+    // same way the command line answers `plugins` — never stored, so it cannot
+    // go stale. Null when the folder will not say; the page shows nothing then.
+    plugins: live.map((plugin) => ({
+      ...plugin,
+      downloaded: isOurDownload(layout, plugin.path),
+      version: pluginVersion(plugin.path),
+    })),
     missingPlugins: missing,
     // What the user's own filing cabinet actually has. The registry above is
     // "what this tool knows about"; this is "what will load when you type dsh",
     // and the two stopped being the same thing when plugins became a property
     // of the workspace rather than of a launch.
-    mainPlugins: cabinetPlugins(userDshHome()),
+    mainPlugins: withVersions(cabinetPlugins(layout, userDshHome())),
     // Whether the user's own cabinet holds a sign-in. A fact about the cabinet,
     // read the same way a sandbox's is, so the tick beside it can mean the same
     // thing in both places instead of being a preference in one and a fact in
     // the other.
     mainSignedIn: hasCredentials(userDshHome()),
-    sandboxes: listSandboxes(layout),
+    sandboxes: listSandboxes(layout).map((box) => ({ ...box, plugins: withVersions(box.plugins) })),
     suggestedName: suggestSandboxName(layout),
     last: config.last,
     running: runningSandboxes(layout),
+    // ⭐⭐ The npm download happening this second, whoever started it, with the
+    // tail of its log riding along. This is the whole of "the window can watch a
+    // download it did not perform" — §2.2's complaint that the window has
+    // nothing to say while an agent spends two minutes downloading.
+    //
+    // ⛔ It rides the snapshot rather than being tailed the way the pull box
+    // tails: `watchLog` re-runs `logs` through `/api/command` every 800ms, which
+    // starts a command-line process each time. That is affordable for something
+    // a person just clicked and is watching; as a standing poll for a download
+    // somebody else started it would be hundreds of processes over one install.
+    // Reading the file here costs nothing extra — this snapshot is already read
+    // from disk, in this process, twice a second.
+    download: describeDownload(layout),
     // Only ever the main environment *we* started, and only from disk. A dsh
     // the user launched themselves is deliberately absent: we could see its
     // port but not its identity, and a stop button that acts on a guess is
@@ -362,6 +383,34 @@ async function snapshot(layout) {
     agent: controlStatus(layout),
     session: agentSession(layout),
   }
+}
+
+/**
+ * A cabinet's plugin listing with each of our rows carrying its version.
+ *
+ * Only `ours`: those are the rows this tool linked, so their folders are known
+ * and readable. `theirs` are names in somebody else's patch — there is no
+ * folder to ask, and guessing one would put an invented number on the screen.
+ * @param {{ours: {path?: string}[]}} mounted - a `cabinetPlugins` result.
+ */
+/**
+ * The download in flight and the last of what it has said, or null.
+ *
+ * The claim answers "is anything running" — by pid, so a killed install stops
+ * being reported rather than hanging on screen forever — and names the log to
+ * read. Both halves come from the file the install itself wrote; nothing here
+ * is invented, which is what keeps this a projection of the command line rather
+ * than a second mechanism beside it.
+ * @param {import('./paths.js').BoxLayout} layout
+ */
+function describeDownload(layout) {
+  const held = downloadInFlight(layout)
+  if (held === null) return null
+  return { name: held.name, startedAt: held.startedAt, lines: readTail(held.log, { lines: 24 }).lines }
+}
+
+function withVersions(mounted) {
+  return { ...mounted, ours: (mounted.ours ?? []).map((entry) => ({ ...entry, version: pluginVersion(entry.path ?? '') })) }
 }
 
 /**
