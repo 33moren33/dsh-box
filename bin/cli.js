@@ -13,9 +13,10 @@
  * one command at a time can still end up with three sandboxes running.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync,
+  writeFileSync,
 } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -53,7 +54,9 @@ import {
   troubleLines,
   versionLog,
 } from '../src/logs.js'
-import { installRelease, listReleases, npmInvocation, resolveSource, SOURCES } from '../src/registry.js'
+import {
+  installRelease, listReleases, missingFromRegistry, npmInvocation, resolveSource, SOURCES,
+} from '../src/registry.js'
 import { showInstant } from '../src/clock.js'
 import {
   adoptSessions, approvedByWindow, claimPath, clearMainRunning, clearRunning, createNewSandbox,
@@ -1273,14 +1276,29 @@ async function downloadThenInstall(layout, name, target, opts) {
   // npm says almost nothing while it resolves the graph — minutes, for a big
   // aggregate — so the log gets a heartbeat, the same one deleting a release
   // has: a watcher tells "still working" from "hung" by whether the file moves.
+  //
+  // ⛔⛔ **A timer alone cannot tell working from stuck**, which is the one job
+  // it was added for. Measured: an install sat at "still downloading" for
+  // eighteen minutes while every package was already on disk and a dependency's
+  // postinstall hung on an unreachable GitHub — the number climbed the whole
+  // time and said nothing. So the beat also counts what has landed: **a number
+  // that stops moving is the signal**, and it costs one shallow `readdir`.
   const started = Date.now()
   const beat = setInterval(() => {
-    appendLog(logFile, t('plugins.stillDownloading', { seconds: Math.round((Date.now() - started) / 1000) }))
+    appendLog(logFile, t('plugins.stillDownloading', {
+      seconds: Math.round((Date.now() - started) / 1000),
+      packages: listPackages(layout).length,
+    }))
   }, 3000)
   /** @param {string} from */
   const fetchFrom = async (from) => {
     say(`\n  ${t('plugins.downloading', { registry: from, name })}`)
-    await runNpm(layout.packages, ['install', name, '--no-audit', '--no-fund', '--registry', from], say,
+    // ⭐ `--foreground-scripts` because npm hides lifecycle output by default,
+    // and that is exactly where the eighteen minutes went: a `postinstall`
+    // downloading a binary, invisible. Noisier, and worth it — a log that omits
+    // the part that hangs is a log that cannot explain the hang.
+    await runNpm(layout.packages,
+      ['install', name, '--no-audit', '--no-fund', '--foreground-scripts', '--registry', from], say,
       (npm) => describeClaim(installClaimFile(layout), { npm }))
   }
   try {
@@ -1299,7 +1317,16 @@ async function downloadThenInstall(layout, name, target, opts) {
       // as completeness. Somebody who wrote `config source mirror` gets told
       // instead — overriding an explicit choice would make the same command mean
       // different things on different days.
-      if (chosen !== 'auto' || registry === SOURCES.official) throw error
+      //
+      // ⛔⛔ **And only when npm said the source was the problem.** The first
+      // edition of this retried on *any* failure, and the very first time it
+      // fired for real it threw away twenty-three minutes to start the same 314
+      // packages over: the install had actually been killed, npm had printed
+      // nothing at all, and the true blocker was a dependency's postinstall
+      // fetching a binary from GitHub — which no registry can fix. **"npm
+      // failed" is not "the registry was wrong."** Silence is not evidence, and
+      // a retry on no evidence is just the same wait twice.
+      if (chosen !== 'auto' || registry === SOURCES.official || !missingFromRegistry(error)) throw error
       say(`\n  ${t('plugins.retryOfficial', { mirror: registry })}`)
       appendLog(logFile, error.message)
       await fetchFrom(SOURCES.official)
@@ -1365,10 +1392,73 @@ function finishInstall(layout, dir, target, opts, about, name) {
 }
 
 /**
+ * How long a single npm run may take before it is ended.
+ *
+ * Whole, not idle-based: the same command has to mean the same thing every time,
+ * and "idle" would need a definition of progress npm does not offer. Fifteen
+ * minutes against a measured five for 389 packages leaves room for a bad line
+ * without leaving room for a hang that never ends.
+ */
+const NPM_TIMEOUT_MS = 15 * 60 * 1000
+
+/** How many lines of somebody else's install script this log will carry. */
+const SCRIPT_LINES = 200
+
+/**
+ * End a process **and everything it started**.
+ *
+ * ⛔⛔ `child.kill()` is not enough and the difference is not academic — it has
+ * cost three separate hours today. Killing a parent leaves its children running:
+ * an interrupted command left an npm behind that kept writing the package tree;
+ * a test's `spawnSync` timeout left one that made the cleanup fail; and the
+ * install this timeout exists for hangs **two levels down**, in a dependency's
+ * script, not in npm itself. Ending only the top would report a timeout while
+ * the thing that hangs kept the directory busy.
+ * @param {import('node:child_process').ChildProcess} child
+ */
+function killTree(child) {
+  if (typeof child.pid === 'number') killPidTree(child.pid, child)
+}
+
+/**
+ * The same, for a pid read off disk — a process this run never started.
+ *
+ * ⚠️ No process-group trick available here: the group only holds if *we* spawned
+ * it detached, and `packages cancel` is a different run entirely. Windows still
+ * gets the whole tree from `taskkill /T`; elsewhere the group id equals the pid
+ * for a leader, so the negative signal is tried first and a plain one is the
+ * fallback.
+ * @param {number} pid
+ * @param {import('node:child_process').ChildProcess} [child] - when we own it.
+ */
+function killPidTree(pid, child) {
+  if (!Number.isInteger(pid) || pid <= 0) return
+  if (process.platform === 'win32') {
+    // The one dependable way on Windows; `/T` is the whole point of the call.
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' })
+    return
+  }
+  try {
+    // Negative pid = the process group, which a child we spawned detached leads.
+    // ⚠️ Without that spawn option this would signal *our own* group and kill the
+    // launcher too — which is why only a leader's pid is ever passed here.
+    process.kill(-pid, 'SIGKILL')
+  } catch {
+    try {
+      if (child !== undefined) child.kill('SIGKILL')
+      else process.kill(pid, 'SIGKILL')
+    } catch {
+      // Already gone is the outcome asked for.
+    }
+  }
+}
+
+/**
  * Run npm somewhere and pass its own words along.
  * @param {string} dir
  * @param {string[]} args
  * @param {(line: string) => void} say
+ * @param {(pid: number) => void} [born] - told the child's pid as soon as it has one.
  * @returns {Promise<void>}
  */
 function runNpm(dir, args, say, born = () => {}) {
@@ -1376,7 +1466,29 @@ function runNpm(dir, args, say, born = () => {}) {
   return new Promise((resolve, reject) => {
     // Arguments go across as a vector, never as one string for a shell to
     // re-read — the package name came from a caller.
-    const child = spawn(command, rest, { cwd: dir, windowsHide: true })
+    //
+    // ⛔ Its own process group off Windows, so the timeout below can end the
+    // whole tree. npm is a parent too — the thing that actually hangs is a
+    // dependency's install script two levels down, and signalling only the top
+    // leaves it running against the same directory this tool has just declared
+    // free.
+    const child = spawn(command, rest, {
+      cwd: dir,
+      windowsHide: true,
+      ...(process.platform === 'win32' ? {} : { detached: true }),
+    })
+    // ⛔⛔ **A download that never ends is worse than one that fails.** Measured:
+    // eighteen minutes at "still downloading" with every package already on
+    // disk, because a dependency's `postinstall` was fetching a binary from a
+    // GitHub host this machine cannot reach — it would have waited all night.
+    // Fifteen minutes, whole, chosen by the person who owns the tool; a real
+    // install of 389 packages took five.
+    let timedOut = false
+    let scripts = 0
+    const alarm = setTimeout(() => {
+      timedOut = true
+      killTree(child)
+    }, NPM_TIMEOUT_MS)
     // ⛔⛔ Who is *actually* writing the tree is this process, not us. Killing a
     // process does not kill its children on Windows, so this one outlives its
     // parent whenever the parent is killed rather than interrupted — measured
@@ -1393,14 +1505,34 @@ function runNpm(dir, args, say, born = () => {}) {
           if (text === '') continue
           tail.push(text)
           if (tail.length > 30) tail.shift()
+          // ⛔ Lifecycle output gets through now. The old filter passed npm's own
+          // errors and its closing summary and nothing else, so the eighteen
+          // minutes an install script spent hanging were not merely unexplained
+          // — they were unrepresented. `>` is npm's header naming the package
+          // and script; the lines after it are that script talking, and are the
+          // only place a stuck download says where it is stuck.
+          // ⚠️ Capped, because "everything npm says" is unbounded and this goes
+          // into a file somebody tails.
+          const lifecycle = text.startsWith('>') || !/^npm /i.test(text)
           if (/^npm (error|warn)/i.test(text) || /^added |^changed |^removed /.test(text)) say(`  ${text}`)
+          else if (lifecycle && scripts < SCRIPT_LINES) { scripts += 1; say(`  ${text}`) }
         }
       })
     }
-    child.once('error', (error) => reject(new BoxError(
-      'NPM_FAILED', t('npm.cannotStart', { error: error.message }), { tail },
-    )))
+    child.once('error', (error) => {
+      clearTimeout(alarm)
+      reject(new BoxError('NPM_FAILED', t('npm.cannotStart', { error: error.message }), { tail }))
+    })
     child.once('close', (code) => {
+      clearTimeout(alarm)
+      if (timedOut) {
+        // ⛔ Its own code, and deliberately not `NPM_FAILED`: a caller deciding
+        // whether to retry elsewhere must be able to tell "this source lacks the
+        // package" from "this took too long", and only the first is a statement
+        // about the source.
+        return void reject(new BoxError('NPM_TIMEOUT',
+          t('npm.timedOut', { minutes: Math.round(NPM_TIMEOUT_MS / 60_000) }), { tail }))
+      }
       if (code === 0) return void resolve()
       // npm's own last words, not just its exit code: the exit code alone is
       // the least useful half of what it printed.
@@ -1792,6 +1924,33 @@ function packages(layout, rest, opts) {
   const [action, name] = rest
   const used = packageUsers(layout)
   const all = listPackages(layout).map((one) => ({ ...one, usedBy: used.get(one.name) ?? [] }))
+
+  // ⛔⛔ **The way out of a download that will not end.** Until this existed the
+  // only way to stop one was `taskkill` in a shell — and this tool's own rule is
+  // that a thing it can start is a thing it must be able to stop and to look at,
+  // or the agent it is built for falls out of its boundary and does it with `rm`
+  // where no human view can see it. Measured tonight: an install hung eighteen
+  // minutes on a dependency's script and had to be killed from bash.
+  //
+  // ⭐ Both recorded pids, and the tree under each. The one that hangs is not
+  // the one holding the claim — it is npm's own grandchild — so signalling the
+  // holder alone would report success and leave the tree being written.
+  if (action === 'cancel') {
+    const going = downloadInFlight(layout)
+    if (going === null) {
+      if (opts.json === true) return void emit({ action: 'packages.cancel', cancelled: null })
+      return void console.log(`\n  ${t('packages.nothingDownloading')}\n`)
+    }
+    for (const pid of going.pids) killPidTree(pid)
+    // ⛔ Cleared here rather than left for the pid check to age out: the claim is
+    // also what the window reads to draw a download in flight, and a person who
+    // just cancelled should not watch a ghost keep beating.
+    rmSync(installClaimFile(layout), { force: true })
+    appendLog(packageLog(layout.root, going.name), t('packages.cancelled', { name: going.name }))
+    recordResolved({ action: 'packages.cancel', name: going.name })
+    if (opts.json === true) return void emit({ action: 'packages.cancel', cancelled: going.name, pids: going.pids })
+    return void console.log(`\n  ${t('packages.cancelled', { name: going.name })}\n`)
+  }
 
   if (action === 'rm') {
     if (name === undefined) {

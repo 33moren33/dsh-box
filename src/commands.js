@@ -160,6 +160,12 @@ export const COMMANDS = {
     mutates: true,
     line: () => ['packages', 'prune'],
   },
+  // Ends a download that is running. `mutates` because it stops work and clears
+  // the claim, so the window's glass covers it while an agent is driving.
+  'packages.cancel': {
+    mutates: true,
+    line: () => ['packages', 'cancel'],
+  },
   'plugins.backups': {
     mutates: false,
     booleans: ['main'],

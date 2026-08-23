@@ -311,6 +311,13 @@
     <div class="row" style="margin-top:10px">
       <input type="text" id="npmName" data-cmd data-mark="go:npmName" data-i18n-placeholder="ui.npmNamePh" style="flex:1;min-width:280px">
       <button class="chip" id="npmInstallBtn" data-cmd data-mark="go:npmInstall" data-i18n="ui.npmInstall"></button>
+      <!--
+        Shown only while something is downloading. ⛔ Static and hidden rather
+        than built inside `drawDownload`, so the mark guard can see it: a control
+        conjured by a script is a control that leaves the check nothing to read,
+        which is evading the guard rather than satisfying it.
+      -->
+      <button class="chip" id="npmCancelBtn" hidden data-cmd data-mark="go:npmCancel" data-i18n="ui.npmCancel"></button>
     </div>
     <p class="sub" style="margin:6px 0 0" data-i18n="ui.npmNote"></p>
     <div id="npmOut"></div>
@@ -464,6 +471,25 @@ function applyI18n() {
 applyI18n()
 
 let state = null
+// Ends whatever is downloading, whoever started it — an agent's install is
+// stopped from here exactly as a person's is, because both are the same claim
+// on the same tree.
+$('npmCancelBtn').onclick = async () => {
+  $('npmCancelBtn').disabled = true
+  try {
+    const result = await run(['packages', 'cancel'])
+    finalDownload = result.cancelled === null
+      ? ''
+      : `<div class="ok">${t('ui.npmCancelled', { name: escape(String(result.cancelled)) })}</div>`
+    await refresh()
+  } catch (error) {
+    finalDownload = `<div class="err">${escape(error.message)}</div>`
+  } finally {
+    $('npmCancelBtn').disabled = false
+    drawDownload()
+  }
+}
+
 /**
  * What was on screen when the last download this window watched ended.
  *
@@ -1131,6 +1157,10 @@ function markKeys(action) {
       // not have made (a registered id, a local folder, `--main`): the frame
       // says where the command lives, not that a person could have clicked it.
       return [`plugin:${args.id ?? args.target}`, workspace, 'go:npmName', 'go:npmInstall']
+    case 'packages.cancel':
+      // Its own control, and only that: cancelling says nothing about which
+      // cabinet or which plugin — it ends the one download the tree is holding.
+      return ['go:npmCancel']
     case 'plugins.uninstall':
       return [`plugin:${args.id ?? args.target}`, workspace]
     case 'signin': case 'signout':
@@ -1617,6 +1647,11 @@ $('npmInstallBtn').onclick = async () => {
 function drawDownload() {
   const out = $('npmOut')
   const live = state?.download ?? null
+  // ⭐ The stop button lives and dies with the thing it stops. Seeing a download
+  // hang and having no way to end it is what sent this tool's own author to a
+  // shell tonight — and an action with no matching undo is the defect this
+  // repository has written down twice already.
+  $('npmCancelBtn').hidden = live === null
   if (live === null) {
     out.innerHTML = finalDownload ?? ''
     return

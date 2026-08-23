@@ -485,3 +485,31 @@ async function timeRequest(url) {
 export function npmInvocation(args) {
   return process.platform === 'win32' ? ['cmd.exe', '/c', 'npm', ...args] : ['npm', ...args]
 }
+
+/**
+ * Whether npm's own words say this source did not have the package.
+ *
+ * ⛔ The whole point is that it reads npm's **output**, not its exit code. An
+ * exit code says something went wrong; only the text says what, and switching
+ * registries can fix exactly one kind of wrong. `E404` is "this registry has no
+ * such thing" and `ETARGET` is "no version here matches" — both are statements
+ * about the source. Everything else (a killed process, a failing install script,
+ * a full disk) will fail again, identically, on the other registry.
+ *
+ * ⛔ Empty output answers **no**. That is the shape a killed install has, and it
+ * is the one this function exists to refuse: measured, a cancelled 23-minute run
+ * with no npm output at all was read as "the mirror was incomplete" and started
+ * over from the first package.
+ * @param {unknown} error - what `runNpm` threw.
+ * @returns {boolean}
+ */
+export function missingFromRegistry(error) {
+  // ⚠️ `details`, not the error itself: `BoxError` keeps its extras in a nested
+  // object, and reading `error.tail` here would quietly answer `undefined` —
+  // which reads as "no evidence" and so would *disable* the retry entirely
+  // rather than loosening it. Both mistakes are silent; only a test tells them
+  // apart, which is why one exists for each direction.
+  const tail = /** @type {{details?: {tail?: unknown}}} */ (error)?.details?.tail
+  if (!Array.isArray(tail) || tail.length === 0) return false
+  return tail.some((line) => /\b(E404|ETARGET)\b/.test(String(line)))
+}

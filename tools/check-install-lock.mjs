@@ -42,7 +42,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendLog, newPackageLog, packageLog } from '../src/logs.js'
+import { BoxError } from '../src/errors.js'
 import { downloadInFlight, installClaimFile } from '../src/packages.js'
+import { missingFromRegistry } from '../src/registry.js'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 import { claimPath, ensureSandbox, releasePath } from '../src/sandbox.js'
 
@@ -158,6 +160,56 @@ await new Promise((done) => {
 check('⭐ 对照组:那个 npm 也死了之后,占位不再挡路',
   downloadInFlight(layout) === null && claimPath(claim, { name: '接着来', log }) === true)
 releasePath(claim)
+
+// ── ⛔⛔ 停得掉:今晚之前这件事只能去 bash 里 kill ────────────────────────────
+// 判据来自这个仓自己的旧结论:一个「让 agent 代替人操作」的工具,只给了「做」
+// 而没给「撤」,agent 就必然掉出边界去 rm、去 taskkill,而那些动作人视图一概
+// 看不见。今晚它真的发生了一次。
+console.log('\n正在下载的,停得掉\n')
+const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300_000)'], { windowsHide: true })
+const npmish = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300_000)'], { windowsHide: true })
+writeFileSync(claim, `${JSON.stringify({
+  pid: sleeper.pid, npm: npmish.pid, name: 'stuck-package', log,
+}, null, 2)}\n`)
+check('先确认它算「正在下载」', downloadInFlight(layout)?.name === 'stuck-package')
+check('⭐ 两个 pid 都被认出来要停',
+  (downloadInFlight(layout)?.pids ?? []).length === 2,
+  String((downloadInFlight(layout)?.pids ?? []).join(',')))
+
+const cancelled = spawnSync(process.execPath, [CLI, 'packages', 'cancel', '--box', box, '--json'],
+  { windowsHide: true, encoding: 'utf8', timeout: 60_000 })
+const answer = JSON.parse((cancelled.stdout ?? '').trim().split('\n').filter((r) => r.startsWith('{')).pop() ?? '{}')
+check('⛔⛔ 命令行停得掉,不必开 shell', answer.ok === true && answer.cancelled === 'stuck-package',
+  answer.code ?? String(answer.cancelled))
+await new Promise((done) => { setTimeout(done, 1200) })
+check('⛔⛔ 两个进程真的都死了 —— 只杀持有者等于没停',
+  sleeper.exitCode !== null || sleeper.killed, `holder killed=${sleeper.killed} exit=${sleeper.exitCode}`)
+check('⛔⛔ npm 那个也死了(真正在写树的是它)',
+  npmish.exitCode !== null || npmish.killed, `npm killed=${npmish.killed} exit=${npmish.exitCode}`)
+check('⭐ 占位当场清掉,窗口不会继续画一个鬼影', !existsSync(claim))
+const nothing = spawnSync(process.execPath, [CLI, 'packages', 'cancel', '--box', box, '--json'],
+  { windowsHide: true, encoding: 'utf8', timeout: 60_000 })
+const idle = JSON.parse((nothing.stdout ?? '').trim().split('\n').filter((r) => r.startsWith('{')).pop() ?? '{}')
+check('⭐ 没有下载时说没什么可停的,不假装做了事', idle.ok === true && idle.cancelled === null,
+  String(idle.cancelled))
+
+// ── ⛔⛔ 换源重试只在「这个源没有这个包」时才许发生 ──────────────────────────
+// 第一版对**任何**失败都重试,第一次真上场就把跑了 23 分钟的安装从头重来:
+// 那次其实是被杀的,npm 一个字都没输出,真正的卡点是某个依赖的安装脚本连不上
+// GitHub —— 换哪个 registry 都救不了。⭐ 沉默不是证据。
+console.log('\n换源重试:只认 npm 自己说的话\n')
+const err = (tail) => new BoxError('NPM_FAILED', 'x', { tail })
+check('⛔⛔ npm 什么都没说 —— 不重试(那是被杀的形状)', !missingFromRegistry(err([])))
+check('⛔ 根本没有 tail —— 不重试', !missingFromRegistry(err(undefined)) && !missingFromRegistry(new Error('x')))
+check('⛔ 装脚本失败 —— 不重试,换源救不了它',
+  !missingFromRegistry(err(['npm error command failed', 'npm error node lib/cloudflared.js bin install'])))
+check('⭐ 明说 E404 —— 才重试', missingFromRegistry(err(['npm error code E404', 'npm error 404 Not Found'])))
+check('⭐ 明说 ETARGET —— 也重试', missingFromRegistry(err(['npm error notarget No matching version', 'npm error code ETARGET'])))
+// ⚠️ BoxError 把附加字段放在 details 里。直接读 error.tail 会恒得 undefined,
+// 那会让重试**永远不发生** —— 和读错方向一样是静默的,所以两个方向各留一条。
+check('⛔ 判据读的是 details.tail(读错方向会让重试永远不发生)',
+  missingFromRegistry({ details: { tail: ['npm error code E404'] } })
+  && !missingFromRegistry({ tail: ['npm error code E404'] }))
 
 removeTree(root)
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)

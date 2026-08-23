@@ -104,6 +104,10 @@ const DECISIONS = {
   'plugins.restore.@': { offPage: '窗口上没有还原这个动作,命令行独有' },
   'packages.rm.@': { offPage: '下载的包那张表窗口上没有' },
   'packages.prune.@': { offPage: '同上' },
+  // ⭐ On the page, unlike its neighbours: the window is exactly where a stuck
+  // download is *seen*, so it is where it must be stoppable. Watching one hang
+  // with no way to end it is what sent us to a shell.
+  'packages.cancel.@': { mark: 'go:npmCancel' },
   'workspaces.use.@': { offPage: '项目文件夹窗口只显示、不给改' },
   // The sign-in tick is one control for both directions, exactly like a plugin
   // row: ticking brings one in, unticking takes it out, and the start button is

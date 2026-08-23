@@ -195,7 +195,7 @@ export function installClaimFile(layout) {
  * forever. This tool settled that question once already, for running sandboxes,
  * and settles it the same way here.
  * @param {import('./paths.js').BoxLayout} layout
- * @returns {{name: string, log: string, startedAt: string} | null}
+ * @returns {{name: string, log: string, startedAt: string, pids: number[]} | null}
  */
 export function downloadInFlight(layout) {
   const file = installClaimFile(layout)
@@ -211,6 +211,12 @@ export function downloadInFlight(layout) {
     name: held.name,
     log: typeof held.log === 'string' ? held.log : '',
     startedAt: typeof held.startedAt === 'string' ? held.startedAt : '',
+    // ⭐ Both, in the order they must be ended: the holder first so it cannot
+    // start anything else, then npm. Cancelling needs every one of them, and
+    // which of them is *the* process changes with how far the install has got.
+    pids: ['pid', 'npm']
+      .map((field) => Number(held[field]))
+      .filter((pid) => Number.isInteger(pid) && pid > 0),
   }
 }
 

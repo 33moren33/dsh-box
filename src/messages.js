@@ -213,6 +213,11 @@ const MESSAGES = {
 ⛔ 硬删会让那些档案柜指着一个不存在的包名,而 dsh 遇到那种情况会拒绝加载整棵插件树。`,
     'cmd.packages.prune.usage': 'packages prune',
     'cmd.packages.prune.summary': '清掉没有任何档案柜在用的下载',
+    'cmd.packages.cancel.usage': 'packages cancel',
+    'cmd.packages.cancel.summary': '停掉正在进行的那个下载(连它起的所有进程)',
+    'cmd.packages.cancel.notes': `装一个大包可能要几分钟,卡住了就用这条停掉,不必去开 shell。
+⛔ 停的是整棵进程树 —— 真正卡住的往往不是 npm 自己,是某个依赖的安装脚本。
+半截下载留在原地不动,要清用 packages prune;正在下什么用 logs --package <包名> 看。`,
 
     'cmd.plugins.backups.usage': 'plugins backups --sandbox <名> | --main',
     'cmd.plugins.backups.summary': '看这个档案柜的插件配置留了哪些备份',
@@ -610,7 +615,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.badPackageName': '「{name}」既不是存在的目录,也不像一个 npm 包名。目录要有 package.json;包名只能是小写字母、数字和 . _ -,可以带 @scope/',
     'packages.treeDescription': 'dsh-box 替你下载的插件都放在这儿',
     'plugins.downloading': '正在从 {registry} 下载 {name}',
-    'plugins.stillDownloading': '还在下载,已 {seconds} 秒',
+    'plugins.stillDownloading': '还在下载,已 {seconds} 秒;包树里已经有 {packages} 个 —— 这个数不动了就不是在下包了',
     'plugins.installInFlight': '这会儿正在装「{other}」。一次只能装一个——两个 npm 同时写同一个包目录会把它写坏。等它装完再来,或者先看看它到哪了:logs --package {other}',
     'plugins.retryOfficial': '{mirror} 没给全,换官方源重来一次(镜像是按快慢选的,快不等于全)',
     'plugins.mirrorHint': '你把源固定成镜像了。镜像可能缺包或还没同步完,换回来试试:config source auto',
@@ -621,6 +626,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'npm.saidOkButEmpty': 'npm 说装好了,但 {dir} 里没有东西',
     'plugins.downloaded': '下载好了,在 {dir}',
     'npm.installExit': 'npm 装不上(退出码 {code})——{last}',
+    'npm.timedOut': 'npm 跑了超过 {minutes} 分钟还没完,已经把它和它起的所有进程一起停掉了。多半不是网速慢 —— 看看日志最后几行是哪个包的安装脚本卡住了',
     'npm.saidNothing': '它什么也没说',
     'plugins.uninstallWhich': '拿掉哪个? 用 plugins --sandbox <名> 看这个档案柜装着什么',
     'plugins.notOurs': '「{id}」是{cabinet}本来就装着的,不是 dsh-box 装的——我们不动别人写进去的东西。要拿掉它请用装它的那个办法',
@@ -698,6 +704,8 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'workspaces.switchHint': '换一个: workspaces use <目录> {where}',
     'workspaces.atFile': '在 {file}',
 
+    'packages.nothingDownloading': '现在没有正在进行的下载,没什么可停的',
+    'packages.cancelled': '已经停掉「{name}」的下载,连它起的所有进程一起。半截的包留在原地,清掉用:packages prune',
     'packages.rmWhich': '删哪个包? 用 packages 看有哪些',
     'packages.noSuch': '没下载过「{name}」',
     'packages.inUse': '「{name}」还装在 {usedBy} 里,没有删。\n  先从那些档案柜卸掉它(plugins uninstall),再回来删这个包。\n  直接删掉会让那些档案柜指着一个不存在的包名,而 dsh 遇到那种情况会拒绝加载整棵插件树',
@@ -823,6 +831,8 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.addPlugin': '添加',
     'ui.npmNamePh': 'npm 包名(如 dsh-memory-pyramid)',
     'ui.npmInstall': '从 npm 装入',
+    'ui.npmCancel': '停止下载',
+    'ui.npmCancelled': '已经停掉「{name}」的下载。',
     'ui.npmNote': '从 npm 下载并装进上面选中的沙箱档案柜。日常档案柜走命令行:plugins install <包名> --main',
     'ui.npmBadName': '「{name}」不是合法的 npm 包名,没有发出命令。',
     'ui.npmMainRefused': '窗口这条路只装进沙箱。要装进日常档案柜,用命令行:plugins install <包名> --main',
@@ -1077,6 +1087,11 @@ there first.
 does not resolve, and dsh refuses to load the whole plugin tree when that happens.`,
     'cmd.packages.prune.usage': 'packages prune',
     'cmd.packages.prune.summary': 'Clear downloads that no cabinet is using',
+    'cmd.packages.cancel.usage': 'packages cancel',
+    'cmd.packages.cancel.summary': 'Stop the download that is running, and everything it started',
+    'cmd.packages.cancel.notes': `A large package can take minutes; when one gets stuck, stop it here rather than opening a shell.
+⛔ The whole process tree goes — what hangs is usually not npm itself but a dependency's install script.
+Half-fetched packages are left alone; clear them with packages prune. To see what it is doing: logs --package <name>.`,
 
     'cmd.plugins.backups.usage': 'plugins backups --sandbox <name> | --main',
     'cmd.plugins.backups.summary': 'Which backups exist of this cabinet\'s plugin config',
@@ -1509,7 +1524,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'plugins.badPackageName': '"{name}" is neither an existing folder nor something that looks like an npm package name. A folder needs a package.json; a package name may only use lowercase letters, digits and . _ -, optionally with @scope/',
     'packages.treeDescription': 'Plugins dsh-box downloaded for you live here',
     'plugins.downloading': 'Downloading {name} from {registry}',
-    'plugins.stillDownloading': 'Still downloading, {seconds}s so far',
+    'plugins.stillDownloading': 'Still downloading, {seconds}s so far; {packages} packages have landed — when that number stops moving, it is no longer fetching',
     'plugins.installInFlight': '"{other}" is being installed right now. Only one at a time — two npm runs writing the same package directory corrupt it. Wait for it to finish, or watch where it has got to: logs --package {other}',
     'plugins.retryOfficial': '{mirror} did not have all of it. Trying the official registry instead — the mirror was picked for speed, and fast is not the same as complete',
     'plugins.mirrorHint': 'Your source is pinned to the mirror. Mirrors can lag or miss a package; try letting it choose: config source auto',
@@ -1520,6 +1535,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'npm.saidOkButEmpty': 'npm said it installed, but there is nothing in {dir}',
     'plugins.downloaded': 'Downloaded, at {dir}',
     'npm.installExit': 'npm could not install it (exit code {code}) — {last}',
+    'npm.timedOut': 'npm ran for more than {minutes} minutes without finishing, so it and everything it started have been stopped. This is usually not a slow line — look at the last lines of the log for which package’s install script is stuck',
     'npm.saidNothing': 'it said nothing',
     'plugins.uninstallWhich': 'Which one? See what this cabinet has with plugins --sandbox <name>',
     'plugins.notOurs': '"{id}" was already in {cabinet} before dsh-box; what someone else wrote in is not ours to remove. Take it out the way it was put in',
@@ -1597,6 +1613,8 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'workspaces.switchHint': 'Switch: workspaces use <folder> {where}',
     'workspaces.atFile': 'At {file}',
 
+    'packages.nothingDownloading': 'No download is running, so there is nothing to stop',
+    'packages.cancelled': 'Stopped the download of "{name}", and everything it had started. Half-fetched packages stay where they are; clear them with: packages prune',
     'packages.rmWhich': 'Which package? See them with packages',
     'packages.noSuch': '"{name}" was never downloaded',
     'packages.inUse': '"{name}" is still installed in {usedBy}, so it was not deleted.\n  Uninstall it from those cabinets first (plugins uninstall), then come back and delete the package.\n  Deleting it anyway would leave those cabinets pointing at a package name that does not resolve, and dsh answers that by refusing to load the whole plugin tree',
@@ -1724,6 +1742,8 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'ui.addPlugin': 'Add',
     'ui.npmNamePh': 'npm package name (e.g. dsh-memory-pyramid)',
     'ui.npmInstall': 'Install from npm',
+    'ui.npmCancel': 'Stop download',
+    'ui.npmCancelled': 'Stopped the download of "{name}".',
     'ui.npmNote': 'Downloads from npm into the sandbox cabinet selected above. For the daily cabinet use the command line: plugins install <name> --main',
     'ui.npmBadName': '"{name}" is not a valid npm package name; no command was sent.',
     'ui.npmMainRefused': 'This road only installs into a sandbox. For the daily cabinet, use the command line: plugins install <name> --main',
