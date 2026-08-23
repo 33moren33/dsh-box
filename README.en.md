@@ -3,9 +3,9 @@
   <h1>dsh-box</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/AGENT%20DRIVABLE-ff6b35?style=for-the-badge" alt="Agent drivable" height="135" />
-    <img src="https://img.shields.io/badge/SANDBOXED-2ea44f?style=for-the-badge" alt="Sandboxed" height="135" />
-    <img src="https://img.shields.io/badge/NODE%20ONLY-3178c6?style=for-the-badge" alt="Node only" height="135" />
+    <img src="assets/badge-agent-en.svg" alt="Agent drivable" />
+    <img src="assets/badge-sandbox-en.svg" alt="Sandboxed" />
+    <img src="assets/badge-node-en.svg" alt="Node only" />
   </p>
 
   <p><a href="README.md">中文</a> | English</p>
