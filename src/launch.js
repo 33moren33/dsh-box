@@ -4,12 +4,19 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
-import { cleanPath, sandboxPaths, versionDir, versionEntry } from './paths.js'
+import { BoxError } from './errors.js'
+import { engineRecord } from './host.js'
+import { tailLines } from './logs.js'
+import { t } from './messages.js'
+import { cleanPath, sandboxPaths, versionDir } from './paths.js'
 import {
-  clearModuleFallback, clearRunning, noteBoot, noteRunning, runningRecord, switchesRelease,
+  clearMainRunning, clearModuleFallback, clearRunning, noteBoot, noteMainRunning, noteRunning,
+  runningRecord, switchesEngine,
 } from './sandbox.js'
 
 /** dsh's own default. Reserved for the user's real environment. */
@@ -39,7 +46,7 @@ export async function findFreePort({ from = PREFERRED_PORT, tries = 200 } = {}) 
   for (let port = from; port < from + tries; port += 1) {
     if (await canBind(port)) return port
   }
-  throw new Error(`在 ${from} 到 ${from + tries} 之间找不到空闲端口`)
+  throw new BoxError('NO_FREE_PORT', t('launch.noFreePort', { from, to: from + tries }))
 }
 
 /**
@@ -60,33 +67,6 @@ function canBind(port) {
  * @property {string} id - the id the patch entry is keyed by.
  * @property {string} package - the package name dsh resolves.
  */
-
-/**
- * Write the patch overlay that adds the chosen plugins.
- *
- * This is an overlay, not a replacement. dsh composes its plugin list as
- * bundle layers, then the profile's own patch file, then the machine-wide
- * one, then each `--patch` in argument order — so everything official stays
- * exactly where it was and these entries are added on top. An empty selection
- * writes no file at all and the sandbox boots as plain official dsh.
- * @param {string} file - where to write the overlay.
- * @param {PluginChoice[]} plugins
- * @returns {string | null} the file path, or null when nothing was selected.
- */
-export function writePluginOverlay(file, plugins) {
-  if (plugins.length === 0) return null
-  const lines = [
-    '# Written by dsh-box for one launch. Applied on top of the official',
-    '# layers, so nothing official is replaced by its presence.',
-    '- insert:',
-  ]
-  for (const plugin of plugins) {
-    lines.push(`    - id: ${JSON.stringify(plugin.id)}`)
-    lines.push(`      name: ${JSON.stringify(plugin.package)}`)
-  }
-  writeFileSync(file, `${lines.join('\n')}\n`)
-  return file
-}
 
 /**
  * Make the chosen plugin packages resolvable inside the sandbox.
@@ -119,34 +99,21 @@ export function linkPlugins(home, profile, plugins) {
     // `junction` is the one link type Windows creates without elevation, and
     // it behaves like a directory symlink for resolution purposes.
     symlinkSync(cleanPath(plugin.path), target, 'junction')
+    // Creating a link never fails for pointing at nothing, so the only way to
+    // know it landed somewhere is to look. Whatever the cause — a path stored
+    // before these were made absolute, a folder moved since it was registered —
+    // the outcome without this check is identical and silent: dsh loads a tree
+    // with one package missing and says nothing about it.
+    if (!existsSync(target)) {
+      throw new BoxError(
+        'PLUGIN_LINK_BROKEN',
+        t('launch.linkDangling', { name: plugin.package, path: plugin.path }),
+        { plugin: plugin.package, path: plugin.path, link: target },
+      )
+    }
     linked.push(plugin.package)
   }
   return linked
-}
-
-/**
- * Which of the chosen plugins this home already loads on its own.
- *
- * "Loads on its own" means: named in one of the patch files dsh reads
- * automatically — the home-wide one and the profile's own. Detection is a
- * plain text search for the package name, which can over-match (a name in a
- * comment) but the cost of that is only a plugin not being added twice —
- * the exact outcome wanted. The launcher's own overlay file is not
- * consulted: it is rewritten on every launch and rides `--patch`, so it is
- * never "already installed".
- * @param {string} home
- * @param {string} profile
- * @param {PluginChoice[]} plugins
- * @returns {PluginChoice[]} the ones already present.
- */
-export function pluginsAlreadyInHome(home, profile, plugins) {
-  if (plugins.length === 0) return []
-  const text = [join(home, 'cordis.patch.yml'), join(home, 'profiles', profile, 'cordis.patch.yml')]
-    .filter((file) => existsSync(file))
-    .map((file) => readFileSync(file, 'utf8'))
-    .join('\n')
-  if (text === '') return []
-  return plugins.filter((plugin) => text.includes(plugin.package))
 }
 
 /**
@@ -182,18 +149,37 @@ function lstatSafe(path) {
  * @param {import('./paths.js').BoxLayout} options.layout
  * @param {string} [options.sandbox] - sandbox name; ignored when `home` is given.
  * @param {string} [options.home] - boot this home directly instead of a sandbox.
- * @param {string} options.version - release to boot.
- * @param {PluginChoice[]} [options.plugins]
+ * @param {import('./host.js').Engine} options.engine - which dsh installation
+ * to run: the one the user installed, or a release this tool downloaded.
+ * ⭐ Nothing here is about plugins any more. A plugin is registered in the
+ * workspace (see `mounts.js`), so it is already there before this runs and stays
+ * after it ends — which is what makes a workspace opened by hand and one opened
+ * from here the same workspace. This function used to write an overlay, pass it
+ * as `--patch`, and on a directly booted home take the links back out on exit;
+ * all three are gone, and the last one would now be actively wrong.
  * @param {string} [options.profile]
- * @param {string} [options.workspace] - directory dsh treats as the workspace.
  * @param {(line: string) => void} [options.onLog]
+ * @param {string} [options.logFile] - send dsh's own output here instead of to
+ * `onLog`. Required for a launch that outlives its launcher, because a pipe
+ * dies with the process holding it.
+ * @param {boolean} [options.detached] - let the launcher exit without taking
+ * dsh with it. Only meaningful together with `logFile`.
  * @returns {Promise<LaunchResult>}
  */
 export async function launch({
-  layout, sandbox, home, version, plugins = [], profile = 'web', workspace, onLog,
+  layout, sandbox, home, engine, profile = 'web', onLog,
+  logFile, detached = false,
 }) {
-  const entry = versionEntry(layout, version)
-  if (!existsSync(entry)) throw new Error(`版本 ${version} 还没下载`)
+  const { entry, version } = engine
+  if (!existsSync(entry)) {
+    throw new BoxError(
+      engine.kind === 'host' ? 'NO_HOST_DSH' : 'VERSION_NOT_DOWNLOADED',
+      engine.kind === 'host'
+        ? t('launch.noHostDshFile', { entry })
+        : t('launch.versionNotDownloaded', { version }),
+      { version, entry },
+    )
+  }
 
   const direct = home !== undefined
   if (!direct) {
@@ -204,14 +190,17 @@ export async function launch({
     // so every entrance (window, CLI, agent) sees the same answer.
     const running = runningRecord(layout, sandbox)
     if (running !== null) {
-      throw new Error(
-        `沙箱「${sandboxPaths(layout, sandbox).name}」已经开着:${running.url}(进程 ${running.pid})。`
-        + '同一个沙箱同时只能跑一台,两台会互踩同一份档案柜——要并行就换个沙箱,要重启就先停掉它',
+      throw new BoxError(
+        'SANDBOX_ALREADY_RUNNING',
+        t('launch.sandboxAlreadyRunning', {
+          name: sandboxPaths(layout, sandbox).name, url: running.url, pid: running.pid,
+        }),
+        { sandbox: sandboxPaths(layout, sandbox).name, url: running.url, pid: running.pid },
       )
     }
     home = sandboxPaths(layout, sandbox).home
   }
-  if (direct || switchesRelease(layout, sandbox, version)) {
+  if (direct || switchesEngine(layout, sandbox, engine)) {
     // Boot re-points the flat module fallback for every package the running
     // release knows about, and leaves alone any link naming a package that
     // release has never heard of. On a normal machine those links dangle
@@ -220,79 +209,147 @@ export async function launch({
     // release. Between rc.6 and rc.8 that is eleven packages. A directly
     // booted home is cleared every time, because what last touched it is
     // unknown to us; boot rebuilds the whole directory either way.
-    if (clearModuleFallback(home)) onLog?.('已清掉可能指错版本的模块链接,启动时会重建')
+    if (clearModuleFallback(home)) onLog?.(t('launch.clearedModuleLinks'))
   }
 
-  // A home is not a blank sheet — the real ~/.dsh in particular already has
-  // plugins written into its own patch files. Adding one of those again
-  // registers the same adapter twice, and dsh answers by refusing to load
-  // the entire plugin tree (DUPLICATE_ADAPTER, exit 1) — found the hard way
-  // on a main-environment launch. Already-present plugins are skipped, and
-  // said out loud so the "why wasn't it added twice" question answers itself.
-  const present = pluginsAlreadyInHome(home, profile, plugins)
-  for (const plugin of present) {
-    onLog?.(`「${plugin.package}」这个环境里已经装着,跳过——装两份会让 dsh 拒绝启动`)
-  }
-  const adding = plugins.filter((plugin) => !present.includes(plugin))
-
-  const linked = linkPlugins(home, profile, adding)
-  if (linked.length > 0) onLog?.(`已把 ${linked.length} 个插件包链接进${direct ? '主环境(退出时会清走)' : '沙箱'}`)
-
-  // The overlay for a directly booted home lives in our own data directory,
-  // not in that home: the real ~/.dsh is someone's daily environment, and a
-  // launcher that scatters files into it is exactly the coupling this tool
-  // exists to prevent. Sandbox homes are ours, so theirs stays put.
-  const overlay = writePluginOverlay(
-    direct ? join(layout.root, 'main.clean-boot.patch.yml') : join(home, 'clean-boot.patch.yml'),
-    adding,
-  )
   // 3080 belongs to the user's real dsh; sandboxes hunt from their own base
   // so an idle 3080 is never squatted by something that only looks like it.
-  const port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
+  let port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
 
-  const args = ['--profile', profile]
-  if (overlay !== null) args.push('--patch', overlay)
-  args.push('--port', String(port))
-
-  onLog?.(`正在启动 ${version},端口 ${port}`)
-  const child = spawn(process.execPath, [entry, ...args], {
-    cwd: cleanPath(workspace ?? process.cwd()),
-    // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
-    // it can arrive from a text field or a drag-and-drop, where a trailing
-    // space survives and turns into a different directory.
-    env: { ...process.env, DSH_HOME: cleanPath(home) },
-    windowsHide: true,
-  })
-
-  child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
-  child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
-
-  if (direct && linked.length > 0) {
-    // Links planted in a real home are cleaned up when that dsh exits.
-    // Best-effort: if the launcher dies first the links stay — inert, since
-    // nothing loads a plugin that no patch names — but tidy is the default.
-    child.once('exit', () => {
-      for (const name of linked) {
-        try {
-          rmSync(join(home, 'profiles', profile, 'node_modules', ...name.split('/')), { recursive: true, force: true })
-        } catch {
-          // Leaving a dangling link beats crashing an exit handler.
-        }
-      }
+  onLog?.(t('launch.starting', { version, port }))
+  // Output goes either to a caller watching live, or to a file. A pipe is
+  // owned by this process, so a detached launch must not use one: the moment
+  // the launcher exits, dsh's next write hits a closed pipe. Handing the
+  // child a file descriptor instead makes its output independent of us, and
+  // is also what makes a failed launch explainable after the fact.
+  /**
+   * Start dsh once and wait until it is genuinely serving.
+   * @param {string[]} nodeArgs - flags for node itself, before the entry file.
+   * @returns {Promise<import('node:child_process').ChildProcess>}
+   */
+  const bootOnce = async (nodeArgs) => {
+    // Built per attempt: a retry is a retry on a different port.
+    const args = ['--profile', profile, '--port', String(port)]
+    const sink = logFile === undefined ? null : openSync(logFile, 'a')
+    const child = spawn(process.execPath, [...nodeArgs, entry, ...args], {
+      // ⚠️ Just wherever this was typed. There used to be a `--workspace` flag
+      // setting it, dropped once it was measured: not passing it did exactly what
+      // passing `process.cwd()` did, and passing something else did not make dsh
+      // register that folder as a workspace either — it comes up with an empty
+      // list and waits to be told. Which folder dsh works in is `workspaces use`,
+      // and nothing else.
+      cwd: process.cwd(),
+      // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
+      // it can arrive from a text field or a drag-and-drop, where a trailing
+      // space survives and turns into a different directory.
+      env: { ...process.env, DSH_HOME: cleanPath(home) },
+      windowsHide: true,
+      ...(sink === null ? {} : { stdio: ['ignore', sink, sink], detached }),
     })
+    // The child holds its own copy of the descriptor; keeping ours open would
+    // pin the file for as long as this process lives.
+    if (sink !== null) closeSync(sink)
+
+    if (sink === null) {
+      child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+      child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+    }
+
+    if (direct) {
+      // The one thing a directly booted home must not be left holding.
+      //
+      // `profiles/node_modules` is not an installation but a layer of pointers
+      // into whichever installation booted last — so booting a real home from
+      // here leaves that home resolving its packages out of this tool's data
+      // directory. Measured on a real one: 251 links written in a single second,
+      // all aimed at a portable test folder, which the daily dsh then depended on
+      // for as long as nobody looked. Clearing costs nothing, because boot
+      // rebuilds the whole directory anyway — and rebuilds it from whatever starts
+      // next, which for a person typing `dsh` is their own installation.
+      //
+      // ⭐ Plugin links are deliberately NOT cleared with it. They belong to the
+      // workspace now, not to this launch, and removing them here would uninstall
+      // on exit whatever was installed on purpose.
+      //
+      // Best-effort: a launcher killed outright leaves this undone, and the
+      // pointer layer is repaired by the next boot that clears it.
+      child.once('exit', () => {
+        try {
+          clearModuleFallback(home)
+        } catch {
+          // An exit handler that throws helps nobody.
+        }
+      })
+    }
+
+    await waitUntilServing(port, child, onLog)
+    return child
   }
 
-  await waitUntilServing(port, child, onLog)
+  /**
+   * Attach the end of the log to a failure.
+   *
+   * "Exit code 1" is not a reason. Whatever dsh said on its way down is in
+   * the log, and quoting the end of it here is the difference between a
+   * caller that can act and one that can only report failure.
+   * @param {unknown} error
+   * @returns {string[]} the same lines, for the caller to look at.
+   */
+  const explain = (error) => {
+    if (logFile === undefined) return []
+    const tail = tailLines(logFile, 30)
+    if (error instanceof BoxError) error.details = { ...error.details, logFile, tail }
+    return tail
+  }
+
+  const nodeArgs = await internalsReachable(entry) ? [] : ['--expose-internals']
+  if (nodeArgs.length > 0) {
+    onLog?.(t('launch.needsExposeInternals'))
+  }
+  // ⭐ The one thing here that genuinely cannot be asked in advance. A port is
+  // checked by binding it and letting go, and dsh binds it a moment later —
+  // the gap between those two is not removable, because we cannot hold a port
+  // and hand it over. Two launches started together therefore can pick the
+  // same number, and the loser dies with `EADDRINUSE` before serving anything.
+  // Measured on two concurrent starts.
+  //
+  // ⛔ Compare `--expose-internals` a few lines up, which is the opposite case
+  // and must NOT be a retry: whether this Node can reach the internals is a
+  // fact that exists before the launch, so waiting for the crash would be
+  // laziness. A lost race exists only after the fact. Same mechanism, opposite
+  // verdict — what decides is whether the answer was knowable beforehand.
+  let child
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      child = await bootOnce(nodeArgs)
+      break
+    } catch (error) {
+      const tail = explain(error)
+      if (attempt >= 3 || !tail.some((line) => line.includes('EADDRINUSE'))) throw error
+      const next = await findFreePort({ from: port + 1 })
+      onLog?.(t('launch.portTaken', { port, next }))
+      port = next
+    }
+  }
   const url = `http://127.0.0.1:${port}`
-  if (!direct) {
-    noteBoot(layout, sandbox, version)
-    noteRunning(layout, sandbox, { pid: child.pid, port, url, version })
+  if (direct) {
+    // A main-environment launch is recorded too — in this tool's data
+    // directory, never in the user's own home. The home is theirs; the process
+    // we started is ours to be able to stop.
+    noteMainRunning(layout, { pid: child.pid, port, url, version, engine: engineRecord(engine), home })
+    child.once('exit', () => clearMainRunning(layout, child.pid))
+  } else {
+    noteBoot(layout, sandbox, engine)
+    noteRunning(layout, sandbox, { pid: child.pid, port, url, version, engine: engineRecord(engine) })
     // Best-effort: when the launcher lives long enough to see dsh exit, the
     // ledger is cleared at once. A launcher killed outright leaves the entry
     // behind — harmless, because every reader verifies the pid before
     // believing it and deletes what proves dead.
     child.once('exit', () => clearRunning(layout, sandbox, child.pid))
   }
+  // Released only once the sandbox is genuinely up: until then this process
+  // is still the one reporting whether the launch worked.
+  if (detached) child.unref()
   return { pid: child.pid, port, url, child }
 }
 
@@ -320,19 +377,68 @@ export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000
   child.once('exit', (code) => { exited = code ?? 0 })
 
   while (Date.now() < deadline) {
-    if (exited !== null) throw new Error(`dsh 还没启动完就退出了,退出码 ${exited}`)
+    if (exited !== null) {
+      throw new BoxError('BOOT_EXITED', t('launch.bootExited', { code: exited }), { exitCode: exited })
+    }
     if (await servesBootManifest(port)) {
       // A plugin tree that throws during a later stage can take the process
       // down after the page is already being served, which is exactly the
       // failure a port check reports as success.
       await sleep(1500)
-      if (exited !== null) throw new Error(`dsh 服务完页面之后退出了,退出码 ${exited}`)
-      onLog?.('已就绪:页面带着启动清单,且进程稳定')
+      if (exited !== null) {
+        throw new BoxError('BOOT_EXITED_LATE', t('launch.bootExitedLate', { code: exited }), { exitCode: exited })
+      }
+      onLog?.(t('launch.ready'))
       return
     }
     await sleep(400)
   }
-  throw new Error(`dsh 在 ${Math.round(timeoutMs / 1000)} 秒内没有启动完成`)
+  throw new BoxError('BOOT_TIMEOUT', t('launch.bootTimeout', { seconds: Math.round(timeoutMs / 1000) }))
+}
+
+/**
+ * Can dsh reach Node's module internals on this machine without being told to?
+ *
+ * ⭐ Asked of the machine, never worked out from the platform. dsh gets at the
+ * internal ESM loader through a native add-on that probes V8's memory layout,
+ * and that probe recognises only the official nodejs.org builds — so a
+ * Nix-compiled Node, Alpine's musl, and some arm64 runtimes all fall through,
+ * silently. `--expose-internals` is the documented way past it, and the
+ * official docs' own workaround is exactly this flag. The add-on is an
+ * optional dependency, so npm skips it without a word when no build matches:
+ * install succeeds, `dsh --version` works, and nothing goes wrong until boot.
+ *
+ * ⛔ Two failures come out of this, not one, and only the first one says so.
+ * HMR refuses to start and names the flag; the loader also silently stops
+ * resolving plugin packages against the profile directory and resolves them
+ * from its own instead, so an installed plugin becomes `Cannot find package`.
+ * With any plugin registered, that one goes first — which is why reacting to
+ * dsh's sentence was not enough, and why the question has to be asked before
+ * the launch rather than read out of the wreckage afterwards.
+ *
+ * ⛔ Not done in this process: loading a native add-on to find out whether it
+ * works is exactly the case where "it does not work" can mean a crash, and a
+ * launcher that dies while checking is worse than one that waits 60ms.
+ * @param {string} entry - the dsh entry file, used to resolve the add-on the
+ * way dsh's own loader resolves it.
+ * @returns {Promise<boolean>}
+ */
+function internalsReachable(entry) {
+  // Mirrors `ModuleLoader.fromInternal` in @deepseek-ai/cordis-plugin-loader:
+  // the handle has to come back, not merely the module.
+  const probe = 'const {createRequire}=require("node:module");'
+    + 'let ok=false;'
+    + 'try{ok=!!createRequire(process.argv[1])("node-addon-require-builtin")'
+    + '.requireBuiltin("internal/modules/esm/loader")?.getOrInitializeCascadedLoader()}catch{}'
+    + 'process.exit(ok?0:3)'
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ['-e', probe, entry], { stdio: 'ignore', windowsHide: true })
+    // An unanswerable probe is treated as "reachable", which is the shape the
+    // tool had before this check existed: it changes nothing on a machine
+    // where the question cannot be put, instead of adding a flag on a guess.
+    child.once('error', () => resolve(true))
+    child.once('exit', (code) => resolve(code === 0))
+  })
 }
 
 /** The marker the host injects into the index page once the client graph is composed. */
@@ -362,7 +468,7 @@ async function servesBootManifest(port) {
  * @returns {Promise<void>}
  */
 export async function stop(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`拒绝停止进程号 ${pid}`)
+  if (!Number.isInteger(pid) || pid <= 0) throw new BoxError('BAD_PID', t('launch.badPid', { pid }))
   if (process.platform === 'win32') {
     await new Promise((resolve) => {
       // The launcher starts a tree; /T reaches the children it spawned.

@@ -17,6 +17,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { t } from './messages.js'
 
 /** The one package every dsh release is rooted at. */
 export const ROOT_PACKAGE = '@deepseek-ai/dsh'
@@ -71,13 +72,19 @@ export async function resolveSource(source, onLog) {
     timeRequest(SOURCES.mirror + probePath),
   ])
   if (official === null && mirror === null) {
-    throw new Error('官方 npm 和中国镜像都连不上——请检查网络,或稍后再试')
+    throw new Error(t('npm.bothUnreachable'))
   }
   const useMirror = official === null || (mirror !== null && mirror < official)
   autoChoice = useMirror ? SOURCES.mirror : SOURCES.official
   onLog?.(useMirror
-    ? `自动选源:中国镜像更快(${mirror} 毫秒${official === null ? ',官方源不通' : ` vs 官方 ${official} 毫秒`})`
-    : `自动选源:官方 npm(${official} 毫秒${mirror === null ? ',镜像不通' : ` vs 镜像 ${mirror} 毫秒`})`)
+    ? t('npm.sourceMirror', {
+      mirror,
+      versus: official === null ? t('npm.versusOfficialDown') : t('npm.versusOfficial', { official }),
+    })
+    : t('npm.sourceOfficial', {
+      official,
+      versus: mirror === null ? t('npm.versusMirrorDown') : t('npm.versusMirror', { mirror }),
+    }))
   return autoChoice
 }
 
@@ -108,7 +115,7 @@ async function fetchManifest(name, version, registry) {
     try {
       const response = await fetch(url)
       if (response.status === 404) return null
-      if (!response.ok) throw new Error(`查 ${name}@${version} 时 npm 返回 ${response.status}`)
+      if (!response.ok) throw new Error(t('npm.queryFailed', { name, version, status: response.status }))
       return await response.json()
     } catch (error) {
       lastError = error
@@ -126,7 +133,7 @@ async function fetchManifest(name, version, registry) {
 export async function listReleases({ source } = {}) {
   const registry = await resolveSource(source)
   const response = await fetch(`${registry}/${encodeURIComponent(ROOT_PACKAGE)}`)
-  if (!response.ok) throw new Error(`连不上 npm:仓库返回 ${response.status}`)
+  if (!response.ok) throw new Error(t('npm.registryFailed', { status: response.status }))
   const packument = await response.json()
   const times = packument.time ?? {}
   const versions = Object.keys(packument.versions ?? {})
@@ -150,7 +157,7 @@ export async function listReleases({ source } = {}) {
  * @returns {Promise<string[]>} sorted package names belonging to the release.
  */
 export async function resolveReleaseClosure(version, { concurrency = 12, onProgress, registry = REGISTRY } = {}) {
-  if (!isValidVersion(version)) throw new Error(`不是合法的版本号:${version}`)
+  if (!isValidVersion(version)) throw new Error(t('npm.badVersion', { version }))
   const found = new Set()
   const seen = new Set([ROOT_PACKAGE])
   const pending = [ROOT_PACKAGE]
@@ -288,9 +295,9 @@ export function verifyPinned(dir, version) {
  * considered successful when it passes.
  */
 export async function installRelease(dir, version, { onLog, onProgress, source } = {}) {
-  if (!isValidVersion(version)) throw new Error(`不是合法的版本号:${version}`)
+  if (!isValidVersion(version)) throw new Error(t('npm.badVersion', { version }))
   let registry = await resolveSource(source, onLog)
-  onLog?.(`正在向 npm 查 ${version} 包含哪些包`)
+  onLog?.(t('npm.askingClosure', { version }))
   let announced = 0
   const walk = (reg) => resolveReleaseClosure(version, {
     registry: reg,
@@ -299,7 +306,7 @@ export async function installRelease(dir, version, { onLog, onProgress, source }
       // Every twentieth package, so the log moves without being a wall.
       if (done - announced >= 20) {
         announced = done
-        onLog?.(`已查过 ${done} 个包(共约 ${queued} 个)`)
+        onLog?.(t('npm.askedSoFar', { done, queued }))
       }
     },
   })
@@ -308,25 +315,24 @@ export async function installRelease(dir, version, { onLog, onProgress, source }
   // release. A version it has not synced yet must not read as "does not
   // exist" — that would be this tool lying about npm. Fall back loudly.
   if (closure.length === 0 && registry !== SOURCES.official) {
-    onLog?.(`镜像上还没同步到 ${version},改用官方源再查一次`)
+    onLog?.(t('npm.mirrorBehind', { version }))
     registry = SOURCES.official
     closure = await walk(registry)
   }
-  if (closure.length === 0) throw new Error(`npm 上没有叫 ${version} 的版本`)
-  onLog?.(`${version} 共 ${closure.length} 个包,逐个钉死版本`)
+  if (closure.length === 0) throw new Error(t('npm.noSuchVersion', { version }))
+  onLog?.(t('npm.closureSize', { version, count: closure.length }))
   writeFileSync(join(dir, 'package.json'), `${JSON.stringify(buildInstallManifest(version, closure), null, 2)}\n`)
 
   await runNpmInstall(dir, onLog, registry)
 
   const report = verifyPinned(dir, version)
   if (!report.ok) {
-    const sample = report.wrong.slice(0, 5).map((w) => `${w.name}@${w.found ?? '读不出版本'}`).join('、')
+    const sample = report.wrong.slice(0, 5).map((w) => `${w.name}@${w.found ?? t('npm.versionUnreadable')}`).join('、')
     throw new Error(
-      `钉版失败:${report.checked} 个包里有 ${report.wrong.length} 个不是 ${version}(${sample})。`
-      + '装成这样会是几个版本混在一起,所以本次下载判为失败。',
+      t('npm.pinFailed', { checked: report.checked, wrong: report.wrong.length, version, sample }),
     )
   }
-  onLog?.(`已核对:${report.checked} 个包全部是 ${version}`)
+  onLog?.(t('npm.pinOk', { checked: report.checked, version }))
   return report
 }
 
@@ -356,7 +362,7 @@ async function runNpmInstall(dir, onLog, registry = REGISTRY) {
   const [command, ...args] = npmInvocation(['install', '--no-audit', '--no-fund', '--registry', registry])
   const started = Date.now()
   const errors = []
-  onLog?.('正在执行 npm install。解析依赖期间磁盘上不会有变化,解析完才开始落包。')
+  onLog?.(t('npm.installing'))
 
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: dir, windowsHide: true, env: npmEnv(bypassProxy, registry) })
@@ -365,8 +371,8 @@ async function runNpmInstall(dir, onLog, registry = REGISTRY) {
       const seconds = Math.round((Date.now() - started) / 1000)
       const landed = Object.keys(readInstalledVersions(dir)).length
       onLog?.(landed === 0
-        ? `npm 仍在解析依赖,已 ${seconds} 秒(这个阶段磁盘上看不到变化,属正常)`
-        : `npm 正在写入,已 ${seconds} 秒,已落盘 ${landed} 个包`)
+        ? t('npm.resolving', { seconds })
+        : t('npm.writing', { seconds, landed }))
     }, 5000)
 
     for (const stream of [child.stdout, child.stderr]) {
@@ -383,14 +389,14 @@ async function runNpmInstall(dir, onLog, registry = REGISTRY) {
 
     child.once('error', (error) => {
       clearInterval(beat)
-      reject(new Error(`起不了 npm:${error.message}。请确认 npm 已安装并在 PATH 里。`))
+      reject(new Error(t('npm.cannotStart', { error: error.message })))
     })
 
     child.once('close', (code) => {
       clearInterval(beat)
       if (code === 0) return resolve()
       const tail = errors.slice(-12).join('\n')
-      reject(new Error(`npm install 失败(退出码 ${code})。npm 最后的输出:\n${tail}`))
+      reject(new Error(t('npm.installFailed', { code, tail })))
     })
   })
 }
@@ -442,10 +448,10 @@ export async function preferDirect(onLog, registry = REGISTRY) {
   const probe = `${registry}/${encodeURIComponent(ROOT_PACKAGE)}`
   const direct = await timeRequest(probe)
   if (direct === null) {
-    onLog?.('直连 npm 不通,改走你系统里配置的代理')
+    onLog?.(t('npm.directBlocked'))
     return false
   }
-  onLog?.(`直连 npm 用时 ${direct} 毫秒,下载走直连(绕开代理,只对 npm 这一个域名生效)`)
+  onLog?.(t('npm.direct', { ms: direct }))
   return true
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-box",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Launch DeepSeek Harness in isolated sandboxes: pick an official version, pick which extra plugins to load, keep every run out of your real ~/.dsh",
   "keywords": ["dsh", "deepseek-harness", "launcher", "sandbox", "version-manager"],
   "license": "MIT",
@@ -12,12 +12,13 @@
   "bin": {
     "dsh-box": "bin/cli.js"
   },
-  "files": ["bin", "src"],
+  "files": ["bin", "src", "AGENTS.md"],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node bin/cli.js"
+    "start": "node bin/cli.js",
+    "test": "node tools/check-all.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"

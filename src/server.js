@@ -6,27 +6,54 @@
  * and because one implementation then works identically on Windows, macOS and
  * Linux. Packaging this into a double-clickable binary is a separate step
  * that adds no behaviour; see the README.
+ *
+ * ⭐ This file used to hold eighteen functions that implemented the commands a
+ * second time, over HTTP. Same job, two bodies of code: each read the config,
+ * filled in its own defaults, ran its own checks. They drifted, silently, and
+ * the drift did damage — a sandbox started from the command line did not exist
+ * as far as the window was concerned, so the guard against deleting a release
+ * out from under a running sandbox found nothing to object to. The window
+ * could also delete a running sandbox outright, and could change the install
+ * source, which the command line had no way to do at all.
+ *
+ * So the window is now a projection and nothing more. It has exactly two ways
+ * to touch the world:
+ *
+ *   **reads go to disk** — {@link snapshot} opens the same files `status`
+ *   opens, in this process, with no subprocess and no cached state of its own;
+ *
+ *   **writes go through a command** — {@link runCommand} starts the real
+ *   command line as a child process and reports what it said.
+ *
+ * That second one is what makes "the window cannot grow a capability the
+ * command line lacks" structural rather than a rule someone has to remember.
+ * It also means every click is journalled, refused with the same error codes,
+ * and logged in the same place as an agent's identical action, for free.
  */
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { versionDir } from './paths.js'
-import {
-  SOURCE_CHOICES, describePlugin, partitionPlugins, readConfig, removePlugin, upsertPlugin, writeConfig,
-} from './config.js'
-import { installRelease, isValidVersion, listReleases } from './registry.js'
-import { userDshHome } from './paths.js'
-import {
-  adoptSessions, deleteSandbox, ensureSandbox, listSandboxes, mainDshRunning, suggestSandboxName,
-} from './sandbox.js'
-import { findFreePort, launch, stop } from './launch.js'
-import { deleteVersion, downloadedVersions } from './versions.js'
+import { COMMANDS, commandLine, mutates } from './commands.js'
+import { partitionPlugins, readConfig, SETTINGS } from './config.js'
+import { detectHostDsh } from './host.js'
+import { controlStatus, readSession } from './journal.js'
+import { LANGS, messagesFor, setLang, systemLang, t } from './messages.js'
+import { cabinetPlugins } from './mounts.js'
+import { isOurDownload } from './packages.js'
+import { nameRule, userDshHome } from './paths.js'
+import { listReleases } from './registry.js'
+import { listSandboxes, mainRunningRecord, runningSandboxes, suggestSandboxName } from './sandbox.js'
+import { findFreePort } from './launch.js'
+import { downloadedVersions } from './versions.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+
+/** The command line this window drives. The only way it changes anything. */
+const CLI = join(HERE, '..', 'bin', 'cli.js')
 
 /**
  * The oldest release offered as a ready-made choice.
@@ -38,61 +65,6 @@ const HERE = dirname(fileURLToPath(import.meta.url))
  */
 export const OLDEST_FEATURED = '0.1.0-rc.6'
 
-/** Running sandboxes, so the window can offer to stop them. */
-const running = new Map()
-
-/**
- * Long jobs the window watches instead of waiting on.
- *
- * Downloading a release takes about two minutes, and for most of that npm is
- * resolving the graph without writing anything, so a request that simply
- * blocks leaves the window with nothing to show and the user with no way to
- * tell work from failure. Each job keeps its own log, and the window polls.
- */
-const jobs = new Map()
-
-/**
- * Start a job and hand back its id immediately.
- *
- * Every line also lands in a file under `logs/`, because the window's copy
- * is gone after a refresh and a truncated ring buffer — while the question
- * "why did my launch with those two plugins die" is usually asked later,
- * about exactly the lines that scrolled away.
- * @param {import('./paths.js').BoxLayout} layout
- * @param {string} label - what this job is, for the log file name.
- * @param {(log: (line: string) => void) => Promise<unknown>} work
- * @returns {string} the job id.
- */
-function startJob(layout, label, work) {
-  const id = `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const job = { id, state: 'running', lines: [], error: null, result: null }
-  jobs.set(id, job)
-
-  const stamp = new Date().toISOString().slice(0, 19).replace('T', '_').replaceAll(':', '-')
-  const file = join(layout.root, 'logs', `${stamp}_${label.replace(/[^\w.-]+/g, '-')}.log`)
-  mkdirSync(join(layout.root, 'logs'), { recursive: true })
-  const persist = (line) => {
-    try {
-      appendFileSync(file, `${new Date().toISOString().slice(11, 19)} ${line}\n`)
-    } catch {
-      // A log that cannot be written must not take the job down with it.
-    }
-  }
-
-  const log = (line) => {
-    persist(line)
-    job.lines.push(line)
-    if (job.lines.length > 200) job.lines.shift()
-  }
-  work(log).then(
-    (result) => { job.result = result; job.state = 'done'; persist('完成') },
-    (error) => { job.error = error.message; job.state = 'failed'; log(`失败:${error.message}`) },
-  )
-  // Finished jobs are kept a while so a slow poll still sees the outcome.
-  setTimeout(() => jobs.delete(id), 30 * 60 * 1000).unref?.()
-  return id
-}
-
 /**
  * The window's own preferred port. Fixed rather than OS-chosen so that the
  * address survives a restart — an OS-chosen port changes every time, and
@@ -102,6 +74,15 @@ export const UI_PORT = 10130
 
 /**
  * Start the config window.
+ *
+ * ⚠ Ending this process does not stop anything it started. Sandboxes are
+ * separate dsh processes that were handed off on purpose, and Ctrl+C here ends
+ * one command — `ui` — not the program: there is no long-lived dsh-box process
+ * for it to end. Stopping every sandbox is a thing you *do*, and it has its own
+ * command, `quit`, which the window's close button calls. This used to be a
+ * shutdown hook that killed whatever this process had launched, which meant
+ * the same sandbox died with the window or did not, depending on nothing more
+ * than which entrance had started it.
  * @param {import('./paths.js').BoxLayout} layout
  * @param {object} [options]
  * @param {number} [options.port] - 0 picks the first free port from {@link UI_PORT}.
@@ -112,25 +93,15 @@ export async function serve(layout, { port = 0, open = true } = {}) {
   if (port === 0) port = await findFreePort({ from: UI_PORT })
   const server = createServer((request, response) => {
     const refused = refuse(request, port)
-    if (refused !== null) return void json(response, 403, { error: refused })
-    handle(layout, request, response).catch((error) => {
-      json(response, 500, { error: error.message })
+    if (refused !== null) return void json(response, 403, { error: refused.message, code: refused.code })
+    handle(layout, request, response, () => server.close()).catch((error) => {
+      json(response, 500, { ok: false, code: 'WINDOW_FAILED', message: error.message })
     })
   })
-  // When this process is told to stop, the sandboxes it started must not
-  // outlive it as orphans nobody can see. On Windows the desktop shell uses
-  // a tree kill and this handler never fires; on mac and Linux a plain
-  // SIGTERM is all the shell sends, and this is what makes it sufficient.
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, async () => {
-      for (const entry of running.values()) await stop(entry.pid).catch(() => {})
-      process.exit(0)
-    })
-  }
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {
       const url = `http://127.0.0.1:${server.address().port}`
-      console.log(`\n  配置窗地址 ${url}\n`)
+      console.log(`\n  ${t('window.address', { url })}\n`)
       if (open) openBrowser(url)
     })
     server.once('close', resolve)
@@ -166,14 +137,32 @@ const PASS = randomUUID()
  */
 function refuse(request, port) {
   const mine = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`])
-  if (!mine.has(request.headers.host ?? '')) return '这个地址不是本机配置窗'
+  if (!mine.has(request.headers.host ?? '')) {
+    return { code: 'NOT_LOCAL', message: t('window.notLocal') }
+  }
   const origin = request.headers.origin
   if (origin !== undefined && !mine.has(origin.replace(/^https?:\/\//, ''))) {
-    return '这个请求来自别的网页,已拒绝'
+    return { code: 'CROSS_ORIGIN', message: t('window.crossOrigin') }
   }
   const path = request.url ?? ''
-  if (path.startsWith('/api/') && request.headers['x-dsh-box-pass'] !== PASS) {
-    return '这个请求没带本次配置窗的通行证,已拒绝'
+  if (path.startsWith('/api/')) {
+    const presented = request.headers['x-dsh-box-pass']
+    if (presented === undefined) {
+      return { code: 'NO_PASS', message: t('window.noPass') }
+    }
+    // ⭐ A pass that is present but wrong is a different event from one that is
+    // absent, and telling them apart is the difference between blaming the
+    // request and describing what happened. Only a page this service served can
+    // carry a pass at all, so a wrong one means it was served by a *previous*
+    // run: the window was restarted and this tab is left over. That is not a
+    // permission problem, it is a stale page, and the fix is a refresh — which
+    // the page now does by itself on seeing this code.
+    if (presented !== PASS) {
+      return {
+        code: 'STALE_PASS',
+        message: t('window.stalePass'),
+      }
+    }
   }
   return null
 }
@@ -182,51 +171,101 @@ function refuse(request, port) {
  * @param {import('./paths.js').BoxLayout} layout
  * @param {import('node:http').IncomingMessage} request
  * @param {import('node:http').ServerResponse} response
+ * @param {() => void} close - stop serving; see the `quit` branch below.
  */
-async function handle(layout, request, response) {
+async function handle(layout, request, response, close) {
   const url = new URL(request.url, 'http://127.0.0.1')
   if (url.pathname === '/') {
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+    // ⛔ Never cached. The page carries this run's pass baked into it, so a
+    // cached copy is a page holding a pass that no longer exists — and the
+    // recovery for that is "reload", which a cache would answer with the same
+    // stale copy forever. The one instruction the window gives when things go
+    // wrong has to actually work.
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    })
+    // The language is decided per serve, not per process start: `config lang`
+    // may have run since this window opened, and the reload the switch in the
+    // page's corner does is only a real switch if this read happens again.
+    const lang = setLang(pageLang(layout))
     const page = readFileSync(join(HERE, 'ui', 'index.html'), 'utf8')
-    return void response.end(page.replace('__DSH_BOX_PASS__', PASS))
+    // Baked in exactly like the pass: the page and the command line answering
+    // it must be reading the same table. `<` is escaped so no sentence can ever
+    // smuggle a `</script>` into the page, and the replacements are functions
+    // so `$`-sequences inside a sentence stay text instead of becoming
+    // `String.replace` patterns.
+    const baked = (value) => JSON.stringify(value).replaceAll('<', '\\u003c')
+    const names = Object.fromEntries(LANGS.map((one) => [one, messagesFor(one)['lang.name']]))
+    return void response.end(page
+      .replace('__DSH_BOX_PASS__', PASS)
+      .replace('__DSH_BOX_LANG_NAMES__', () => baked(names))
+      .replaceAll('__DSH_BOX_LANG__', lang)
+      .replace('__DSH_BOX_MESSAGES__', () => baked(messagesFor())))
   }
-  if (url.pathname === '/api/state') return json(response, 200, await state(layout))
-  if (url.pathname === '/api/job') {
-    const job = jobs.get(url.searchParams.get('id'))
-    if (job === undefined) return json(response, 404, { error: '没有这个任务(可能已过期)' })
-    return json(response, 200, { state: job.state, lines: job.lines, error: job.error, result: job.result })
-  }
-  if (request.method !== 'POST') return json(response, 404, { error: '找不到' })
+  if (url.pathname === '/api/state') return json(response, 200, await snapshot(layout))
+  if (request.method !== 'POST') return json(response, 404, { error: t('window.notFound') })
 
   const body = await readJson(request)
-  switch (url.pathname) {
-    case '/api/pull': return json(response, 200, { jobId: startJob(layout, `pull-${body.version}`, (log) => pull(layout, body, log)) })
-    case '/api/source': return json(response, 200, setSource(layout, body))
-    case '/api/open': return json(response, 200, openLocal(body))
-    case '/api/version/delete': return json(response, 200, { jobId: startJob(layout, `drop-${body.version}`, (log) => dropVersion(layout, body, log)) })
-    case '/api/plugin/add': return json(response, 200, addPlugin(layout, body))
-    case '/api/plugin/remove': return json(response, 200, dropPlugin(layout, body))
-    case '/api/start': return json(response, 200, { jobId: startJob(layout, `start-${body.sandbox || 'new'}`, (log) => start(layout, body, log)) })
-    case '/api/main/start': return json(response, 200, { jobId: startJob(layout, 'start-main', (log) => startMain(layout, body, log)) })
-    case '/api/stop': return json(response, 200, await halt(body))
-    case '/api/sandbox/delete': return json(response, 200, dropSandbox(layout, body))
-    case '/api/sandbox/adopt': return json(response, 200, await adoptSessions(layout, String(body.name ?? '')))
-    default: return json(response, 404, { error: '找不到' })
+  // Two doors, and no third. Anything that changes something goes through the
+  // command line; the only exception handles a link click, which changes
+  // nothing at all.
+  if (url.pathname === '/api/command') {
+    const result = await command(layout, body.argv)
+    json(response, 200, result)
+    // A window is a view of the program. When the program has just been told
+    // to quit — by this window, through the same command anyone else would
+    // use — the view has nothing left to show, so it stops serving. This is
+    // not the window deciding anything: `quit` did the stopping, and closing
+    // is only this process ending its own life afterwards.
+    if (body.argv?.[0] === 'quit' && result.ok === true) setTimeout(close, 200).unref?.()
+    return
   }
+  if (url.pathname === '/api/open') return json(response, 200, openLocal(body))
+  return json(response, 404, { error: t('window.notFound') })
 }
 
 /**
- * The last answer from npm, kept a minute. The window polls state to keep
- * its running list fresh, and that poll must not become an npm request each
- * time.
+ * Which language the page speaks: the same answer `chooseLang` in the CLI
+ * gives, read the same tolerant way — the `lang` setting of this data
+ * directory, or the computer's own language when nothing has been set. A
+ * config this cannot parse decides nothing, because the window still has to
+ * be able to open and complain about it.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {string}
+ */
+function pageLang(layout) {
+  try {
+    if (existsSync(layout.config)) {
+      const chosen = JSON.parse(readFileSync(layout.config, 'utf8'))?.lang
+      if (typeof chosen === 'string') return chosen
+    }
+  } catch {
+    // Deliberately silent: this is not the place that reports a broken config.
+  }
+  return systemLang()
+}
+
+/**
+ * The last answer from npm, kept a minute.
+ *
+ * The only thing this window remembers, and it remembers it about npm rather
+ * than about itself: the page polls to keep its running list fresh, and that
+ * poll must not become a registry request every time. Nothing about the data
+ * directory is cached here — that is read from disk on every poll, which is
+ * what makes the window agree with the command line by construction.
  */
 let releases = { at: 0, data: null }
 
 /**
- * Everything the window needs to draw itself.
+ * Everything the window needs to draw itself, read from disk.
+ *
+ * The same files `status` reads, read the same way, in this process. No
+ * subprocess: a poll every second must not cost one, and reading is not an
+ * action — nothing here changes, so nothing here needs a command.
  * @param {import('./paths.js').BoxLayout} layout
  */
-async function state(layout) {
+async function snapshot(layout) {
   const config = readConfig(layout)
   const { live, missing } = partitionPlugins(config)
   let available = []
@@ -246,202 +285,226 @@ async function state(layout) {
   const cut = available.indexOf(OLDEST_FEATURED)
   return {
     box: layout.root,
+    // The machine a launch uses unless a download is named. Read from disk like
+    // everything else here — no `npm ls -g`, which would turn an eight-second
+    // poll into eight seconds of subprocess.
+    host: detectHostDsh(),
     downloaded: downloadedVersions(layout),
     featured: cut === -1 ? [] : available.slice(0, cut + 1),
     older: cut === -1 ? [] : available.slice(cut + 1),
     available,
     tags,
     source: config.source,
-    plugins: live,
+    settings: Object.fromEntries(
+      Object.entries(SETTINGS).map(([name, setting]) => [name, setting.read(config)]),
+    ),
+    // `downloaded` says whose files these are, which is the only thing that
+    // decides what removing one does — so the page can word its button
+    // accordingly instead of guessing from the path.
+    plugins: live.map((plugin) => ({ ...plugin, downloaded: isOurDownload(layout, plugin.path) })),
     missingPlugins: missing,
+    // What the user's own filing cabinet actually has. The registry above is
+    // "what this tool knows about"; this is "what will load when you type dsh",
+    // and the two stopped being the same thing when plugins became a property
+    // of the workspace rather than of a launch.
+    mainPlugins: cabinetPlugins(userDshHome()),
     sandboxes: listSandboxes(layout),
     suggestedName: suggestSandboxName(layout),
     last: config.last,
-    running: [...running.values()].map(({ child, ...rest }) => rest),
+    running: runningSandboxes(layout),
+    // Only ever the main environment *we* started, and only from disk. A dsh
+    // the user launched themselves is deliberately absent: we could see its
+    // port but not its identity, and a stop button that acts on a guess is
+    // worse than no stop button.
+    main: mainRunningRecord(layout),
+    // Sent rather than repeated in the page, so the rule has one home. A copy
+    // in the page is a copy that drifts, and the drift shows up as the window
+    // accepting a name the launcher then refuses.
+    nameRule: nameRule(),
+    // The two files the blue frame is drawn from. Both are usually absent —
+    // `agent/` does not exist until something attaches — and that is the
+    // ordinary state, not a failure: it means nobody is driving and there is no
+    // history. Neither is reported as an error.
+    agent: controlStatus(layout),
+    session: agentSession(layout),
   }
 }
 
 /**
+ * The recorded session, with every action written out as a line anyone could
+ * re-run.
+ *
+ * The line is rendered here, from the arguments the action resolved to, rather
+ * than stored when the action happened. A stored line is a second copy of the
+ * record and can disagree with it; a rendered one cannot. It is rendered on
+ * this side because the table that knows which value belongs to which flag is
+ * this side — the page has no business owning a second copy of that either.
+ *
+ * ⭐ A session whose actions cannot be read as a list is reported as no session
+ * at all. Drawing a trail out of something misread would put operations on the
+ * screen that never happened, which is worse than showing nothing.
  * @param {import('./paths.js').BoxLayout} layout
- * @param {{version: string}} body
  */
-async function pull(layout, body, log) {
-  const version = String(body.version ?? '').trim()
-  if (!isValidVersion(version)) throw new Error(`「${version}」不是版本号`)
-  const dir = versionDir(layout, version)
-  mkdirSync(dir, { recursive: true })
-  const report = await installRelease(dir, version, { onLog: log, source: readConfig(layout).source })
-  return { version, packages: report.checked }
+function agentSession(layout) {
+  const session = readSession(layout)
+  if (session === null || !Array.isArray(session.actions)) return null
+  return {
+    ...session,
+    actions: session.actions.map((action) => ({
+      ...action,
+      line: commandLine(action.command, action.args ?? {}),
+    })),
+  }
+}
+
+/**
+ * Flags the window fills in itself and will not accept from the page.
+ *
+ * `--box` decides which data directory is being talked about, and a page that
+ * could set it would be able to act on a world other than the one it is
+ * showing — the mix-up this tool prints a data directory on every answer to
+ * avoid. `--json` is how the answer gets back here at all.
+ */
+const RESERVED_FLAGS = new Set(['box', 'json'])
+
+/**
+ * Run one command and return what it said.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {unknown} argv - the command and its arguments, as typed.
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function command(layout, argv) {
+  const problem = checkArgv(argv)
+  if (problem !== null) return { ok: false, code: 'BAD_COMMAND', message: problem }
+  const held = heldAgainst(layout, argv)
+  if (held !== null) return held
+  return runCommand(layout, argv)
+}
+
+/**
+ * The commands this window may still send while an agent is driving it.
+ *
+ * Only the way out. `detach` is the person taking the wheel back, and refusing
+ * that would be refusing the one control that has to keep working.
+ */
+const RELEASE_COMMANDS = new Set(['detach'])
+
+/**
+ * Refuse a window command while an agent holds this data directory, or null.
+ *
+ * ⛔ **The lock used to exist only on the page**, as `<main>.inert`. Nothing
+ * here asked whether an agent was driving, so anything that reached this
+ * function ran — which made the guarantee a property of the page being correct
+ * rather than a property of the program. The sister book already said 「界面锁
+ * 死是纪律,不是保险」about a second agent; it was wider than that, because it
+ * did not hold against this window either.
+ *
+ * Put here rather than spread across the controls for the same reason the
+ * command table exists: a rule that has to be repeated per control is a rule
+ * that will be missed by the next control. This one is inherited for free.
+ *
+ * ⚠️ It refuses **the window**, not the command line. An agent's own commands
+ * come from its own process and never pass through here, which is what lets
+ * this be a flat refusal instead of a judgement about who is asking.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string[]} argv
+ * @returns {Record<string, unknown> | null}
+ */
+function heldAgainst(layout, argv) {
+  if (RELEASE_COMMANDS.has(argv[0])) return null
+  if (!mutates(argv[0]) && !mutates(`${argv[0]}.${argv[1]}`)) return null
+  const held = controlStatus(layout)
+  if (held === null) return null
+  return {
+    ok: false,
+    code: 'AGENT_HOLDS_WINDOW',
+    message: t('window.agentHolds'),
+    session: held.session,
+    since: held.startedAt,
+  }
+}
+
+/**
+ * Why this argument list will not be run, or null.
+ *
+ * Deliberately thin. The command line does the real checking — that is the
+ * point of there being only one implementation — so this refuses only the two
+ * things that would not reach it as a mistake: a command that does not exist,
+ * and a flag the window owns. Arguments are handed over as a list, never a
+ * string for a shell to re-read, so nothing here is guarding against quoting.
+ * @param {unknown} argv
+ * @returns {string | null}
+ */
+function checkArgv(argv) {
+  if (!Array.isArray(argv) || argv.length === 0) return t('window.noCommand')
+  if (argv.some((token) => typeof token !== 'string')) return t('window.nonTextToken')
+  if (!(argv[0] in COMMANDS)) return t('window.unknownCommand', { name: argv[0] })
+  if (argv[0] === 'ui') return t('window.noNestedUi')
+  for (const token of argv) {
+    const flag = token.startsWith('--') ? token.slice(2).split('=')[0] : null
+    if (flag !== null && RESERVED_FLAGS.has(flag)) return t('window.reservedFlag', { flag })
+  }
+  return null
+}
+
+/**
+ * Start the command line as a child process and read its one JSON line.
+ *
+ * The working directory is left alone on purpose: `start` uses it as the
+ * workspace dsh opens when none is remembered, so changing it here would
+ * quietly send window launches somewhere else than command-line ones.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string[]} argv
+ * @returns {Promise<Record<string, unknown>>}
+ */
+function runCommand(layout, argv) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', layout.root, '--json'], {
+      windowsHide: true,
+    })
+    let out = ''
+    let err = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.on('data', (chunk) => { err += chunk })
+    child.once('error', (error) => resolve({
+      ok: false, code: 'COMMAND_NOT_RUN', message: t('window.cannotRunCli', { error: error.message }),
+    }))
+    child.once('close', (code) => {
+      // Success and refusal both arrive as one JSON line; the exit code only
+      // says which. Anything else means the command line itself broke, and
+      // saying so beats reporting a plausible failure that never happened.
+      const line = out.trim().split('\n').filter((text) => text.trim() !== '').at(-1)
+      if (line !== undefined) {
+        try {
+          return void resolve(JSON.parse(line))
+        } catch {
+          // Fall through to the no-answer case below.
+        }
+      }
+      resolve({
+        ok: false,
+        code: 'COMMAND_NO_OUTPUT',
+        message: err.trim() || t('window.noOutput', { code }),
+        argv,
+      })
+    })
+  })
 }
 
 /**
  * Open a local sandbox URL in the system's default browser.
  *
- * Exists for the desktop shell: its webview has no tabs, so an ordinary
- * `target="_blank"` link silently does nothing there. The page routes link
- * clicks here instead, which lands the user in a real browser in both
- * worlds. Only loopback http URLs are accepted — this endpoint must not be
- * a general-purpose "open anything" lever.
+ * The one thing here that is not a command, because it is not an action on
+ * anything this tool owns: it opens a link. Exists for the desktop shell,
+ * whose webview has no tabs, so an ordinary `target="_blank"` link silently
+ * does nothing there. Only loopback http URLs are accepted — this endpoint
+ * must not become a general-purpose "open anything" lever.
  * @param {{url: string}} body
  */
 function openLocal(body) {
   const url = String(body.url ?? '')
-  if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(url)) throw new Error('只开本机沙箱地址')
+  if (!/^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(url)) throw new Error(t('window.onlyLocalUrl'))
   openBrowser(url)
-  return { ok: true }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{version: string}} body
- * @param {(line: string) => void} log
- */
-async function dropVersion(layout, body, log) {
-  const version = String(body.version ?? '').trim()
-  if (!isValidVersion(version)) throw new Error(`「${version}」不是版本号`)
-  for (const entry of running.values()) {
-    if (entry.version === version) throw new Error(`「${entry.sandbox}」正用着 ${version},先停掉它再删`)
-  }
-  await deleteVersion(layout, version, log)
-  return { version }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{source: string}} body
- */
-function setSource(layout, body) {
-  const source = String(body.source ?? '')
-  if (!SOURCE_CHOICES.includes(source)) throw new Error(`没有叫「${source}」的安装源`)
-  writeConfig(layout, { ...readConfig(layout), source })
-  releases = { at: 0, data: null } // the version list may differ per source
-  return { source }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{dir: string, id?: string}} body
- */
-function addPlugin(layout, body) {
-  const plugin = describePlugin(String(body.dir ?? ''), { id: body.id })
-  writeConfig(layout, upsertPlugin(readConfig(layout), plugin))
-  return { plugin }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{id: string}} body
- */
-function dropPlugin(layout, body) {
-  writeConfig(layout, removePlugin(readConfig(layout), String(body.id ?? '')))
-  return { ok: true }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{version: string, sandbox?: string, brandNew?: boolean, plugins?: string[], importSignIn?: boolean, workspace?: string}} body
- */
-async function start(layout, body, log) {
-  const config = readConfig(layout)
-  const version = String(body.version ?? '')
-  if (!isValidVersion(version)) throw new Error('先选一个版本')
-
-  const name = body.brandNew === true ? suggestSandboxName(layout) : String(body.sandbox ?? '').trim()
-  if (name === '') throw new Error('给沙箱起个名字')
-
-  const wanted = new Set(Array.isArray(body.plugins) ? body.plugins : [])
-  const chosen = partitionPlugins(config).live.filter((p) => wanted.has(p.id))
-  const importSignIn = body.importSignIn !== false
-
-  const workspace = String(body.workspace ?? '').trim()
-  const { info, created, signInImported } = ensureSandbox(layout, name, { importSignIn })
-  log(`沙箱「${info.name}」${created ? '已新建' : '已复用'}${signInImported ? ',登录已导入' : ''}`)
-  if (chosen.length === 0) log('没勾额外插件:这是纯官方的 dsh')
-  const result = await launch({
-    layout,
-    sandbox: info.name,
-    version,
-    plugins: chosen,
-    workspace: workspace === '' ? undefined : workspace,
-    onLog: log,
-  })
-
-  running.set(result.pid, {
-    pid: result.pid, port: result.port, url: result.url, sandbox: info.name, version, child: result.child,
-  })
-  result.child.once('exit', () => running.delete(result.pid))
-
-  writeConfig(layout, {
-    ...config,
-    last: {
-      version,
-      sandbox: info.name,
-      plugins: chosen.map((p) => p.id),
-      importSignIn,
-      workspace,
-    },
-  })
-  return { url: result.url, pid: result.pid, sandbox: info.name, created, signInImported }
-}
-
-/**
- * Boot the user's real dsh home — no sandbox — with the ticked plugins.
- *
- * This exists to answer one question a sandbox cannot: what does a plugin
- * look like inside the environment someone actually lives in, with their
- * real conversations, settings and patches around it. The plugins ride on a
- * per-launch `--patch`, so a normally started dsh is not affected by having
- * used this entry. Refused while a dsh already serves on its default port:
- * two processes writing one home is how storage files get corrupted.
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{version: string, plugins?: string[], workspace?: string}} body
- * @param {(line: string) => void} log
- */
-async function startMain(layout, body, log) {
-  const config = readConfig(layout)
-  const version = String(body.version ?? '')
-  if (!isValidVersion(version)) throw new Error('先选一个版本')
-  if (await mainDshRunning()) throw new Error('主环境已经开着一台(端口 3080),先关掉它再从这里启动')
-  if ([...running.values()].some((entry) => entry.main === true)) {
-    throw new Error('主环境已经从这里启动过一台了,在「正在运行」里停掉它先')
-  }
-
-  const wanted = new Set(Array.isArray(body.plugins) ? body.plugins : [])
-  const chosen = partitionPlugins(config).live.filter((p) => wanted.has(p.id))
-  const workspace = String(body.workspace ?? '').trim()
-  log(`用 ${version} 启动主环境(非沙箱)${chosen.length > 0 ? `,附加 ${chosen.length} 个插件(仅本次启动生效)` : ''}`)
-
-  const result = await launch({
-    layout,
-    home: userDshHome(),
-    version,
-    plugins: chosen,
-    workspace: workspace === '' ? undefined : workspace,
-    onLog: log,
-  })
-  running.set(result.pid, {
-    pid: result.pid, port: result.port, url: result.url, sandbox: '主环境', version, main: true, child: result.child,
-  })
-  result.child.once('exit', () => running.delete(result.pid))
-  return { url: result.url, pid: result.pid }
-}
-
-/**
- * @param {{pid: number}} body
- */
-async function halt(body) {
-  const pid = Number(body.pid)
-  await stop(pid)
-  running.delete(pid)
-  return { ok: true }
-}
-
-/**
- * @param {import('./paths.js').BoxLayout} layout
- * @param {{name: string}} body
- */
-function dropSandbox(layout, body) {
-  deleteSandbox(layout, String(body.name ?? ''))
   return { ok: true }
 }
 
@@ -474,7 +537,14 @@ function openBrowser(url) {
     ? ['cmd.exe', '/c', 'start', '', url]
     : process.platform === 'darwin' ? ['open', url] : ['xdg-open', url]
   try {
-    spawn(command[0], command.slice(1), { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+    // ⛔ Deliberately not `detached` on Windows. Measured: `cmd.exe` started
+    // detached gets a console of its own and `windowsHide` does not apply to
+    // it, so a black window flashed up every single time the config window
+    // opened or a sandbox link was clicked. The same spawn without `detached`
+    // creates no console at all. Nothing is lost by dropping it: both callers
+    // are the long-lived window process, `start` hands the URL to the system
+    // and exits immediately, and a Windows child outlives its parent anyway.
+    spawn(command[0], command.slice(1), { stdio: 'ignore', windowsHide: true }).unref()
   } catch {
     // Opening a browser is a convenience; the URL is printed either way.
   }

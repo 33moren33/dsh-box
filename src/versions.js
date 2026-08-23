@@ -5,8 +5,11 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { BoxError } from './errors.js'
+import { t } from './messages.js'
 import { versionDir } from './paths.js'
 import { verifyPinned } from './registry.js'
+import { runningSandboxes } from './sandbox.js'
 
 /**
  * @typedef {object} DownloadedVersion
@@ -57,8 +60,15 @@ export function isDownloaded(layout, version) {
  *
  * Sandboxes are untouched — their conversations and settings live in their
  * own homes — but a sandbox that last booted this release will need it
- * downloaded again before its next start. The caller is responsible for
- * refusing while a running sandbox is on this release.
+ * downloaded again before its next start.
+ *
+ * Refusing while a sandbox is running on this release is done here rather
+ * than left to the caller. It used to say "the caller is responsible", and
+ * one of the two callers was not: the window checked and the command line did
+ * not, so deleting a release out from under a running sandbox worked and
+ * reported success. A guard that has to be remembered in every entrance is a
+ * guard that will be missing from one of them.
+ *
  * Deletion is async and reports a heartbeat for the same reason install
  * does: a release tree is tens of thousands of files, Windows takes its
  * time, and silence is indistinguishable from a hang.
@@ -68,19 +78,36 @@ export function isDownloaded(layout, version) {
  */
 export async function deleteVersion(layout, version, onLog) {
   const dir = versionDir(layout, version)
-  if (!existsSync(dir)) throw new Error(`${version} 本来就没下载`)
+  if (!existsSync(dir)) {
+    throw new BoxError('VERSION_NOT_DOWNLOADED', t('version.notDownloadedAlready', { version }), { version })
+  }
+  // Only a sandbox running *this* download blocks the delete. One running on
+  // the user's own installation may well report the same version number while
+  // having nothing to do with this directory, and refusing then would be a
+  // guard objecting to something that is not happening. Records written before
+  // installations were told apart were all downloads, so they still count.
+  const busy = runningSandboxes(layout).find((entry) => (
+    entry.version === version && (entry.engine === undefined || entry.engine.kind === 'release')
+  ))
+  if (busy !== undefined) {
+    throw new BoxError(
+      'VERSION_IN_USE',
+      t('version.inUse', { sandbox: busy.sandbox, version, pid: busy.pid }),
+      { version, sandbox: busy.sandbox, pid: busy.pid },
+    )
+  }
   const mb = versionSizeMb(dir, verifyPinned(dir, version).checked)
-  onLog?.(`正在删除 ${version}${mb === null ? '' : `,约 ${mb} MB`}…`)
+  onLog?.(mb === null ? t('version.deleting', { version }) : t('version.deletingSized', { version, mb }))
   const started = Date.now()
   const beat = setInterval(() => {
-    onLog?.(`还在删,已 ${Math.round((Date.now() - started) / 1000)} 秒`)
+    onLog?.(t('version.stillDeleting', { seconds: Math.round((Date.now() - started) / 1000) }))
   }, 3000)
   try {
     await rm(dir, { recursive: true, force: true })
   } finally {
     clearInterval(beat)
   }
-  onLog?.(`${version} 已删除`)
+  onLog?.(t('version.deleted', { version }))
 }
 
 /** Where a version directory's measured size is remembered. */

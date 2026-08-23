@@ -1,13 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="__DSH_BOX_LANG__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>dsh 沙箱启动器</title>
+<title data-i18n="ui.title"></title>
 <style>
   :root {
     --ink: #17181c; --dim: #6b7280; --line: #e3e5ea; --bg: #f6f7f9;
-    --card: #fff; --accent: #1d4ed8;
+    --card: #fff; --accent: #8a6a1f;
+    --cream: #fdf8ec; --cream-line: #ecdfc0;
   }
   * { box-sizing: border-box; }
   body {
@@ -24,9 +25,15 @@
   .chip { border: 1px solid var(--line); background: #fff; border-radius: 7px; padding: 7px 13px; cursor: pointer; font: inherit; line-height: 1.4; position: relative; }
   .chip .x { position: absolute; top: 1px; right: 7px; color: var(--dim); font-size: 14px; line-height: 1.4; }
   .chip .x:hover { color: #b91c1c; }
-  .chip[aria-pressed="true"] { border-color: var(--accent); background: #eff4ff; color: var(--accent); font-weight: 600; }
+  /*
+    Selection greys a chip down rather than outlining it — outlines are being
+    kept clear for the agent frame. It is a translucent layer over whatever the
+    chip already is, so a cream chip greys to warm grey and a white one to plain
+    grey: "this is yours" and "this is chosen" stay separately readable.
+  */
+  .chip[aria-pressed="true"] { box-shadow: inset 0 0 0 999px rgba(23, 24, 28, .075); font-weight: 600; }
   .chip small { display: block; color: var(--dim); font-weight: 400; font-size: 11px; }
-  .chip[aria-pressed="true"] small { color: var(--accent); opacity: .8; }
+  .chip[aria-pressed="true"] small { color: var(--dim); opacity: .9; }
   input[type=text] { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: inherit; }
   input[type=text]:focus { outline: 2px solid #bfd3ff; border-color: var(--accent); }
   select { font: inherit; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: inherit; }
@@ -37,7 +44,37 @@
   label.check input { margin-top: 6px; }
   label.check span b { font-weight: 600; }
   label.check span i { font-style: normal; color: var(--dim); display: block; font-size: 12.5px; }
-  button.go { width: 100%; padding: 12px; font: inherit; font-weight: 600; border: 0; border-radius: 8px; background: var(--accent); color: #fff; cursor: pointer; }
+  /*
+    Three states, three ticks, and the box itself always stays white.
+    ⭐ That is what keeps the agent frame's blue from colliding with a ticked
+    box: filled colour is never used here, so a solid blue on this page can only
+    ever mean "an agent is driving". Green says the workspace already has this
+    one; blue says this launch will add it; an empty box on a green row says
+    this launch will take it away.
+  */
+  .tick {
+    appearance: none; -webkit-appearance: none; flex: 0 0 auto;
+    width: 15px; height: 15px; margin-top: 6px; border: 1.5px solid #c8ccd6;
+    border-radius: 4px; background: #fff; cursor: pointer; position: relative;
+  }
+  .tick:checked::after {
+    content: ''; position: absolute; left: 4px; top: 0px; width: 4px; height: 9px;
+    border: solid currentColor; border-width: 0 2px 2px 0; transform: rotate(42deg);
+  }
+  .tick.add { color: #2563eb; }
+  .tick.add:checked { border-color: #2563eb; }
+  .tick.have { color: #16a34a; }
+  .tick.have:checked { border-color: #16a34a; }
+  .tick:disabled { color: var(--dim); border-color: var(--line); cursor: default; background: #fafbfc; }
+  .going b, .going i { color: var(--dim); }
+  .going b { text-decoration: line-through; }
+  .tag { font-size: 11px; border-radius: 5px; padding: 1px 6px; margin-left: 6px; font-weight: 600; vertical-align: 1px; }
+  .tag.have { background: #ecfdf5; color: #15803d; }
+  .tag.add { background: #eff6ff; color: #1d4ed8; }
+  .tag.going { background: #f3f4f6; color: #6b7280; }
+  .tag.theirs { background: #fff8ed; color: #92620a; }
+  /* Deliberately not blue: see the note on .chip.native. */
+  button.go { width: 100%; padding: 12px; font: inherit; font-weight: 600; border: 0; border-radius: 8px; background: var(--ink); color: #fff; cursor: pointer; }
   button.go:disabled { background: #9aa4b8; cursor: default; }
   .mini { background: none; border: 0; color: var(--dim); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; padding: 0 4px; }
   .mini:disabled { opacity: .35; cursor: default; text-decoration: none; }
@@ -49,82 +86,391 @@
   .ok a { color: #065f46; font-weight: 700; }
   .err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 14px; border-radius: 8px; margin-top: 12px; white-space: pre-wrap; }
   .path { color: var(--dim); font-size: 12px; word-break: break-all; margin: 12px 0 0; }
+  .quitrow { display: flex; justify-content: center; margin-top: 4px; }
+  /*
+    Cream means one thing, on the two controls where that thing is true: this is
+    yours, not a copy we made. The machine already installed on this computer,
+    and the workspace you actually work in. Everything white is disposable — a
+    download, a sandbox.
+    It is not a state and not a selection: the native chip stays cream whether
+    or not it is picked, and selection is said with the border instead, so both
+    can be read at once without either borrowing the other's colour. Blue is
+    spent on nothing here at all, which is what leaves it free to mean "an agent
+    is driving" and only that.
+  */
+  .chip.native { background: var(--cream); border-color: var(--cream-line); }
+  .chip.native small { color: #8a7440; }
+  button.go.mine { background: var(--cream); color: #6b5417; border: 1px solid var(--cream-line); font-weight: 600; }
+  .warn { background: #fff8ed; border: 1px solid #fcd9a5; color: #7a4a09; padding: 10px 12px; border-radius: 8px; margin: 10px 0 0; }
+  /*
+    An agent is driving. Blue was kept out of everything else on this page for
+    exactly this: nowhere does it mean anything but "not yours right now".
+
+    ⛔ There was frosted glass here and it is gone: it made the page hard to
+    read to say something the border and the badge already say, and the whole
+    point of the numbered frames is that they can be read while it is on.
+    Nothing was lost with it — it never blocked anything, it only looked as
+    though it did.
+  */
+  /*
+    Two blues, two jobs, and they must not be the same blue.
+
+    **Pale blue, around the whole window**: an agent is driving. It is ambient —
+    it says nothing about any particular control, so it stays quiet and wide.
+    **Solid blue, around one option**: command ① touched *this*. It is a
+    pointer, so it is sharp and narrow.
+
+    ⛔ Seven pixels, not three. Three was measured on a real screen and came out
+    at 2.1 physical pixels — a hairline at the edge of the viewport on a pale
+    grey background. It was there and it could not be seen, which for the one
+    signal that says "you are not driving" is the same as not being there.
+  */
+  body.agent { padding-top: 92px; }
+  /*
+    Dimmed, not disabled, and cosmetic on purpose: the refusal lives in the
+    service. A control marked wrongly here looks unavailable and still answers
+    with a sentence — never the reverse, where it looks available and writes.
+  */
+  body.agent .held { opacity: .45; }
+  #lockedHint {
+    display: none; position: fixed; z-index: 60; left: 50%; bottom: 26px;
+    transform: translateX(-50%); background: #1d4ed8; color: #fff;
+    border-radius: 8px; padding: 9px 16px; font-size: 13px; box-shadow: 0 6px 20px rgba(29,78,216,.35);
+  }
+  #lockedHint.on { display: block; }
+  body.agent::after {
+    content: ''; position: fixed; inset: 0; z-index: 40; pointer-events: none;
+    border: 7px solid #93c5fd;
+  }
+  #badge { display: none; }
+  body.agent #badge {
+    display: flex; position: fixed; z-index: 50; left: 0; right: 0; top: 0;
+    gap: 14px; align-items: center; justify-content: center; flex-wrap: wrap;
+    background: #1d4ed8; color: #fff; padding: 10px 16px; font-size: 13px;
+  }
+  #badge b { font-weight: 600; }
+  #badge button { font: inherit; font-weight: 600; border: 0; border-radius: 6px; padding: 6px 13px; background: #fff; color: #1d4ed8; cursor: pointer; }
+  #badge button:disabled { opacity: .6; cursor: default; }
+  #badge .bad { background: #fff1f2; color: #9f1239; border-radius: 6px; padding: 3px 9px; }
+  /*
+    A frame is a footprint — "command ① touched this" — never a claim about what
+    the control says now. That is why it is not cleared when a value changes,
+    and why one command touching four controls puts the same number on all four:
+    the number is the command's identity, not a step counter.
+  */
+  .agent-mark { position: relative; outline: 2px solid #3b82f6; outline-offset: 4px; border-radius: 8px; }
+  .agent-mark::before {
+    content: attr(data-seq); position: absolute; left: -10px; top: -13px; z-index: 5;
+    background: #3b82f6; color: #fff; font-size: 11px; line-height: 1.5;
+    padding: 1px 7px; border-radius: 9px; font-weight: 600; white-space: nowrap;
+  }
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; max-width: 420px; color: inherit; font: inherit; }
+  /* Until the first read lands, the cards below have nothing in them. Hiding
+     them is what makes the difference between "still loading" and "broken"
+     legible without reading any text. */
+  #booting { display: flex; align-items: center; gap: 8px; color: var(--dim); }
+  main.booting > .card:not(#booting), main.booting > .quitrow, main.booting > .path { display: none; }
+  main:not(.booting) > #booting { display: none; }
+  .spin {
+    width: 13px; height: 13px; border-radius: 50%; display: inline-block;
+    border: 2px solid var(--line); border-top-color: var(--dim);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #recallBody {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 20px; margin-top: 8px; max-height: 46vh; overflow: auto;
+  }
+  /* While an agent drives, the border matches the frame around everything else
+     it touched — one visual language, not a second one for this box. */
+  body.agent #recallBody { border-color: #93c5fd; }
+  #recallBody pre { max-height: none; white-space: pre-wrap; word-break: break-all; margin: 6px 0 0; }
+  dialog::backdrop { background: rgba(17, 19, 26, .38); }
+  dialog h3 { margin: 0 0 8px; font-size: 15px; }
+  dialog p { margin: 0 0 10px; }
+  dialog .row { justify-content: flex-end; margin-top: 14px; }
+  .danger { border-color: #fecaca; background: #fef2f2; color: #991b1b; font-weight: 600; }
+  /* The language switch. Fixed to the corner so it is never scrolled away
+     from; under agent control it drops below the badge instead of hiding
+     behind it. */
+  #langBtn { position: fixed; top: 12px; right: 16px; z-index: 30; }
+  body.agent #langBtn { top: 100px; }
 </style>
 </head>
 <body>
-<main>
-  <h1>dsh 沙箱启动器</h1>
-  <p class="sub">隔离沙箱里试版本、试插件,不影响你日常的 dsh。</p>
+<!--
+  Shows the *other* language's own name — the one thing that must not be
+  translated into the current language, because its reader is whoever cannot
+  read the current language. Switching runs `config lang` through the same
+  command channel as every other button, then reloads: the served page carries
+  the language, so a reload is the switch.
+-->
+<button class="mini" id="langBtn" data-cmd hidden></button>
+<main class="booting">
+  <h1 data-i18n="ui.title"></h1>
+  <p class="sub" data-i18n="ui.intro"></p>
+
+  <!--
+    ⚠️ Shown until the first read comes back, because that read is not instant:
+    the machine and the sandboxes come off this disk, but "which versions exist"
+    is a question for the npm registry, and until it answers the page has nothing
+    to draw. Empty cards while that happens read as a broken window rather than
+    a busy one — the fix is to say which of the two it is.
+  -->
+  <div class="card" id="booting"><span class="spin"></span><span data-i18n="ui.booting"></span><span class="sub"
+    style="display:inline;margin-left:6px" data-i18n="ui.bootingSlow"></span></div>
 
   <section class="card">
-    <h2>官方版本</h2>
+    <h2 data-i18n="ui.machineCard"></h2>
+    <p class="sub" id="machineHint" style="margin:-4px 0 10px"></p>
     <div class="row" id="versions"></div>
     <details class="older" id="olderWrap" hidden>
-      <summary>更早的内测版本</summary>
+      <summary data-i18n="ui.olderVersions"></summary>
       <div class="row" id="olderVersions"></div>
     </details>
     <div class="row" style="margin-top:10px">
-      <input type="text" id="customVersion" placeholder="或直接填版本号,例如 0.0.1-rc.1" style="flex:1;min-width:200px">
-      <button class="chip" id="pullBtn">下载</button>
+      <input type="text" id="customVersion" data-i18n-placeholder="ui.customVersionPh" style="flex:1;min-width:200px">
+      <button class="chip" id="pullBtn" data-cmd data-mark="go:pull" data-i18n="ui.pull"></button>
     </div>
     <div class="row" style="margin-top:10px">
-      <span class="sub" style="margin:0">安装源</span>
-      <select id="source">
-        <option value="auto">自动</option>
-        <option value="official">官方 npm</option>
-        <option value="mirror">中国镜像</option>
+      <span class="sub" style="margin:0" data-i18n="ui.sourceLabel"></span>
+      <select id="source" data-cmd data-mark="go:source">
+        <option value="auto" data-i18n="ui.sourceAuto"></option>
+        <option value="official" data-i18n="ui.sourceOfficial"></option>
+        <option value="mirror" data-i18n="ui.sourceMirror"></option>
       </select>
     </div>
     <div id="pullOut"></div>
   </section>
 
+  <!--
+    The second axis, drawn exactly like the first: a row of choices, one of
+    which is cream because it is not a copy of anything — it is the workspace
+    the user actually works in. The daily one and the sandboxes sit in the same
+    row because the launcher makes no distinction either; `DSH_HOME` is a
+    location, and these are the locations. What differs is only that the daily
+    one is never offered for deletion.
+    The text box below is for naming a new one and nothing else. It used to
+    *be* the selection, which meant the current choice lived in a field that
+    also accepted typing — no way to draw a highlight around "what is selected"
+    without also drawing one around "what is being typed".
+  -->
   <section class="card">
-    <h2>三方插件</h2>
+    <h2 data-i18n="ui.cabinetCard"></h2>
+    <p class="sub" id="workspaceHint" style="margin:-4px 0 10px"></p>
+    <div class="row" id="workspaces"></div>
+    <div id="workspaceDetail"></div>
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="sandboxName" data-i18n-placeholder="ui.newSandboxPh" style="flex:1;min-width:200px">
+      <button class="chip" id="newSandboxBtn" data-i18n="ui.newSandbox"></button>
+    </div>
+    <!--
+      The naming rule is not shown until a name is refused. Rules on screen
+      before anyone has done anything wrong are noise that gets read once and
+      then never again; the same sentence arriving the moment it applies is
+      read every time. The text still has exactly one home — it comes from the
+      refusal itself, which carries the rule with it.
+    -->
+    <p class="sub" id="nameHint" style="margin:8px 0 0" hidden></p>
+    <label class="check" id="signInWrap"><input type="checkbox" id="importSignIn" checked>
+      <span><b data-i18n="ui.importSignIn"></b><i data-i18n="ui.importSignInNote"></i></span></label>
+    <div id="adoptOut"></div>
+  </section>
+
+  <!--
+    After the workspace, because it is now about the workspace. A plugin is
+    registered in a filing cabinet and stays there, so "which plugins" is not a
+    property of this launch and cannot be asked before the cabinet is chosen.
+    This card used to sit above and mean "carry these along this time".
+  -->
+  <section class="card">
+    <h2 data-i18n="ui.pluginsCard"></h2>
+    <p class="sub" id="pluginHint" style="margin:-4px 0 10px"></p>
     <div id="plugins"></div>
     <div class="row" style="margin-top:10px">
-      <input type="text" id="pluginDir" placeholder="插件目录路径" style="flex:1;min-width:220px">
-      <button class="chip" id="pluginBrowse" hidden>浏览…</button>
-      <button class="chip" id="addPluginBtn">添加</button>
+      <input type="text" id="pluginDir" data-mark="go:pluginDir" data-i18n-placeholder="ui.pluginDirPh" style="flex:1;min-width:280px">
+      <button class="chip" id="pluginBrowse" hidden data-i18n="ui.browse"></button>
+      <button class="chip" id="addPluginBtn" data-cmd data-mark="go:addPlugin" data-i18n="ui.addPlugin"></button>
     </div>
-    <p class="sub" style="margin:10px 0 0">不勾则启动纯官方 dsh。</p>
   </section>
 
   <section class="card">
-    <h2>沙箱</h2>
-    <div class="row">
-      <input type="text" id="sandboxName" placeholder="沙箱名" style="flex:1;min-width:200px">
-      <button class="chip" id="newSandboxBtn">新沙箱</button>
-    </div>
-    <label class="check"><input type="checkbox" id="importSignIn" checked>
-      <span><b>导入登录凭据</b></span></label>
-  </section>
-
-  <section class="card">
-    <button class="go" id="startBtn">启动</button>
-    <div class="row" style="margin-top:8px;justify-content:center">
-      <button class="mini" id="mainStartBtn">主环境启动(非沙箱,勾选的插件仅本次生效)</button>
-    </div>
+    <button class="go" id="startBtn" data-cmd data-mark="go:start"></button>
     <div id="startOut"></div>
   </section>
 
   <section class="card" id="runningCard" hidden>
-    <h2>正在运行</h2>
+    <h2 data-i18n="ui.runningCard"></h2>
     <div class="list" id="running"></div>
   </section>
 
-  <section class="card">
-    <h2>已有沙箱</h2>
-    <div class="list" id="sandboxes"></div>
-    <div id="adoptOut"></div>
-    <p class="path" id="boxPath"></p>
+  <!--
+    ⛔ It was a modal dialog, which contradicted the one thing it exists for: the
+    frames, the badge and this list are all here so a person can *see what is
+    happening on the page*, and a modal covers the page in order to show them.
+    CEO 2026-08-22: the recall should be the blue frame plus an in-page
+    expansion below — not a modal covering the main page.
+
+    ⚠️ Inside <main>, at the bottom of the page, where the button used to be
+    (CEO 2026-08-22, after seeing it beside the page instead: not side by side
+    on the right — scrolled to the very bottom as before. `body` is a row, so
+    a sibling of <main> lands next to it rather than under it).
+
+    Open and keeping up while an agent drives — that is the moment the question
+    "what is it doing to my settings" is being asked, and it is the only place
+    the steps with no control to frame (`status`, `logs`, `memory`) can be seen
+    at all. Folds to one line once the run is over: the frames go at that point
+    (a window that keeps them is permanently dirty), the record stays.
+  -->
+  <section id="recallPanel" hidden>
+    <div class="quitrow"><button class="mini" id="recallToggle" aria-expanded="false"></button></div>
+    <div id="recallBody" hidden></div>
   </section>
+  <p class="path" id="boxPath"></p>
+  <div class="quitrow"><button class="mini" id="quitBtn" data-cmd data-mark="go:quit" data-i18n="ui.quit"></button></div>
 </main>
+
+<!--
+  Outside <main>, fixed to the top, because the one control that must go on
+  working while an agent drives is the one that takes control back — so it is
+  never scrolled away from and never dimmed. `detach` is also the single command
+  the service still accepts from this window during a run; nothing here ever
+  lets the agent continue.
+-->
+<div id="badge">
+  <span id="badgeText"></span>
+  <button id="stopAgentBtn" data-i18n="ui.stopAgent"></button>
+</div>
+
+<!--
+  The answer to a press the service refused. Near the bottom rather than up by
+  the badge, because the press can happen anywhere down a long page and an
+  answer that appears off-screen is no answer.
+-->
+<div id="lockedHint" data-i18n="ui.lockedHint"></div>
+
+<!--
+  One dialog for every question this page asks.
+
+  It replaces `confirm()`, which is not ours: the browser decides how it looks,
+  what its buttons say and in which language, and the three engines this has to
+  run in decide differently. Inside the packaged shell it is not even certain
+  one appears at all — ⚠️ never tested there — and a confirmation that silently
+  does not appear is either an action that cannot be taken or one taken without
+  asking. A `<dialog>` is part of the page, so it behaves the same everywhere
+  the page does.
+-->
+<dialog id="askDialog">
+  <h3 id="askTitle"></h3>
+  <div id="askBody"></div>
+  <div class="row">
+    <button class="chip" id="askCancel" data-i18n="ui.cancel"></button>
+    <button class="chip" id="askOk"></button>
+  </div>
+</dialog>
+
+<!--
+  Shown when getting rid of a plugin would reach into the daily workspace. The
+  person named a row in a list; the consequence lands somewhere they did not
+  name, and that gap is what this asks about. Same skeleton as the quit dialog —
+  what will happen, in short sentences, then the two buttons.
+-->
+<dialog id="dropDialog">
+  <h3 data-i18n="ui.notice"></h3>
+  <div id="dropWhat"></div>
+  <label class="check" style="margin-top:8px"><input type="checkbox" id="dropDontAsk">
+    <span><b data-i18n="ui.dontAskAgain"></b><i data-i18n="ui.dropDontAskNote"></i></span></label>
+  <div class="row">
+    <button class="chip" id="dropCancel" data-i18n="ui.cancel"></button>
+    <button class="chip danger" id="dropConfirm" data-i18n="ui.dropConfirm"></button>
+  </div>
+</dialog>
+
+<!--
+  Closing this is quitting the program, not hiding a view — so it says what
+  quitting costs. The warning exists because "sandbox launcher" undersells
+  what this is: the sandboxes are managed from here, and someone who thinks
+  they merely started them would not expect closing the window to stop them.
+-->
+<dialog id="quitDialog">
+  <h3 data-i18n="ui.notice"></h3>
+  <div id="quitWhat"></div>
+  <!--
+    The daily workspace is a choice rather than a rule: it is the user's own
+    dsh, and quitting a sandbox manager does not necessarily mean closing the
+    thing they work in. Unticked by default for the same reason.
+  -->
+  <label class="check" id="quitMainWrap" hidden><input type="checkbox" id="quitMain">
+    <span><b data-i18n="ui.quitMainToo"></b><i id="quitMainNote"></i></span></label>
+  <label class="check" style="margin-top:8px"><input type="checkbox" id="quitDontAsk">
+    <span><b data-i18n="ui.dontAskAgain"></b><i data-i18n="ui.quitDontAskNote"></i></span></label>
+  <div class="row">
+    <button class="chip" id="quitCancel" data-i18n="ui.cancel"></button>
+    <button class="chip danger" id="quitConfirm" data-i18n="ui.quitConfirm"></button>
+  </div>
+</dialog>
 
 <script type="module">
 const $ = (id) => document.getElementById(id)
+
+// Baked in by the window when it serves this page, exactly like the pass
+// below: the language is a setting of the data directory, so the page and the
+// command line answering it read the same table and say the same sentences.
+const LANG = '__DSH_BOX_LANG__'
+const LANG_NAMES = __DSH_BOX_LANG_NAMES__
+const MESSAGES = __DSH_BOX_MESSAGES__
+
+/** Same semantics as `t` in src/messages.js: a missing key returns the key. */
+function t(key, vars = {}) {
+  const line = MESSAGES[key]
+  if (line === undefined) return key
+  return line.replaceAll(/\{(\w+)\}/g, (whole, name) => (name in vars ? String(vars[name]) : whole))
+}
+
+/** Fill every piece of static text from the table, before anything else runs. */
+function applyI18n() {
+  for (const element of document.querySelectorAll('[data-i18n]')) {
+    element.textContent = t(element.dataset.i18n)
+  }
+  for (const element of document.querySelectorAll('[data-i18n-placeholder]')) {
+    element.placeholder = t(element.dataset.i18nPlaceholder)
+  }
+  for (const element of document.querySelectorAll('[data-i18n-title]')) {
+    element.title = t(element.dataset.i18nTitle)
+  }
+}
+applyI18n()
+
 let state = null
+/**
+ * Which machine to launch on: '' means the dsh this computer already has, and
+ * any other value names a release dsh-box downloaded. Empty is not "nothing
+ * chosen" — it is the choice that needs no flag, exactly as on the command
+ * line, where `--version` is the only way to ask for one of ours.
+ */
 let version = ''
+/**
+ * Which workspace to open: `null` is the user's own `~/.dsh`, a string is a
+ * sandbox by name. A name not among the existing sandboxes is one that will be
+ * created by the launch — the same thing `--sandbox` has always done.
+ */
+let workspace = undefined
+/**
+ * Pending changes to the selected workspace's plugins, by the two flags they
+ * become. Both are emptied whenever the workspace changes: they name things to
+ * do *to that workspace*, and carrying them across would apply an intention
+ * formed about one filing cabinet to a different one.
+ */
 const picked = new Set()
+const dropping = new Set()
+
+/** Forget pending plugin changes; they belonged to the workspace being left. */
+function switchCabinet(next) {
+  if (next === workspace) return
+  workspace = next
+  picked.clear()
+  dropping.clear()
+}
 
 // Served into the page by the window itself; a page from anywhere else
 // cannot read it, and without it the service answers nothing.
@@ -139,33 +485,178 @@ async function api(path, body) {
       body: JSON.stringify(body),
     })
   const data = await response.json()
-  if (!response.ok) throw new Error(data.error ?? `请求失败(${response.status})`)
+  if (!response.ok) {
+    // The window mints a new pass every time it starts, and this page carries
+    // the one it was served with. So a refused pass means one thing only: the
+    // window was restarted and this tab belongs to the previous run. Nothing
+    // here is broken and nothing needs deciding — the page just needs to be the
+    // current one, so it reloads itself.
+    //
+    // ⭐ Exactly once per episode, never in a loop. The reload is only attempted
+    // if none was attempted in the last half minute; if one was, then reloading
+    // did not fix it, and repeating something that just failed is how a page
+    // ends up refreshing itself forever. It says so instead and stops.
+    if (data.code === 'STALE_PASS') {
+      const lastTry = Number(sessionStorage.getItem(RELOADED) ?? 0)
+      if (Date.now() - lastTry > 30000) {
+        sessionStorage.setItem(RELOADED, String(Date.now()))
+        location.reload()
+      } else {
+        stopPolling()
+        document.body.insertAdjacentHTML('afterbegin', `<div class="err">${t('ui.staleStuck')}</div>`)
+      }
+    }
+    // The refusal travels whole, code included, so a caller can recognise
+    // *what* was refused instead of matching words that change with the
+    // language.
+    const failure = new Error(data.error ?? t('ui.requestFailed', { status: response.status }))
+    failure.result = data
+    throw failure
+  }
   return data
+}
+
+/** When this tab last reloaded itself to pick up a new pass. */
+const RELOADED = 'dsh-box-pass-reload'
+
+/**
+ * Do something, by running the command that does it.
+ *
+ * Every button on this page ends up here. Nothing is "the window's version" of
+ * an action any more: the same words, in the same order, that a person or an
+ * agent would type get run, and what comes back is what they would have seen.
+ * That is what keeps this window from being able to do anything the command
+ * line cannot — and what puts every click in the same journal.
+ *
+ * Which buttons map to which command lives here, in the window, on purpose:
+ * control names are the window's business and the command line has no reason
+ * to know them.
+ */
+async function run(argv) {
+  const result = await api('/api/command', { argv })
+  // ⭐ Who may send a command while an agent drives is decided by the service,
+  // not here. The window's part is to say what happened, in one line, near where
+  // the press was — an error box would be over-reacting to something that is
+  // not a fault.
+  if (result.code === 'AGENT_HOLDS_WINDOW') {
+    sayLocked()
+    const held = new Error(result.message)
+    held.result = result
+    throw held
+  }
+  if (result.ok !== true) {
+    // The whole refusal is carried along, not just its sentence: the `code` is
+    // the part that does not change, and a refusal often brings the one fact
+    // that answers it (a naming rule, the sandbox that is in the way). Throwing
+    // the message alone would make the window paraphrase what it was told.
+    const refusal = new Error(result.message ?? t('ui.commandFailed', { code: result.code ?? t('ui.unknown') }))
+    refusal.result = result
+    throw refusal
+  }
+  return result
+}
+
+/**
+ * Ask a yes/no question, in a dialog this page owns.
+ *
+ * Returns a promise so callers read the same as they did with `confirm()`,
+ * without any of them depending on the browser to provide a modal.
+ * @param {{title: string, body: string, ok?: string, danger?: boolean}} question
+ * @returns {Promise<boolean>}
+ */
+function ask({ title, body, ok = t('ui.ok'), danger = false }) {
+  $('askTitle').textContent = title
+  $('askBody').innerHTML = body
+  $('askOk').textContent = ok
+  $('askOk').className = danger ? 'chip danger' : 'chip'
+  $('askDialog').showModal()
+  return new Promise((resolve) => {
+    const done = (answer) => {
+      $('askDialog').close()
+      $('askOk').onclick = null
+      $('askCancel').onclick = null
+      resolve(answer)
+    }
+    $('askOk').onclick = () => done(true)
+    $('askCancel').onclick = () => done(false)
+    // Esc closes a dialog without either button; that is a "no".
+    $('askDialog').addEventListener('close', () => resolve(false), { once: true })
+  })
 }
 
 async function refresh() {
   state = await api('/api/state')
-  if (version === '') version = state.last.version || state.downloaded[0]?.version || ''
-  if (picked.size === 0) for (const id of state.last.plugins ?? []) picked.add(id)
-  if ($('sandboxName').value === '') $('sandboxName').value = state.last.sandbox || state.suggestedName
+  // Dropped on the first answer and never put back: later polls redraw a page
+  // that already has something on it, and a spinner reappearing every two
+  // seconds would be worse than the wait it was added for.
+  document.querySelector('main')?.classList.remove('booting')
+  // With no dsh installed on this machine there is no default machine either,
+  // so a download has to be picked before anything can start.
+  if (version === '' && state.host?.found !== true) {
+    version = state.last.version || state.downloaded[0]?.version || ''
+  }
+  // Never starts out on the daily workspace: that is the one choice with a cost
+  // that outlives the launch, and a default is something people press without
+  // reading. Falls back to the last sandbox used, then to any that exists.
+  if (workspace === undefined) {
+    const remembered = state.sandboxes.find((box) => box.name === state.last.sandbox)
+    switchCabinet((remembered ?? state.sandboxes[0])?.name ?? state.suggestedName)
+  }
+  // ⛔ Nothing is seeded from `last` any more, and that is the point: what a
+  // workspace has is a fact about the workspace, read back above, not a
+  // selection remembered from the previous launch. Seeding used to make the
+  // window quietly re-tick things — once badly enough that a leftover id no
+  // longer in the registry rode along on every launch, invisible, failing three
+  // of them while the tick the user had just made looked like the culprit.
+  const known = new Set([...state.plugins, ...state.missingPlugins].map((plugin) => plugin.id))
+  for (const id of [...picked]) if (!known.has(id)) picked.delete(id)
   $('importSignIn').checked = state.last.importSignIn !== false
-  $('boxPath').textContent = `数据目录 ${state.box} · 过程日志在其 logs 子目录`
-  drawVersions(); drawPlugins(); drawRunning(); drawSandboxes()
+  $('boxPath').textContent = t('ui.boxPath', { box: state.box })
+  drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton()
+  // Last, because the frames are drawn onto the controls the lines above just
+  // rebuilt.
+  drawAgent()
+}
+
+/** How a pin check should be worded, in the three states it really has. */
+function pinWords(host) {
+  if (!host.verified) return t('status.hostUnverified')
+  if (host.pinned) return t('status.hostPinned', { count: host.packages })
+  return t('status.hostMixed', { list: host.mixed.map((w) => `${w.name}@${w.found ?? t('status.versionUnknown')}`).join('、') })
 }
 
 function drawRunning() {
   const list = state.running ?? []
-  $('runningCard').hidden = list.length === 0
+  // The main environment sits in the same list, because it is the same kind of
+  // thing: a dsh this tool started and can stop. What differs is only that it
+  // is not a sandbox — it is the user's own home — so it says so and never
+  // offers deletion.
+  const rows = [
+    ...(state.main === null || state.main === undefined ? [] : [{ ...state.main, isMain: true }]),
+    ...list,
+  ]
+  $('runningCard').hidden = rows.length === 0
   const host = $('running')
   host.innerHTML = ''
-  for (const r of list) {
+  for (const r of rows) {
     const row = document.createElement('div')
     row.className = 'item'
-    row.innerHTML = `<div><b>${escape(r.sandbox)}</b>
-      <em>${escape(r.version)} · <a href="${r.url}" target="_blank" rel="noreferrer">${escape(r.url)}</a></em></div>`
+    row.dataset.mark = r.isMain ? 'run:main' : `run:${r.sandbox}`
+    const label = r.isMain ? escape(t('ui.dailyCabinet')) : escape(r.sandbox)
+    const note = r.isMain ? ` · ${escape(t('ui.runMainNote'))}` : ''
+    // Which machine, not just which number: the same version string can be two
+    // different installations, and on the real home the difference is the whole
+    // question of whether this launch leaves anything behind.
+    const machine = r.engine === undefined ? ''
+      : ` · ${escape(t(r.engine.kind === 'host' ? 'ui.engineHost' : 'ui.engineRelease'))}`
+    row.innerHTML = `<div><b>${label}</b>
+      <em>${escape(r.version ?? '')}${machine}${note} · <a href="${r.url}" target="_blank" rel="noreferrer">${escape(r.url)}</a></em></div>`
     const halt = document.createElement('button')
-    halt.className = 'mini'; halt.textContent = '停止'
-    halt.onclick = async () => { await api('/api/stop', { pid: r.pid }); await refresh() }
+    halt.className = 'mini'; halt.dataset.cmd = ''; halt.textContent = t('ui.stop')
+    halt.onclick = async () => {
+      await run(r.isMain ? ['stop', '--main'] : ['stop', r.sandbox])
+      await refresh()
+    }
     row.append(halt)
     host.append(row)
   }
@@ -184,22 +675,28 @@ function drawVersions() {
     button.setAttribute('aria-pressed', String(v === version))
     const size = local?.sizeMb != null ? ` · ${local.sizeMb} MB` : ''
     const newest = v === state.featured?.[0] ? ' · newest' : ''
-    const label = (local === undefined ? '未下载'
-      : local.pinned ? `${local.packages} 包已核对${size}` : '版本混杂,请重新下载') + newest
+    const label = (local === undefined ? t('ui.notDownloaded')
+      : local.pinned ? `${t('ui.pinnedShort', { count: local.packages })}${size}` : t('ui.mixedShort')) + newest
     button.innerHTML = `${v}<small>${label}</small>`
+    button.dataset.mark = `machine:${v}`
     button.onclick = () => { version = v; drawVersions() }
     if (local !== undefined) {
       button.style.paddingRight = '26px'
       const x = document.createElement('span')
-      x.className = 'x'; x.textContent = '×'; x.title = '删除这个版本'
+      x.className = 'x'; x.textContent = '×'; x.title = t('ui.deleteVersionTitle')
       x.onclick = async (event) => {
         event.stopPropagation()
-        if (!confirm(`删除 ${v}?已用它的沙箱下次启动前要重新下载。`)) return
+        if (!await ask({
+          // Titles are set as text, so they must not arrive pre-escaped.
+          title: t('ui.deleteVersionAsk', { version: v }),
+          body: `<p>${t('ui.deleteVersionBody')}</p>`,
+          ok: t('ui.delete'), danger: true,
+        })) return
         try {
-          const { jobId } = await api('/api/version/delete', { version: v })
-          await watchJob($('pullOut'), jobId, `正在删除 ${v}…`)
+          await watchLog($('pullOut'), ['logs', '--version', v], t('ui.deletingHead', { version: escape(v) }),
+            run(['drop', v]))
           if (version === v) version = ''
-          $('pullOut').innerHTML = `<div class="ok">${v} 已删除。</div>`
+          $('pullOut').innerHTML = `<div class="ok">${t('ui.deletedMsg', { version: escape(v) })}</div>`
           await refresh()
         } catch (error) {
           $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
@@ -210,6 +707,21 @@ function drawVersions() {
     return button
   }
   $('versions').innerHTML = ''
+  // The machine already on this computer comes first and is the ordinary
+  // answer: it may be a build the user modified, and nothing we download can
+  // stand in for that. The downloads after it are for trying another release.
+  const host = state.host ?? { found: false }
+  if (host.found) {
+    const mine = document.createElement('button')
+    mine.className = 'chip native'
+    mine.setAttribute('aria-pressed', String(version === ''))
+    mine.innerHTML = `${t('ui.hostChip', { version: escape(host.version) })}<small>${escape(pinWords(host))}</small>`
+    // The empty key: "the machine this computer has" is what no `--version` means.
+    mine.dataset.mark = 'machine:'
+    mine.onclick = () => { version = ''; drawVersions() }
+    $('versions').append(mine)
+  }
+  $('machineHint').textContent = t(host.found ? 'ui.machineHintHost' : 'ui.machineHintNoHost')
   for (const v of offered) $('versions').append(chip(v))
   const older = (state.older ?? []).filter((v) => !have.has(v))
   $('olderWrap').hidden = older.length === 0
@@ -218,126 +730,595 @@ function drawVersions() {
   $('source').value = state.source ?? 'auto'
 }
 
+/** What the selected workspace has registered right now. */
+function installedHere() {
+  const empty = { ours: [], theirs: [], platform: [], readable: true }
+  if (workspace === null) return state.mainPlugins ?? empty
+  return state.sandboxes.find((entry) => entry.name === workspace)?.plugins ?? empty
+}
+
+/**
+ * The selected workspace's plugins, in three states.
+ *
+ * This card used to ask "which plugins should this launch carry", which was a
+ * question about the launch. It is now a question about the workspace: what it
+ * has, what will be added, what will be taken away. All three stay pending
+ * until the start button — like the machine and the workspace above it — so
+ * nothing on this card changes anything by itself.
+ */
 function drawPlugins() {
   const host = $('plugins')
   host.innerHTML = ''
-  if (state.plugins.length === 0 && state.missingPlugins.length === 0) {
-    host.innerHTML = '<p class="sub" style="margin:0">还没添加插件。</p>'
-    return
-  }
-  for (const plugin of state.plugins) {
-    const label = document.createElement('label')
-    label.className = 'check'
-    label.innerHTML = `<input type="checkbox" ${picked.has(plugin.id) ? 'checked' : ''}>
-      <span><b>${escape(plugin.label)}</b><i>${escape(plugin.path)}</i></span>`
-    label.querySelector('input').onchange = (event) => {
-      if (event.target.checked) picked.add(plugin.id); else picked.delete(plugin.id)
-    }
-    const drop = document.createElement('button')
-    drop.className = 'mini'; drop.textContent = '移除'
-    drop.onclick = async (event) => {
-      event.preventDefault()
-      await api('/api/plugin/remove', { id: plugin.id })
-      picked.delete(plugin.id); await refresh()
-    }
-    label.append(drop)
-    host.append(label)
-  }
-  for (const plugin of state.missingPlugins) {
-    const row = document.createElement('p')
-    row.className = 'sub'
-    row.style.margin = '4px 0'
-    row.textContent = `${plugin.label} —— 文件夹已经不在了,装不上`
-    host.append(row)
-  }
-}
+  const here = installedHere()
+  const already = new Set([...here.ours.map((entry) => entry.package), ...here.theirs])
 
-function drawSandboxes() {
-  const host = $('sandboxes')
-  host.innerHTML = ''
-  if (state.sandboxes.length === 0) {
-    host.innerHTML = '<p class="sub" style="margin:10px 0 0">还没有。</p>'
-    return
+  $('pluginHint').textContent = t(workspace === null ? 'ui.pluginHintMain' : 'ui.pluginHintSandbox')
+  if (here.readable === false) {
+    host.insertAdjacentHTML('beforeend', `<div class="warn">${t('ui.unreadableWarn')}</div>`)
   }
-  for (const box of state.sandboxes) {
-    const row = document.createElement('div')
-    row.className = 'item'
-    const bits = [
-      box.lastVersion ? `上次用 ${box.lastVersion}` : '未启动过',
-      `${box.sessions} 条对话`,
-      box.hasCredentials ? '已登录' : '未登录',
-    ]
-    row.innerHTML = `<div><b>${escape(box.name)}</b><em>${bits.join(' · ')}</em></div>`
-    const use = document.createElement('button')
-    use.className = 'mini'; use.textContent = '用它'
-    use.onclick = () => { $('sandboxName').value = box.name }
-    const adopt = document.createElement('button')
-    adopt.className = 'mini'; adopt.textContent = '对话并入主环境'
-    adopt.disabled = box.sessions === 0
-    adopt.onclick = async () => {
-      if (!confirm(`把「${box.name}」的 ${box.sessions} 条对话复制进主环境?沙箱原件保留,重复的跳过。`)) return
-      try {
-        const r = await api('/api/sandbox/adopt', { name: box.name })
-        $('adoptOut').innerHTML = `<div class="ok">已并入 ${r.adopted} 条,跳过 ${r.skipped} 条重复。下次打开 dsh 即可看到。</div>`
-      } catch (error) {
-        $('adoptOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
-      }
+
+  const row = ({ title, note, tick, tag, mark, checked, disabled = false, onchange, keys }) => {
+    const label = document.createElement('label')
+    label.className = `check${mark === 'going' ? ' going' : ''}`
+    if (keys !== undefined) label.dataset.mark = keys
+    label.innerHTML = `<input type="checkbox" class="tick ${tick}"${disabled ? ' disabled' : ''}>
+      <span><b>${escape(title)}</b><span class="tag ${mark}">${escape(tag)}</span><i>${escape(note)}</i></span>`
+    const box = label.querySelector('input')
+    box.checked = checked
+    if (!disabled) box.onchange = onchange
+    host.append(label)
+    return label
+  }
+
+  // What this workspace already has, by our hand: ticked green. Unticking it
+  // schedules a removal rather than performing one — the start button is where
+  // everything on this page becomes true.
+  for (const entry of here.ours) {
+    const going = dropping.has(entry.package)
+    row({
+      title: entry.package,
+      note: going ? t('ui.willRemoveNote') : (entry.path ?? t('ui.installedHereNote')),
+      tick: 'have',
+      tag: going ? t('ui.tagGoing') : t('ui.tagHave'),
+      mark: going ? 'going' : 'have',
+      checked: !going,
+      // Both, because a record may name it either way: `--plugin` takes the id
+      // this tool registered it under, `--unplug` takes the package name.
+      keys: `plugin:${entry.id} plugin:${entry.package}`,
+      onchange: (event) => {
+        if (event.target.checked) dropping.delete(entry.package); else dropping.add(entry.package)
+        drawPlugins()
+      },
+    })
+  }
+
+  // What it had before we ever touched it. Shown because this card should say
+  // what dsh will load, not only what this tool put there; not touchable,
+  // because removing something we did not add is not ours to do.
+  for (const name of here.theirs) {
+    row({
+      title: name,
+      note: t('ui.theirsNote'),
+      tick: 'have',
+      tag: t('ui.tagTheirs'),
+      mark: 'theirs',
+      checked: true,
+      disabled: true,
+    })
+  }
+
+  // The registry: what this tool knows about and this workspace does not have.
+  for (const plugin of state.plugins.filter((entry) => !already.has(entry.package))) {
+    const label = row({
+      title: plugin.label,
+      note: plugin.path,
+      tick: 'add',
+      tag: picked.has(plugin.id) ? t('ui.tagAdd') : t('ui.tagNot'),
+      mark: picked.has(plugin.id) ? 'add' : 'going',
+      checked: picked.has(plugin.id),
+      keys: `plugin:${plugin.id} plugin:${plugin.package}`,
+      onchange: (event) => {
+        if (event.target.checked) picked.add(plugin.id); else picked.delete(plugin.id)
+        drawPlugins()
+      },
+    })
+    // ⭐ Same command behind both wordings; what differs is whose files they
+    // are, and therefore what will be left afterwards. Saying "forget" over a
+    // package we downloaded would be the old lie in a new place: the row goes,
+    // and something stays on disk that nothing can now remove.
+    const forget = document.createElement('button')
+    forget.className = 'mini'
+    forget.dataset.cmd = ''
+    forget.textContent = t(plugin.downloaded ? 'ui.uninstallDelete' : 'ui.forget')
+    forget.title = t(plugin.downloaded ? 'ui.uninstallDeleteTitle' : 'ui.forgetTitle')
+    forget.onclick = async (event) => {
+      event.preventDefault()
+      await removePlugin(plugin)
     }
-    const drop = document.createElement('button')
-    drop.className = 'mini'; drop.textContent = '删除'
-    drop.onclick = async () => {
-      if (!confirm(`删除「${box.name}」及其全部对话?`)) return
-      await api('/api/sandbox/delete', { name: box.name }); await refresh()
-    }
-    const actions = document.createElement('div')
-    actions.append(use, adopt, drop)
-    row.append(actions)
-    host.append(row)
+    label.append(forget)
+  }
+
+  for (const plugin of state.missingPlugins) {
+    const line = document.createElement('p')
+    line.className = 'sub'
+    line.style.margin = '4px 0'
+    line.textContent = t('ui.missingPlugin', { label: plugin.label })
+    host.append(line)
+  }
+
+  if (host.children.length === 0) {
+    host.innerHTML = `<p class="sub" style="margin:0">${t('ui.noPlugins')}</p>`
   }
 }
 
 /**
- * Watch a long job and keep its log on screen.
+ * The workspace axis: which `DSH_HOME` to open.
  *
- * The alternative — one request that resolves when the work ends — showed a
- * frozen line for two minutes and no way to tell progress from failure.
+ * Drawn as the machine row is drawn, because it is the same kind of question
+ * and knife 4 has to highlight both the same way. The daily workspace is one of
+ * the choices rather than a separate card: to the launcher it is simply another
+ * home, and the only thing that makes it different — that it is the user's own
+ * and cannot be deleted — is said by its colour and by the absence of a delete.
  */
-async function watchJob(host, jobId, headline) {
-  const render = (state, lines) => {
-    const banner = state === 'failed' ? 'err' : 'ok'
-    host.innerHTML = `<div class="${banner}">${headline}</div><pre>${escape(lines.join('\n'))}</pre>`
+function drawWorkspaces() {
+  const row = $('workspaces')
+  row.innerHTML = ''
+  const chip = (label, note, selected, className = 'chip') => {
+    const button = document.createElement('button')
+    button.className = className
+    button.setAttribute('aria-pressed', String(selected))
+    button.innerHTML = `${escape(label)}<small>${escape(note)}</small>`
+    return button
+  }
+
+  const daily = chip(t('ui.dailyCabinet'), t('ui.dailyNote'), workspace === null, 'chip native')
+  daily.dataset.mark = 'cabinet:main'
+  daily.onclick = () => { switchCabinet(null); drawWorkspaces(); drawPlugins(); drawStartButton() }
+  row.append(daily)
+
+  for (const box of state.sandboxes) {
+    const note = [
+      box.lastVersion
+        ? `${t('ui.lastVersion', { version: box.lastVersion })}${box.lastEngine?.kind === 'host' ? t('ui.hostSuffix') : ''}`
+        : t('sandbox.neverStarted'),
+      t('sessions.count', { count: box.sessions }),
+    ].join(' · ')
+    const button = chip(box.name, note, workspace === box.name)
+    button.dataset.mark = `cabinet:${box.name}`
+    button.onclick = () => { switchCabinet(box.name); drawWorkspaces(); drawPlugins(); drawStartButton() }
+    row.append(button)
+  }
+
+  // A name typed but not yet created shows as a choice too, so the selection is
+  // never something invisible.
+  if (typeof workspace === 'string' && !state.sandboxes.some((box) => box.name === workspace)) {
+    const fresh = chip(workspace, t('ui.freshNote'), true)
+    fresh.onclick = () => {}
+    row.append(fresh)
+  }
+
+  $('workspaceHint').textContent = t(workspace === null ? 'ui.cabinetHintMain' : 'ui.cabinetHintSandbox')
+  $('signInWrap').hidden = workspace === null
+  drawWorkspaceDetail()
+}
+
+/** What can be done to the selected workspace, other than starting it. */
+function drawWorkspaceDetail() {
+  const detail = $('workspaceDetail')
+  detail.innerHTML = ''
+  const box = state.sandboxes.find((entry) => entry.name === workspace)
+  if (box === undefined) return
+
+  const line = document.createElement('div')
+  line.className = 'item'
+  line.innerHTML = `<em>${escape(t(box.hasCredentials ? 'sandboxes.signedIn' : 'sandboxes.notSignedIn'))} · ${escape(box.home)}</em>`
+
+  const adopt = document.createElement('button')
+  adopt.className = 'mini'
+  adopt.dataset.cmd = ''
+  adopt.textContent = t('ui.adoptBtn')
+  adopt.disabled = box.sessions === 0
+  adopt.onclick = async () => {
+    if (!await ask({
+      title: t('ui.adoptAskTitle'),
+      body: `<p>${t('ui.adoptAskBody', { name: escape(box.name), sessions: box.sessions })}</p>`
+        + `<p class="sub" style="margin:0">${t('ui.adoptAskNote')}</p>`,
+      ok: t('ui.adoptOk'),
+    })) return
+    try {
+      const result = await run(['adopt', box.name])
+      $('adoptOut').innerHTML = `<div class="ok">${t('ui.adoptDone', { adopted: result.adopted, skipped: result.skipped })}</div>`
+    } catch (error) {
+      $('adoptOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+    }
+  }
+
+  const drop = document.createElement('button')
+  drop.className = 'mini'
+  drop.dataset.cmd = ''
+  drop.textContent = t('ui.deleteSandboxBtn')
+  drop.onclick = async () => {
+    if (!await ask({
+      title: t('ui.deleteSandboxAsk', { name: box.name }),
+      body: `<p>${t('ui.deleteSandboxBody', { sessions: box.sessions })}</p>`,
+      ok: t('ui.delete'), danger: true,
+    })) return
+    try {
+      await run(['rm', box.name])
+      // Back to "no choice made", so the next refresh picks another sandbox.
+      // Falling to the daily workspace here would quietly select the one option
+      // that must never be selected by accident.
+      switchCabinet(undefined)
+    } catch (error) {
+      // A running sandbox is refused by the command, as it is for everyone
+      // else. The window used to delete it anyway and say nothing.
+      $('adoptOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+    }
+    await refresh()
+  }
+
+  const actions = document.createElement('div')
+  actions.append(adopt, drop)
+  line.append(actions)
+  detail.append(line)
+}
+
+/**
+ * One button, whose words follow the workspace that is selected.
+ *
+ * Opening the daily workspace is not a different feature — it is this same
+ * launch with a different home, which is exactly what the command line says
+ * (`--main` instead of `--sandbox`). Two buttons implied two mechanisms.
+ */
+function drawStartButton() {
+  const button = $('startBtn')
+  button.textContent = t(workspace === null ? 'ui.startMain' : 'ui.startSandbox')
+  button.className = workspace === null ? 'go mine' : 'go'
+}
+
+/**
+ * Which *options* a recorded action touched.
+ *
+ * ⛔ Options, not cards. The first version of this named whole regions — the
+ * version row, the plugin card — so a launch that chose one release out of six
+ * put a frame around all six. A frame that says "command ① happened somewhere
+ * in here" is barely more than the badge already says; the point of drawing on
+ * the page at all is to point at the thing.
+ *
+ * So every drawable choice carries a key in `data-mark`, and this turns one
+ * recorded action into the keys it touched. An element may carry several keys
+ * separated by spaces — a plugin row answers to both its id and its package
+ * name, because a record may name it either way.
+ *
+ * ⭐ The keys live in the window and nowhere else. The command line records
+ * semantic actions and has no business knowing that a release is picked from a
+ * row of chips.
+ * @param {{command: string, args?: Record<string, any>}} action
+ * @returns {string[]}
+ */
+function markKeys(action) {
+  const args = action.args ?? {}
+  // The empty machine key is not "nothing chosen": it is the computer's own
+  // dsh, which is a real chip on the page and the answer that needs no flag.
+  const machine = `machine:${args.version ?? ''}`
+  const workspace = args.main === true ? 'cabinet:main'
+    : typeof args.sandbox === 'string' ? `cabinet:${args.sandbox}` : null
+  const named = (value) => (value === null || value === undefined ? 'cabinet:main' : `cabinet:${value}`)
+  switch (action.command) {
+    case 'start':
+      return [
+        machine,
+        workspace,
+        ...(args.plugins ?? []).map((id) => `plugin:${id}`),
+        ...(args.unplugged ?? []).map((name) => `plugin:${name}`),
+        'go:start',
+      ]
+    case 'pull': case 'drop':
+      return [machine, 'go:pull']
+    case 'plugins.add':
+      return ['go:pluginDir', 'go:addPlugin']
+    case 'plugins.rm':
+      return [`plugin:${args.id ?? args.target}`]
+    case 'plugins.install': case 'plugins.uninstall':
+      return [`plugin:${args.id ?? args.target}`, workspace]
+    case 'plugins.restore':
+      return [workspace]
+    case 'config.source':
+      return ['go:source']
+    case 'stop':
+      return [args.main === true ? 'run:main' : `run:${args.sandbox}`]
+    case 'rm':
+      return [workspace]
+    case 'adopt':
+      return [named(args.fromSandbox), named(args.toSandbox)]
+    case 'quit':
+      return ['go:quit']
+    default:
+      // No option of its own: the pale frame and the badge are its whole
+      // appearance, which is the original design and not a gap.
+      return []
+  }
+}
+
+/**
+ * A command's number, as the tag on its frames shows it.
+ *
+ * Plain digits (CEO 2026-08-22). The circled ones ran out at twenty and were
+ * smaller to read for nothing in return — the tag is already a coloured pill,
+ * so nothing else has to announce that it is a number.
+ */
+function seqMark(seq) {
+  return String(seq)
+}
+
+/**
+ * Everything about an agent holding the window, drawn from the two files.
+ *
+ * Both absent is the common case and means "nobody is driving, no history" —
+ * the ordinary state, drawn as the ordinary window.
+ */
+function drawAgent() {
+  const held = state?.agent ?? null
+  const session = state?.session ?? null
+  document.body.classList.toggle('agent', held !== null)
+  // ⛔ No longer `inert`, and that reversal is the point of this whole control
+  // (CEO 2026-08-22: a blanket overlay was too blunt — refuse the command
+  // when it is sent instead). Locking the page locked things that were never
+  // dangerous — the running dsh's own address, the folds, the list below, even
+  // scrolling and copying a path — and the address is exactly what a person
+  // wants next after watching an agent start something.
+  //
+  // ⭐ What replaced it is a refusal in the service, which is a stronger
+  // guarantee rather than a looser one: the old lock was a property of the page
+  // being correct, so a control the page forgot to cover was a control that
+  // wrote. Now nothing the window sends gets through, whoever asked.
+  //
+  // ⚠️ The dimming below is therefore cosmetic. If a control is marked wrongly
+  // the worst case is that it looks usable and answers with a sentence — a
+  // mistake that can no longer become damage.
+  document.querySelectorAll('[data-cmd]').forEach((control) => {
+    control.classList.toggle('held', held !== null)
+  })
+  drawBadge(held)
+  // Frames belong to the run being shown. A session left over from a previous
+  // run is history, not a picture of what is happening now.
+  drawMarks(held !== null && session?.session === held.session ? session : null)
+  drawRecall(held, session)
+}
+
+/** Whether the person has folded the panel away by hand this run. */
+let recallFolded = null
+
+/**
+ * The list of steps, below the page rather than over it.
+ *
+ * ⭐ Two states, and which one it is in follows from what the panel is for. While
+ * an agent drives it is **open and keeping up**, because that is the moment the
+ * question "what is it doing to my settings" is being asked — and it is the only
+ * place the steps with no control to frame (`status`, `logs`, `memory`) can be
+ * seen at all. Once the run ends it folds to one line: the frames go, the window
+ * goes back to being a window, and the record stays a click away.
+ *
+ * ⚠️ A fold done by hand is remembered for the length of the run and forgotten
+ * with it — otherwise the next run would start folded because of something the
+ * person did to a different one.
+ */
+function drawRecall(held, session) {
+  const live = held !== null && session?.session === held.session
+  const shown = live ? session : (held === null ? session : null)
+  const steps = shown?.actions ?? []
+  if (steps.length === 0) {
+    recallFolded = null
+    $('recallPanel').hidden = true
+    return
+  }
+  $('recallPanel').hidden = false
+  if (recallFolded === null) recallFolded = !live
+  const open = !recallFolded
+  $('recallToggle').textContent = live
+    ? t(open ? 'ui.recallLiveOpen' : 'ui.recallLiveClosed', { count: steps.length })
+    : t(open ? 'ui.recallPastOpen' : 'ui.recallPastClosed', { count: steps.length })
+  $('recallToggle').setAttribute('aria-expanded', String(open))
+  $('recallBody').hidden = !open
+  if (open) $('recallBody').innerHTML = recallRows(shown)
+}
+
+/** @returns {string} the steps of one run, newest last, as the record renders them. */
+function recallRows(session) {
+  const rows = session.actions.map((action) => {
+    const refused = action.ok === false
+      ? `<div class="err" style="margin:6px 0 0">${t('ui.refusedLine', { code: escape(action.code ?? ''), message: escape(action.message ?? '') })}</div>`
+      : ''
+    // The line is the record's own rendering, filled in from what the action
+    // resolved to — so it runs to the same result whenever it is run, which the
+    // line the agent typed would not.
+    return `<div class="item" style="display:block">
+      <b>#${seqMark(action.seq)}</b> <em style="display:inline">${escape(clock(action.at))}</em>
+      <pre>${escape(action.line ?? action.command)}</pre>${refused}</div>`
+  })
+  const ended = session.endedAt === null
+    ? t('ui.notHandedBack')
+    : t('ui.endedAtLine', { at: escape(clock(session.endedAt)), how: escape(endedWords(session.endedBy)) })
+  return `<p class="sub" style="margin:0 0 4px">${t('ui.tookOver', { at: escape(clock(session.startedAt)) })}${ended}</p>${rows.join('')}`
+}
+
+/** What is happening at this moment — including the commands that leave no frame. */
+function drawBadge(held) {
+  if (held === null) return
+  const last = held.lastCommand ?? null
+  const doing = last === null ? t('ui.noActionYet')
+    : last.finishedAt === null ? t('ui.doingNow', { name: escape(last.name) })
+      : last.ok === false ? t('ui.badgeRefused', { name: escape(last.name), code: escape(last.code ?? '') })
+        : t('ui.badgeDone', { name: escape(last.name) })
+  // Reported, not interpreted: "last action 40 minutes ago" is something a
+  // person can act on, "the agent has gone" would be a guess.
+  const when = last === null ? t('ui.tookOverAt', { at: clock(held.startedAt) }) : ago(last.at)
+  $('badgeText').innerHTML = `<b>${t('ui.agentDriving')}</b>　${doing}　${escape(when)}　${t('ui.stepsSoFar', { count: held.actions })}`
+}
+
+/**
+ * Draw the numbered frames.
+ *
+ * Cleared and redrawn whole rather than patched, because the controls
+ * underneath are rebuilt by every poll; a frame kept across a redraw would be a
+ * frame on an element that no longer exists.
+ */
+function drawMarks(session) {
+  for (const marked of document.querySelectorAll('.agent-mark')) {
+    marked.classList.remove('agent-mark')
+    marked.removeAttribute('data-seq')
+  }
+  if (session === null) return
+  const seqs = new Map()
+  for (const action of session.actions) {
+    for (const key of markKeys(action)) {
+      if (key === null) continue
+      const seen = seqs.get(key) ?? []
+      if (!seen.includes(action.seq)) seen.push(action.seq)
+      seqs.set(key, seen)
+    }
+  }
+  // An option that is no longer on the page — a sandbox since deleted, a
+  // release since dropped — simply carries no frame. The trail still has it,
+  // and the recall control still lists it; there is just nothing to point at.
+  for (const element of document.querySelectorAll('[data-mark]')) {
+    const seen = element.dataset.mark.split(' ').flatMap((key) => seqs.get(key) ?? [])
+    if (seen.length === 0) continue
+    element.classList.add('agent-mark')
+    element.dataset.seq = [...new Set(seen)].sort((a, b) => a - b).map(seqMark).join(' ')
+  }
+}
+
+/** How long ago, in words, without deciding what it means. */
+function ago(at) {
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 1000))
+  if (seconds < 60) return t('ui.secondsAgo', { count: seconds })
+  if (seconds < 3600) return t('ui.minutesAgo', { count: Math.round(seconds / 60) })
+  return t('ui.hoursAgo', { count: Math.round(seconds / 3600) })
+}
+
+/** @param {string} at ISO timestamp. */
+function clock(at) {
+  return new Date(at).toLocaleTimeString()
+}
+
+/** How a session ended, in words rather than in the token it was recorded as. */
+function endedWords(reason) {
+  if (reason === 'forced') return t('ui.endedForced')
+  if (reason === 'done') return t('session.endedDone')
+  return String(reason ?? '')
+}
+
+// The one control that reaches through the glass. It ends the agent's hold on
+// the window; it does not kill whatever the agent is otherwise doing, and it
+// says so, because a button that promised more than it does would be worse than
+// no button.
+$('stopAgentBtn').onclick = async () => {
+  $('stopAgentBtn').disabled = true
+  try {
+    await run(['detach', '--forced'])
+    await refresh()
+  } catch (error) {
+    // ⛔ Never just "could not take it back". This button is the person's one
+    // guarantee, so a bare failure here reads as "the agent will not let go" —
+    // and the failure that actually happened was nothing of the sort: the tab
+    // was left over from a previous run of the window, so the *window* refused
+    // the *page* and the command line was never reached. ⭐ Measured on CEO's
+    // own window. Recognised by its code, which no language switch moves.
+    const stale = error.result?.code === 'STALE_PASS'
+    $('badgeText').innerHTML = stale
+      ? `<span class="bad">${t('ui.staleRetry')}</span>`
+      : `<span class="bad">${t('ui.detachFailed', { error: escape(error.message) })}</span>`
+  } finally {
+    $('stopAgentBtn').disabled = false
+  }
+}
+
+$('recallToggle').onclick = () => {
+  recallFolded = !recallFolded
+  drawRecall(state?.agent ?? null, state?.session ?? null)
+}
+
+/** Clears the hint again, so it reads as an answer to one press. */
+let hintTimer = null
+
+/**
+ * Say why that press did nothing.
+ *
+ * ⛔ Without it the refusal is silent, and the honest reading of a window that
+ * does not respond is that it is broken. The frame and the badge do say an
+ * agent is driving, but they say it at the top of the page and in general —
+ * neither of them answers *this press*.
+ */
+function sayLocked() {
+  $('lockedHint').classList.add('on')
+  clearTimeout(hintTimer)
+  hintTimer = setTimeout(() => $('lockedHint').classList.remove('on'), 2600)
+}
+
+/**
+ * Show a long command's log while it runs.
+ *
+ * Downloading a release takes about two minutes and start takes tens of
+ * seconds; a request that simply resolves at the end leaves a frozen line with
+ * no way to tell progress from a hang. The window used to solve that with job
+ * ids it invented and polled, while the command line solved the same problem
+ * its own way — two mechanisms, one question.
+ *
+ * Now the command writes a log as it goes and this reads it with `logs`,
+ * exactly as a person in another terminal would. Nothing here knows anything
+ * the command line does not also know.
+ *
+ * `work` is already running when it arrives: the log has to be watched *while*
+ * it happens, so the command is started first and awaited last.
+ */
+async function watchLog(host, argv, headline, work) {
+  let done = false
+  const show = (lines, failed) => {
+    host.innerHTML = `<div class="${failed ? 'err' : 'ok'}">${headline}</div>`
+      + `<pre>${escape(lines.join('\n'))}</pre>`
     const log = host.querySelector('pre')
     log.scrollTop = log.scrollHeight
   }
-  for (;;) {
-    const job = await api(`/api/job?id=${encodeURIComponent(jobId)}`)
-    if (job.state === 'running') {
-      render('running', job.lines)
-      await new Promise((r) => setTimeout(r, 700))
-      continue
+  show(['…'], false)
+  const poll = (async () => {
+    while (!done) {
+      await new Promise((r) => setTimeout(r, 800))
+      if (done) return
+      try {
+        const seen = await run([...argv, '--lines', '40'])
+        if (!done) show(seen.lines ?? [], false)
+      } catch {
+        // No log yet is the ordinary state for the first second or two, and a
+        // missing log must not replace the thing being reported.
+      }
     }
-    if (job.state === 'failed') {
-      host.innerHTML = `<div class="err"><b>失败了。</b>下面是原因:</div><pre>${escape(job.error)}</pre>`
-      throw new Error(job.error)
-    }
-    render('done', job.lines)
-    return job.result
+  })()
+  try {
+    return await work
+  } finally {
+    done = true
+    await poll
   }
 }
 
 $('pullBtn').onclick = async () => {
   const wanted = $('customVersion').value.trim() || version
-  if (wanted === '') return
+  // Empty means the machine already installed here is selected, which is not
+  // something that can be downloaded. Saying so beats a button that does
+  // nothing when pressed.
+  if (wanted === '') {
+    $('pullOut').innerHTML = `<div class="err">${t('ui.pullNeedsVersion')}</div>`
+    return
+  }
   $('pullBtn').disabled = true
   try {
-    const { jobId } = await api('/api/pull', { version: wanted })
-    const result = await watchJob($('pullOut'), jobId, `正在下载 ${escape(wanted)}…`)
+    const result = await watchLog($('pullOut'), ['logs', '--version', wanted],
+      t('ui.pullingHead', { version: escape(wanted) }), run(['pull', wanted]))
     version = result.version
-    $('pullOut').innerHTML = `<div class="ok">${escape(result.version)} 已就绪:${result.packages} 个包已核对。</div>`
+    $('pullOut').innerHTML = `<div class="ok">${t('ui.pullDone', { version: escape(result.version), packages: result.packages })}</div>`
     await refresh()
   } catch (error) {
-    // watchJob renders job failures itself; this catches everything else —
-    // most importantly a dead server, which otherwise fails in silence.
     $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
   } finally {
     $('pullBtn').disabled = false
@@ -346,7 +1327,7 @@ $('pullBtn').onclick = async () => {
 
 $('source').onchange = async () => {
   try {
-    await api('/api/source', { source: $('source').value })
+    await run(['config', 'source', $('source').value])
   } catch (error) {
     $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
   }
@@ -356,7 +1337,7 @@ $('addPluginBtn').onclick = async () => {
   const dir = $('pluginDir').value.trim()
   if (dir === '') return
   try {
-    const { plugin } = await api('/api/plugin/add', { dir })
+    const { plugin } = await run(['plugins', 'add', dir])
     picked.add(plugin.id)
     $('pluginDir').value = ''
     await refresh()
@@ -365,7 +1346,15 @@ $('addPluginBtn').onclick = async () => {
   }
 }
 
-$('newSandboxBtn').onclick = () => { $('sandboxName').value = state?.suggestedName ?? '' }
+// Naming a new workspace selects it; it comes into existence when it is
+// started, which is what `--sandbox` has always done. Nothing is created by
+// typing, so nothing here needs to be a command.
+$('newSandboxBtn').onclick = () => {
+  const name = $('sandboxName').value.trim()
+  switchCabinet(name === '' ? (state?.suggestedName ?? '') : name)
+  $('sandboxName').value = ''
+  drawWorkspaces(); drawPlugins(); drawStartButton()
+}
 
 // Native folder pickers exist only inside the desktop shell; in a plain
 // browser the buttons stay hidden and the text fields do the same job.
@@ -382,42 +1371,210 @@ if (pickDir !== undefined) {
   wire('pluginBrowse', 'pluginDir')
 }
 
+/**
+ * The pending plugin changes, as the flags that make them.
+ *
+ * Both directions, because the card now has both: a tick that was not there
+ * adds one, and a green tick taken away removes one. Saying neither means
+ * changing neither — the workspace keeps what it has.
+ */
+function pluginFlags() {
+  return [
+    ...[...picked].flatMap((id) => ['--plugin', id]),
+    ...[...dropping].flatMap((name) => ['--unplug', name]),
+  ]
+}
+
+/** The chosen machine, as the flag that selects it — or nothing at all. */
+function machineFlag() {
+  return version === '' ? [] : ['--version', version]
+}
+
+/**
+ * Start, whichever workspace is selected.
+ *
+ * One path, because there is one launch: the two axes chosen above turn into
+ * the two things the command line takes. No `--version` is how "the machine
+ * this computer has" is said, and `--main` is how the daily workspace is said.
+ * Same words a person or an agent would type, because this is that command
+ * line.
+ */
 $('startBtn').onclick = async () => {
+  const main = workspace === null
+  // Only the combination that outlives the launch is asked about. The daily
+  // workspace on this computer's own dsh is what typing `dsh` does; asking
+  // permission for that would teach people to click through the dialog that
+  // does matter.
+  //
+  // ⭐ The command line refuses this square outright (NEEDS_APPROVAL) unless
+  // `--approved` is passed, and this dialog is the only place that flag is
+  // supposed to come from. So the gate is not "the window is nicer about it" —
+  // an agent that tries the same launch is stopped, and told to come here.
+  const approved = main && version !== ''
+  if (approved && !await ask({
+    title: t('ui.notice'),
+    // The two axes are named separately and up front. Written as one sentence
+    // they blur together — "your dsh will use another version" reads as a fact
+    // about the machine, when the thing being touched is the user's own
+    // workspace files. Which is exactly why this combination is the one worth
+    // asking about: neither half is dangerous alone.
+    //
+    // ⚠️ The third point is a notice, not a promise. `start --main` refuses
+    // when 3080 is already serving, so two launches *through here* cannot
+    // collide; a dsh the user starts some other way, or one moved to another
+    // port, is outside what this tool can see — let alone prevent.
+    body: `<p class="warn" style="margin-top:0">${t('ui.approveHead', { version: escape(version) })}</p>`
+      + `<p style="margin:0">${t('ui.approvePoint1')}</p>`
+      + `<p style="margin:6px 0 0">${t('ui.approvePoint2')}</p>`
+      + `<p style="margin:6px 0 0">${t('ui.approvePoint3')}</p>`,
+    ok: t('ui.approveOk'), danger: true,
+  })) return
+
   $('startBtn').disabled = true
+  const out = $('startOut')
   try {
-    const { jobId } = await api('/api/start', {
-      version,
-      sandbox: $('sandboxName').value.trim(),
-      plugins: [...picked],
-      importSignIn: $('importSignIn').checked,
-    })
-    const result = await watchJob($('startOut'), jobId, '正在启动…')
-    $('startOut').innerHTML = `<div class="ok">沙箱「${escape(result.sandbox)}」已启动。
-      <a href="${result.url}" target="_blank" rel="noreferrer">打开 ${escape(result.url)}</a></div>`
+    const argv = ['start', ...(main ? ['--main'] : ['--sandbox', workspace]), ...machineFlag(), ...pluginFlags()]
+    if (!main && !$('importSignIn').checked) argv.push('--no-sign-in')
+    // Carried only because the dialog above was answered, just now, by a person.
+    if (approved) argv.push('--approved')
+    const result = await watchLog(out, main ? ['logs', '--main'] : ['logs', workspace], t('ui.startingHead'), run(argv))
+    const where = main ? escape(t('ui.dailyCabinet')) : t('ui.sandboxQuoted', { name: escape(result.sandbox) })
+    out.innerHTML = `<div class="ok">${t('ui.startedMsg', {
+      where,
+      engine: escape(t(result.engine?.kind === 'host' ? 'ui.engineHost' : 'ui.engineRelease')),
+      version: escape(result.version ?? ''),
+    })}
+      <a href="${result.url}" target="_blank" rel="noreferrer">${t('ui.openUrl', { url: escape(result.url) })}</a></div>`
+    $('nameHint').hidden = true
+    // The pending changes just became real, and the refresh below reads them
+    // back off disk. Leaving them ticked would show the same intention twice —
+    // once as a fact and once as something still to do.
+    picked.clear()
+    dropping.clear()
     await refresh()
   } catch (error) {
-    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+    out.innerHTML = `<div class="err">${escape(error.message)}</div>`
+    // The rule appears now, next to the box being typed in, and comes from the
+    // refusal rather than from a copy kept here.
+    const rule = error.result?.code === 'BAD_SANDBOX_NAME' ? error.result.rule : null
+    $('nameHint').hidden = rule === null
+    if (rule !== null) $('nameHint').textContent = t('ui.nameRule', { rule })
   } finally {
     $('startBtn').disabled = false
   }
 }
 
-$('mainStartBtn').onclick = async () => {
-  if (!confirm(`用 ${version} 打开你真实的主环境(非沙箱)?\n建议选日常在用的版本:数据格式跨版本无迁移。`)) return
-  $('mainStartBtn').disabled = true
+/**
+ * Quit: stop every sandbox, then stop being a window.
+ *
+ * The warning is shown only when there is something to lose and only while the
+ * person still wants it. It exists because "sandbox launcher" undersells what
+ * this is — the sandboxes are managed from here, and closing the window stops
+ * them, which is not what someone who thinks they merely pressed start would
+ * expect. "Do not ask again" is a setting rather than something this page
+ * remembers: it survives a restart, so it belongs to the program, and
+ * everything belonging to the program is reachable from a command.
+ */
+$('quitBtn').onclick = async () => {
+  const live = state?.running ?? []
+  const main = state?.main ?? null
+  const ask = state?.settings?.['ask-on-quit'] !== 'off'
+  if ((live.length > 0 || main !== null) && ask) {
+    // Same skeleton as the other dialog: the two things involved, named on
+    // their own lines, then what happens to them. Nothing explains a mechanism.
+    const rows = [live.length === 0
+      ? t('ui.quitRowSandboxNone')
+      : t('ui.quitRowSandbox', { count: live.length, names: escape(live.map((r) => r.sandbox).join('、')) })]
+    rows.push(main !== null
+      ? t('ui.quitRowMainHere', { pid: main.pid })
+      // Said out loud when there is a dsh we can see but not act on, so the
+      // absence of the checkbox below is an explained absence, not a gap.
+      : state?.mainDshOnDefaultPort === true
+        ? t('ui.quitRowMainForeign')
+        : t('ui.quitRowMainNone'))
+    $('quitWhat').innerHTML = `<p class="warn" style="margin:0 0 10px">${rows.join('<br>')}</p>`
+      + `<p style="margin:0">${t('ui.quitPoint1')}</p>`
+    $('quitMainWrap').hidden = main === null
+    $('quitMain').checked = false
+    if (main !== null) $('quitMainNote').textContent = t('ui.quitMainNote')
+    $('quitDontAsk').checked = false
+    return void $('quitDialog').showModal()
+  }
+  await quitNow(false)
+}
+
+/**
+ * Get rid of a plugin, asking first when the daily workspace is involved.
+ *
+ * ⭐ The dialog is the same shape as the quit one, and its switch is a separate
+ * one on purpose (CEO 2026-08-22): that one says "quitting stops the processes
+ * behind this window", this one says "this also comes out of the workspace you
+ * work in every day". Two different sentences, so silencing one must not
+ * silence the other.
+ *
+ * ⛔ The tick is stored by a command, never in the page: anything that outlives
+ * a reload is part of the model, and everything in the model is reachable from
+ * the command line.
+ */
+async function removePlugin(plugin) {
+  const failure = await run(['plugins', 'rm', plugin.id]).then(() => null, (error) => error)
+  if (failure === null) {
+    picked.delete(plugin.id)
+    return void await refresh()
+  }
+  // The refusal travels whole on `.result`, with its details at the top level —
+  // the same object the command line printed, not a paraphrase of it.
+  const refusal = failure.result ?? {}
+  if (refusal.code !== 'NEEDS_APPROVAL') {
+    $('startOut').innerHTML = `<div class="err">${escape(failure.message)}</div>`
+    return
+  }
+  const places = refusal.places ?? []
+  $('dropWhat').innerHTML = '<p class="warn" style="margin:0 0 10px">'
+    + `${t('ui.dropRowPlugin', { label: escape(plugin.label ?? plugin.package) })}<br>`
+    + `${t('ui.dropRowPlaces', { places: escape(places.join('、')) })}</p>`
+    + `<p style="margin:0 0 6px">${t('ui.dropPoint1')}</p>`
+    + `<p style="margin:0">${t(refusal.downloaded === true ? 'ui.dropPoint2Downloaded' : 'ui.dropPoint2Yours')}</p>`
+  $('dropDontAsk').checked = false
+  pendingDrop = plugin
+  $('dropDialog').showModal()
+}
+
+/** The plugin the confirm dialog is currently about. */
+let pendingDrop = null
+
+$('dropCancel').onclick = () => $('dropDialog').close()
+$('dropConfirm').onclick = async () => {
+  const plugin = pendingDrop
+  $('dropDialog').close()
+  if (plugin === null) return
+  if ($('dropDontAsk').checked) await run(['config', 'ask-on-daily', 'off']).catch(() => {})
   try {
-    const { jobId } = await api('/api/main/start', {
-      version,
-      plugins: [...picked],
-    })
-    const result = await watchJob($('startOut'), jobId, '正在启动主环境…')
-    $('startOut').innerHTML = `<div class="ok">主环境已启动。
-      <a href="${result.url}" target="_blank" rel="noreferrer">打开 ${escape(result.url)}</a></div>`
-    await refresh()
+    await run(['plugins', 'rm', plugin.id, '--approved'])
+    picked.delete(plugin.id)
   } catch (error) {
     $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
-  } finally {
-    $('mainStartBtn').disabled = false
+  }
+  await refresh()
+}
+
+$('quitCancel').onclick = () => $('quitDialog').close()
+$('quitConfirm').onclick = async () => {
+  const withMain = $('quitMain').checked
+  $('quitDialog').close()
+  if ($('quitDontAsk').checked) await run(['config', 'ask-on-quit', 'off']).catch(() => {})
+  await quitNow(withMain)
+}
+
+async function quitNow(withMain) {
+  try {
+    const result = await run(withMain ? ['quit', '--main'] : ['quit'])
+    stopPolling()
+    const alsoMain = result.main === null ? '' : t('ui.quitAlsoMain', { pid: result.main.pid })
+    document.body.innerHTML = `<main><section class="card"><h2>${t('ui.quitDoneTitle')}</h2>`
+      + `<p>${t('ui.quitDoneBody', { count: result.stopped.length, alsoMain })}</p></section></main>`
+  } catch (error) {
+    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
   }
 }
 
@@ -425,8 +1582,34 @@ function escape(value) {
   return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
+// The language switch: shows the *other* language's own name, and switching
+// is the same `config lang` anyone would run. The served page carries the
+// language, so reloading is what makes the switch real — window and command
+// line change together, because both read the same setting.
+{
+  const other = LANG === 'zh' ? 'en' : 'zh'
+  $('langBtn').textContent = LANG_NAMES[other] ?? other
+  $('langBtn').hidden = false
+  $('langBtn').onclick = async () => {
+    try {
+      await run(['config', 'lang', other])
+      location.reload()
+    } catch (error) {
+      // An agent holding the window already answered with the hint; anything
+      // else is said where every other refusal is said.
+      if (error.result?.code !== 'AGENT_HOLDS_WINDOW') {
+        document.body.insertAdjacentHTML('afterbegin', `<div class="err">${escape(error.message)}</div>`)
+      }
+    }
+  }
+}
+
 refresh().catch((error) => {
-  document.body.insertAdjacentHTML('afterbegin', `<div class="err">${escape(error.message)}</div>`)
+  // ⛔ The spinner has to stop even when the read never lands. A wheel that
+  // turns forever says "still working" about something that has already given
+  // up, and that is the one thing it must not say.
+  $('booting').innerHTML = `<div class="err" style="margin:0">${t('ui.stateUnreadable', { error: escape(error.message) })}</div>`
+  document.querySelector('main')?.classList.add('booting')
 })
 
 // Sandbox links open through the service in the system's default browser.
@@ -441,15 +1624,33 @@ document.addEventListener('click', (event) => {
 })
 
 // Keep the running list honest without touching what the user is editing:
-// only the two read-only sections are redrawn.
-setInterval(async () => {
+// only the read-only sections are redrawn. Reading is a plain disk read on the
+// other side — no process is started for it, which is what makes a poll this
+// frequent reasonable at all.
+//
+// ⭐ Two seconds rather than eight because this is now also how the window
+// notices an agent. The delay before the glass comes down is this interval, and
+// eight seconds of an unlocked window while something else is driving it is the
+// one thing the frame exists to prevent.
+const polling = setInterval(async () => {
   try {
     state = await api('/api/state')
-    drawRunning(); drawSandboxes()
+    // The workspace row is redrawn too — sandboxes appear and disappear from
+    // the other entrance — but the selection is a variable here, not something
+    // read back off the page, so a redraw cannot move it.
+    // Plugins are redrawn too: another entrance can install one, and the ticks
+    // are read from variables rather than off the page, so a redraw cannot
+    // disturb a choice being made.
+    drawRunning(); drawWorkspaces(); drawPlugins(); drawAgent()
   } catch {
     // The next tick retries; a dead server shows up on the next click anyway.
   }
-}, 8000)
+}, 2000)
+
+/** Stop polling, for when there is deliberately nothing left to poll. */
+function stopPolling() {
+  clearInterval(polling)
+}
 </script>
 </body>
 </html>
