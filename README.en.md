@@ -3,10 +3,12 @@
   <h1>dsh-box</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/AGENT%20DRIVABLE-ff6b35?style=for-the-badge" alt="Agent drivable" height="90" />
-    <img src="https://img.shields.io/badge/SANDBOXED-2ea44f?style=for-the-badge" alt="Sandboxed" height="90" />
-    <img src="https://img.shields.io/badge/NODE%20ONLY-3178c6?style=for-the-badge" alt="Node only" height="90" />
+    <img src="https://img.shields.io/badge/AGENT%20DRIVABLE-ff6b35?style=for-the-badge" alt="Agent drivable" height="135" />
+    <img src="https://img.shields.io/badge/SANDBOXED-2ea44f?style=for-the-badge" alt="Sandboxed" height="135" />
+    <img src="https://img.shields.io/badge/NODE%20ONLY-3178c6?style=for-the-badge" alt="Node only" height="135" />
   </p>
+
+  <p><a href="README.md">中文</a> | English</p>
 
   <p>Pick an official release, run an isolated dsh<br/>Every button is a command you could have typed<br/>When an agent drives, the window shows every step it takes<br/>Take the wheel back anytime; close the window and nothing is lost</p>
 
@@ -27,8 +29,6 @@
   </p>
 
   <p><sub>Built with Fable 5</sub></p>
-
-  <p><a href="README.md">中文</a> | English</p>
 
 </div>
 

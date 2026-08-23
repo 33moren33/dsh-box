@@ -3,10 +3,12 @@
   <h1>DSH 沙箱启动器</h1>
 
   <p>
-    <img src="https://img.shields.io/badge/AGENT%20%E5%8F%AF%E9%A9%BE%E9%A9%B6-ff6b35?style=for-the-badge" alt="Agent 可驾驶" height="90" />
-    <img src="https://img.shields.io/badge/%E6%B2%99%E7%AE%B1%E9%9A%94%E7%A6%BB-2ea44f?style=for-the-badge" alt="沙箱隔离" height="90" />
-    <img src="https://img.shields.io/badge/%E5%8F%AA%E9%9C%80%20NODE-3178c6?style=for-the-badge" alt="只需 Node" height="90" />
+    <img src="https://img.shields.io/badge/AGENT%20%E5%8F%AF%E9%A9%BE%E9%A9%B6-ff6b35?style=for-the-badge" alt="Agent 可驾驶" height="135" />
+    <img src="https://img.shields.io/badge/%E6%B2%99%E7%AE%B1%E9%9A%94%E7%A6%BB-2ea44f?style=for-the-badge" alt="沙箱隔离" height="135" />
+    <img src="https://img.shields.io/badge/%E5%8F%AA%E9%9C%80%20NODE-3178c6?style=for-the-badge" alt="只需 Node" height="135" />
   </p>
+
+  <p>中文 | <a href="README.en.md">English</a></p>
 
   <p>选一个官方版本，开一台隔离的 dsh<br/>每个按钮背后，都是一条你也能敲的命令<br/>Agent 自己驾驶时，窗口如实显示它走的每一步<br/>随时一键收回控制权，窗口关掉再打开，什么都不丢</p>
 
@@ -27,8 +29,6 @@
   </p>
 
   <p><sub>Fable 5 辅助</sub></p>
-
-  <p>中文 | <a href="README.en.md">English</a></p>
 
 </div>
 
