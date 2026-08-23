@@ -69,6 +69,14 @@
   .going b, .going i { color: var(--dim); }
   .going b { text-decoration: line-through; }
   .tag { font-size: 11px; border-radius: 5px; padding: 1px 6px; margin-left: 6px; font-weight: 600; vertical-align: 1px; }
+  /* Something this run deleted. Dashed and unclickable, because it is not on
+     this page any more — only in the record. */
+  .ghost { border-style: dashed !important; opacity: .62; pointer-events: none; color: var(--dim); }
+  .ghost small { display: block; font-size: 11px; }
+  /* A step in review: clickable, and the one being looked at is marked. */
+  .step { cursor: pointer; border-radius: 8px; }
+  .step:hover { background: #f6f8fb; }
+  .step.picked { background: #eef4ff; box-shadow: inset 2px 0 0 #2563eb; }
   .tag.have { background: #ecfdf5; color: #15803d; }
   .tag.add { background: #eff6ff; color: #1d4ed8; }
   .tag.going { background: #f3f4f6; color: #6b7280; }
@@ -272,8 +280,8 @@
       refusal itself, which carries the rule with it.
     -->
     <p class="sub" id="nameHint" style="margin:8px 0 0" hidden></p>
-    <label class="check" id="signInWrap"><input type="checkbox" id="importSignIn" checked>
-      <span><b data-i18n="ui.importSignIn"></b><i data-i18n="ui.importSignInNote"></i></span></label>
+    <label class="check" id="signInWrap" data-mark="go:signIn"><input type="checkbox" id="importSignIn" checked>
+      <span><b data-i18n="ui.importSignIn"></b><span class="tag" id="signInTag"></span><i id="signInNote"></i></span></label>
     <div id="adoptOut"></div>
   </section>
 
@@ -464,12 +472,21 @@ let workspace = undefined
 const picked = new Set()
 const dropping = new Set()
 
-/** Forget pending plugin changes; they belonged to the workspace being left. */
+/**
+ * What should happen to this cabinet's sign-in at the next start.
+ *
+ * `null` is "leave it alone", which is what a person who has not touched the
+ * tick means — the same rule the plugin flags follow.
+ */
+let signInPlan = null
+
+/** Forget pending changes; they belonged to the cabinet being left. */
 function switchCabinet(next) {
   if (next === workspace) return
   workspace = next
   picked.clear()
   dropping.clear()
+  signInPlan = null
 }
 
 // Served into the page by the window itself; a page from anywhere else
@@ -684,6 +701,11 @@ function drawVersions() {
       button.style.paddingRight = '26px'
       const x = document.createElement('span')
       x.className = 'x'; x.textContent = '×'; x.title = t('ui.deleteVersionTitle')
+      // ⛔ It sends a command, so it greys out with the rest while an agent
+      // drives. It was missed for the same reason every miss in this scheme
+      // happens: the marking is per control, and this one is a span bolted onto
+      // another control rather than a button of its own.
+      x.dataset.cmd = ''
       x.onclick = async (event) => {
         event.stopPropagation()
         if (!await ask({
@@ -898,8 +920,51 @@ function drawWorkspaces() {
   }
 
   $('workspaceHint').textContent = t(workspace === null ? 'ui.cabinetHintMain' : 'ui.cabinetHintSandbox')
-  $('signInWrap').hidden = workspace === null
+  drawSignIn()
   drawWorkspaceDetail()
+}
+
+/**
+ * What this cabinet's sign-in is, and what is about to happen to it.
+ *
+ * ⭐ Read off the disk, like a plugin row, rather than remembered from the last
+ * launch — a sign-in is a fact about a cabinet, not a preference of this run.
+ * The colours mean what they mean on the plugin rows: green is *has*, blue is
+ * *will get*, struck through is *about to lose*. Nothing happens until the start
+ * button, which is where everything on this page becomes true.
+ *
+ * ⛔ The daily cabinet's tick is shown too, and it can be taken out — a door
+ * this tool deliberately opened (CEO 2026-08-23), because `adopt` and the
+ * plugin rows already reach into that cabinet. It is the only one of the three
+ * that cannot be undone: no backup is kept, on purpose.
+ */
+function drawSignIn() {
+  const wrap = $('signInWrap')
+  const tick = $('importSignIn')
+  const box = state.sandboxes.find((entry) => entry.name === workspace)
+  // A name typed but not created yet: there is no fact to read, only the choice
+  // of what the cabinet should be born with.
+  const unborn = typeof workspace === 'string' && box === undefined
+  const signedIn = workspace === null ? state.mainSignedIn === true : box?.hasCredentials === true
+
+  wrap.hidden = false
+  wrap.classList.toggle('going', !unborn && signedIn && signInPlan === false)
+  tick.className = `tick ${unborn || !signedIn ? 'add' : 'have'}`
+  tick.checked = unborn ? signInPlan !== false : (signInPlan === null ? signedIn : signInPlan)
+  $('signInTag').className = `tag ${unborn ? 'add' : signedIn ? (signInPlan === false ? 'going' : 'have') : 'add'}`
+  $('signInTag').textContent = unborn ? t('ui.signInWillImport')
+    : signedIn ? t(signInPlan === false ? 'ui.signInGoing' : 'ui.signInHave')
+      : t(signInPlan === true ? 'ui.signInWillImport' : 'ui.signInNone')
+  $('signInNote').textContent = unborn ? t('ui.importSignInNote')
+    : workspace === null ? t('ui.signInDailyNote') : t('ui.signInSandboxNote')
+
+  tick.onchange = () => {
+    if (unborn) signInPlan = tick.checked ? null : false
+    else if (signedIn) signInPlan = tick.checked ? null : false
+    else signInPlan = tick.checked ? true : null
+    drawSignIn()
+    drawStartButton()
+  }
 }
 
 /** What can be done to the selected workspace, other than starting it. */
@@ -916,6 +981,7 @@ function drawWorkspaceDetail() {
   const adopt = document.createElement('button')
   adopt.className = 'mini'
   adopt.dataset.cmd = ''
+  adopt.dataset.mark = 'go:adopt'
   adopt.textContent = t('ui.adoptBtn')
   adopt.disabled = box.sessions === 0
   adopt.onclick = async () => {
@@ -1011,16 +1077,30 @@ function markKeys(action) {
         workspace,
         ...(args.plugins ?? []).map((id) => `plugin:${id}`),
         ...(args.unplugged ?? []).map((name) => `plugin:${name}`),
+        // Sign-in is a choice of the launch like any other, and the checkbox is
+        // where a person makes it — but only for a sandbox. The daily cabinet's
+        // sign-in is the user's own; nothing is imported and nothing is chosen.
+        ...(args.main === true ? [] : ['go:signIn']),
         'go:start',
       ]
-    case 'pull': case 'drop':
+    case 'pull':
       return [machine, 'go:pull']
+    case 'drop':
+      // Only the chip. The × that deletes a release lives inside it, so the
+      // frame already covers the control; lighting the download button as well
+      // would point at the opposite action.
+      return [machine]
     case 'plugins.add':
       return ['go:pluginDir', 'go:addPlugin']
     case 'plugins.rm':
       return [`plugin:${args.id ?? args.target}`]
     case 'plugins.install': case 'plugins.uninstall':
       return [`plugin:${args.id ?? args.target}`, workspace]
+    case 'signin': case 'signout':
+      // One control for both directions, and the cabinet it belongs to. The
+      // agent may have used the standalone verb while the window only offers it
+      // through the tick — same place on the page either way.
+      return [args.main === true ? 'cabinet:main' : named(args.sandbox), 'go:signIn']
     case 'plugins.restore':
       return [workspace]
     case 'config.source':
@@ -1030,7 +1110,12 @@ function markKeys(action) {
     case 'rm':
       return [workspace]
     case 'adopt':
-      return [named(args.fromSandbox), named(args.toSandbox)]
+      // Both cabinets, and the button. ⚠️ The button is one fixed direction —
+      // this sandbox into the daily cabinet — while the command runs between
+      // any two. So an agent copying the other way still lights the two
+      // cabinets, and lights a button that could not have done it: the frame
+      // says where it happened, not that a person could have pressed it.
+      return [named(args.fromSandbox), named(args.toSandbox), 'go:adopt']
     case 'quit':
       return ['go:quit']
     default:
@@ -1080,14 +1165,31 @@ function drawAgent() {
     control.classList.toggle('held', held !== null)
   })
   drawBadge(held)
-  // Frames belong to the run being shown. A session left over from a previous
-  // run is history, not a picture of what is happening now.
-  drawMarks(held !== null && session?.session === held.session ? session : null)
+  // ⭐ Recall first, because whether the panel is open is what decides whether
+  // there are frames to draw at all.
   drawRecall(held, session)
+  const live = held !== null && session?.session === held.session
+  // ⭐⭐ Reviewing draws frames too (CEO 2026-08-23: 「记忆就是为了看蓝框」). It is
+  // not a replay — the page is still now, and a control's *value* is today's
+  // value. A frame says "this step happened here", never "here is what it
+  // looked like". While an agent drives, everything so far is lit at once,
+  // which is what a person watching sees; in review, clicking a step limits the
+  // frames to that step and everything before it.
+  const reviewing = held === null && session !== null && recallFolded === false
+  drawMarks(live ? session : (reviewing ? session : null), live ? null : reviewUpTo)
 }
 
 /** Whether the person has folded the panel away by hand this run. */
 let recallFolded = null
+
+/**
+ * The step being looked at in review, or null for "all of them".
+ *
+ * Frames accumulate the way they did while it happened: looking at step 6 shows
+ * ①–⑥, not ⑥ alone. Anything else would be a different picture from the one the
+ * person would have seen live, and this panel exists to give that picture back.
+ */
+let reviewUpTo = null
 
 /**
  * The list of steps, below the page rather than over it.
@@ -1120,11 +1222,27 @@ function drawRecall(held, session) {
     : t(open ? 'ui.recallPastOpen' : 'ui.recallPastClosed', { count: steps.length })
   $('recallToggle').setAttribute('aria-expanded', String(open))
   $('recallBody').hidden = !open
-  if (open) $('recallBody').innerHTML = recallRows(shown)
+  if (!open) reviewUpTo = null
+  if (!open) return
+  $('recallBody').innerHTML = recallRows(shown, live)
+  // ⭐ Only in review. While an agent drives, the frames are keeping up with it
+  // and freezing them at step 3 would be showing an old picture of a live thing.
+  if (live) return
+  for (const row of $('recallBody').querySelectorAll('[data-step]')) {
+    row.onclick = () => {
+      const step = Number(row.dataset.step)
+      reviewUpTo = reviewUpTo === step ? null : step
+      drawAgent()
+    }
+  }
 }
 
-/** @returns {string} the steps of one run, newest last, as the record renders them. */
-function recallRows(session) {
+/**
+ * @param {object} session
+ * @param {boolean} live - a run still going on; its steps are not clickable.
+ * @returns {string} the steps of one run, newest last, as the record renders them.
+ */
+function recallRows(session, live) {
   const rows = session.actions.map((action) => {
     const refused = action.ok === false
       ? `<div class="err" style="margin:6px 0 0">${t('ui.refusedLine', { code: escape(action.code ?? ''), message: escape(action.message ?? '') })}</div>`
@@ -1132,7 +1250,11 @@ function recallRows(session) {
     // The line is the record's own rendering, filled in from what the action
     // resolved to — so it runs to the same result whenever it is run, which the
     // line the agent typed would not.
-    return `<div class="item" style="display:block">
+    // Clickable in review, and the one being looked at says so — the frames on
+    // the page above are the frames as of this step.
+    const picked = !live && reviewUpTo === action.seq
+    const step = live ? '' : ` data-step="${action.seq}"`
+    return `<div class="item step${picked ? ' picked' : ''}"${step} style="display:block">
       <b>#${seqMark(action.seq)}</b> <em style="display:inline">${escape(clock(action.at))}</em>
       <pre>${escape(action.line ?? action.command)}</pre>${refused}</div>`
   })
@@ -1163,14 +1285,17 @@ function drawBadge(held) {
  * underneath are rebuilt by every poll; a frame kept across a redraw would be a
  * frame on an element that no longer exists.
  */
-function drawMarks(session) {
+function drawMarks(session, upTo = null) {
   for (const marked of document.querySelectorAll('.agent-mark')) {
     marked.classList.remove('agent-mark')
     marked.removeAttribute('data-seq')
   }
+  for (const ghost of document.querySelectorAll('.ghost')) ghost.remove()
   if (session === null) return
+  const upto = upTo === null ? Number.POSITIVE_INFINITY : upTo
   const seqs = new Map()
   for (const action of session.actions) {
+    if (action.seq > upto) continue
     for (const key of markKeys(action)) {
       if (key === null) continue
       const seen = seqs.get(key) ?? []
@@ -1178,14 +1303,57 @@ function drawMarks(session) {
       seqs.set(key, seen)
     }
   }
-  // An option that is no longer on the page — a sandbox since deleted, a
-  // release since dropped — simply carries no frame. The trail still has it,
-  // and the recall control still lists it; there is just nothing to point at.
+  drawGhosts(session, seqs)
   for (const element of document.querySelectorAll('[data-mark]')) {
     const seen = element.dataset.mark.split(' ').flatMap((key) => seqs.get(key) ?? [])
     if (seen.length === 0) continue
     element.classList.add('agent-mark')
-    element.dataset.seq = [...new Set(seen)].sort((a, b) => a - b).map(seqMark).join(' ')
+    // Comma-separated (CEO 2026-08-23): a control touched at steps 1 and 3 read
+    // as "13" when the numbers were only spaced apart.
+    element.dataset.seq = [...new Set(seen)].sort((a, b) => a - b).map(seqMark).join(',')
+  }
+}
+
+/**
+ * Dashed stand-ins for things this run got rid of.
+ *
+ * ⭐⭐ A step whose target no longer exists used to carry no frame at all, so
+ * "the agent deleted that sandbox" was the one action review could not show —
+ * the most consequential one. A dashed placeholder gives the frame somewhere to
+ * land, and says what it is: gone.
+ *
+ * ⛔ Drawn **only** for things the record itself deleted (CEO 2026-08-23). That
+ * one rule removes the need to ask any harder question — in particular whether
+ * a name on the page today is the same thing as that name back then, which
+ * cannot be answered from a name and could otherwise put a frame confidently
+ * around the wrong sandbox. If a thing vanished for some other reason, there is
+ * no ghost and no frame: less shown, nothing invented.
+ * @param {{actions: {command: string, args?: Record<string, any>}[]}} session
+ * @param {Map<string, number[]>} seqs - the keys the frames want.
+ */
+function drawGhosts(session, seqs) {
+  const gone = new Map()
+  for (const action of session.actions) {
+    const args = action.args ?? {}
+    if (action.command === 'rm' && typeof args.sandbox === 'string') {
+      gone.set(`cabinet:${args.sandbox}`, { where: 'workspaces', label: args.sandbox })
+    }
+    if (action.command === 'plugins.rm') {
+      const id = args.id ?? args.target
+      if (typeof id === 'string') gone.set(`plugin:${id}`, { where: 'plugins', label: id })
+    }
+  }
+  const onPage = new Set()
+  for (const element of document.querySelectorAll('[data-mark]')) {
+    for (const key of element.dataset.mark.split(' ')) onPage.add(key)
+  }
+  for (const [key, what] of gone) {
+    if (!seqs.has(key) || onPage.has(key)) continue
+    const ghost = document.createElement('div')
+    ghost.className = `ghost ${what.where === 'workspaces' ? 'chip' : 'check'}`
+    ghost.dataset.mark = key
+    ghost.innerHTML = `${escape(what.label)}<small>${t('ui.ghostDeleted')}</small>`
+    $(what.where).append(ghost)
   }
 }
 
@@ -1236,7 +1404,10 @@ $('stopAgentBtn').onclick = async () => {
 
 $('recallToggle').onclick = () => {
   recallFolded = !recallFolded
-  drawRecall(state?.agent ?? null, state?.session ?? null)
+  // ⭐ The whole of it, not just the panel: unfolding a past run is what turns
+  // its frames on, so redrawing only the list would open a list of steps that
+  // point at nothing — which is what it did until this was measured.
+  drawAgent()
 }
 
 /** Clears the hint again, so it reads as an answer to one press. */
@@ -1410,8 +1581,20 @@ $('startBtn').onclick = async () => {
   // `--approved` is passed, and this dialog is the only place that flag is
   // supposed to come from. So the gate is not "the window is nicer about it" —
   // an agent that tries the same launch is stopped, and told to come here.
-  const approved = main && version !== ''
-  if (approved && !await ask({
+  // Taking the sign-in out of the daily cabinet is the second thing behind that
+  // gate, and the only one with no way back: nothing is kept, on purpose.
+  // ⚠️ "Do not ask again" silences the dialog, never the gate — the approval is
+  // still sent, and it still counts only because this window sent it.
+  const droppingDailySignIn = main && signInPlan === false
+  if (droppingDailySignIn && state?.settings?.['ask-on-daily'] !== 'off' && !await ask({
+    title: t('ui.signOutAskTitle'),
+    body: `<p class="warn" style="margin-top:0">${t('ui.signOutAskBody')}</p>`
+      + `<p style="margin:0">${t('ui.signOutAskNote')}</p>`,
+    ok: t('ui.signOutOk'), danger: true,
+  })) return
+
+  const approved = (main && version !== '') || droppingDailySignIn
+  if (main && version !== '' && !await ask({
     title: t('ui.notice'),
     // The two axes are named separately and up front. Written as one sentence
     // they blur together — "your dsh will use another version" reads as a fact
@@ -1434,7 +1617,14 @@ $('startBtn').onclick = async () => {
   const out = $('startOut')
   try {
     const argv = ['start', ...(main ? ['--main'] : ['--sandbox', workspace]), ...machineFlag(), ...pluginFlags()]
-    if (!main && !$('importSignIn').checked) argv.push('--no-sign-in')
+    // Three different sentences, and only one of them is about creation:
+    // `--no-sign-in` says what a cabinet is born without, while `--sign-in` and
+    // `--sign-out` change one that already exists.
+    const unborn = !main && !state.sandboxes.some((entry) => entry.name === workspace)
+    if (unborn) {
+      if (signInPlan === false) argv.push('--no-sign-in')
+    } else if (signInPlan === true) argv.push('--sign-in')
+    else if (signInPlan === false) argv.push('--sign-out')
     // Carried only because the dialog above was answered, just now, by a person.
     if (approved) argv.push('--approved')
     const result = await watchLog(out, main ? ['logs', '--main'] : ['logs', workspace], t('ui.startingHead'), run(argv))
@@ -1451,6 +1641,7 @@ $('startBtn').onclick = async () => {
     // once as a fact and once as something still to do.
     picked.clear()
     dropping.clear()
+    signInPlan = null
     await refresh()
   } catch (error) {
     out.innerHTML = `<div class="err">${escape(error.message)}</div>`
@@ -1529,7 +1720,24 @@ async function removePlugin(plugin) {
     $('startOut').innerHTML = `<div class="err">${escape(failure.message)}</div>`
     return
   }
-  const places = refusal.places ?? []
+  // ⭐ The command line now refuses every caller that is not this window, so a
+  // refusal arrives even when the person has said "stop asking me". That switch
+  // was never about the gate — it is about being asked twice by a window they
+  // are already sitting in front of. So: no dialog, but still an approval, and
+  // the approval still only counts because it came from here.
+  if (state?.settings?.['ask-on-daily'] === 'off') {
+    try {
+      await run(['plugins', 'rm', plugin.id, '--approved'])
+      picked.delete(plugin.id)
+    } catch (error) {
+      $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+    }
+    return void await refresh()
+  }
+  // The refusal names places by identifier, not by label — see `removeEverywhere`.
+  // Turning them into words is this side's job, which is what makes the same
+  // refusal readable here and stable for whatever else reads `--json`.
+  const places = (refusal.places ?? []).map((place) => (place.main === true ? t('cabinet.daily') : place.sandbox))
   $('dropWhat').innerHTML = '<p class="warn" style="margin:0 0 10px">'
     + `${t('ui.dropRowPlugin', { label: escape(plugin.label ?? plugin.package) })}<br>`
     + `${t('ui.dropRowPlaces', { places: escape(places.join('、')) })}</p>`

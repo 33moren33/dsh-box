@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox } from '../src/paths.js'
+import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -30,7 +30,7 @@ if (root === undefined) {
   process.exit(2)
 }
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -142,6 +142,6 @@ const missing = await cli('workspaces', 'use', join(root, '根本没有这个目
 check('目录不存在就拒绝', missing.ok === false && missing.code === 'DIR_NOT_FOUND', missing.code)
 check('⛔ 而且没有因此造出一张空表', !existsSync(table))
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)
 process.exit(failures === 0 ? 0 : 1)

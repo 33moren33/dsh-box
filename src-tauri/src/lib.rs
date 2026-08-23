@@ -40,7 +40,24 @@ pub fn run() {
                     app.manage(server);
                     Ok(())
                 }
-                Err(reason) => {
+                // Not a failure: this data directory already has a window, and
+                // a second one is the thing being prevented. Said plainly and
+                // then out of the way — a person who double-clicked twice needs
+                // to know why nothing new appeared, not to be alarmed.
+                //
+                // ⛔ Whether a window is already serving is decided by the
+                // command line, never here. A copy of that rule in Rust would
+                // be a second rule, and two rules about one fact drift.
+                Err(NoWindow::AlreadyOpen(reason)) => {
+                    eprintln!("{reason}");
+                    app.dialog()
+                        .message(&reason)
+                        .kind(MessageDialogKind::Info)
+                        .title("dsh-box 已经开着了")
+                        .blocking_show();
+                    Err(reason.into())
+                }
+                Err(NoWindow::Broken(reason)) => {
                     // A double-clicked app has no terminal; the dialog is the
                     // only place a reason can reach the user. The stderr line
                     // is for the other launch path — a terminal or a test.
@@ -68,15 +85,34 @@ pub fn run() {
         });
 }
 
+/// Why no window opened: because one is already there, or because something
+/// is wrong. Two very different sentences to say to a person.
+enum NoWindow {
+    AlreadyOpen(String),
+    Broken(String),
+}
+
+impl From<String> for NoWindow {
+    fn from(reason: String) -> Self {
+        NoWindow::Broken(reason)
+    }
+}
+
+impl From<&str> for NoWindow {
+    fn from(reason: &str) -> Self {
+        NoWindow::Broken(reason.to_string())
+    }
+}
+
 /// Start the Node service and wait until it answers.
-fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
+fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
     let (node, major) = find_node().ok_or_else(|| {
-        "没找到 Node。这个工具和 dsh 本身都是 Node 程序,请先安装 Node 20 或更新版本(nodejs.org),装好后重新打开。".to_string()
+        NoWindow::Broken("没找到 Node。这个工具和 dsh 本身都是 Node 程序,请先安装 Node 20 或更新版本(nodejs.org),装好后重新打开。".to_string())
     })?;
     if major < 20 {
-        return Err(format!(
+        return Err(NoWindow::Broken(format!(
             "本机的 Node 是 {major} 版,太旧了。dsh 需要 Node 20 或更新版本,请升级后重新打开。"
-        ));
+        )));
     }
 
     let (entry, cwd, box_dir) = locate_boot(app)?;
@@ -85,11 +121,15 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
     let mut command = Command::new(&node);
     command
         .arg(&entry)
-        .args(["ui", "--port", &port.to_string(), "--no-open"])
+        // `--json` so that a refusal comes back as one machine-readable line
+        // with a `code` that never changes and a `message` already in the
+        // user's language. The shell then repeats what the command line said
+        // instead of inventing its own wording.
+        .args(["ui", "--port", &port.to_string(), "--no-open", "--json"])
         .current_dir(&cwd)
         // Captured, not inherited: a double-clicked app has no terminal, so
         // whatever Node says on the way down is only readable if kept.
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = &box_dir {
         command.env("DSH_BOX_HOME", dir);
@@ -109,16 +149,23 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline {
         if let Ok(Some(status)) = child.try_wait() {
+            let mut answered = String::new();
+            if let Some(mut stdout) = child.stdout.take() {
+                let _ = stdout.read_to_string(&mut answered);
+            }
+            if let Some(refusal) = refused_because_open(&answered) {
+                return Err(NoWindow::AlreadyOpen(refusal));
+            }
             let mut said = String::new();
             if let Some(mut stderr) = child.stderr.take() {
                 let _ = stderr.read_to_string(&mut said);
             }
             let tail: String = said.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev()
                 .collect::<Vec<_>>().join("\n");
-            return Err(format!(
+            return Err(NoWindow::Broken(format!(
                 "Node 服务还没起来就退出了,退出码 {status}。\n入口:{}\nNode 说:\n{tail}",
                 entry.display(),
-            ));
+            )));
         }
         if TcpStream::connect_timeout(
             &([127, 0, 0, 1], port).into(),
@@ -134,7 +181,24 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, String> {
         std::thread::sleep(Duration::from_millis(150));
     }
     kill_tree(child.id());
-    Err("Node 服务 20 秒内没有开始监听".to_string())
+    Err(NoWindow::Broken("Node 服务 20 秒内没有开始监听".to_string()))
+}
+
+/// The sentence to show when the command line refused because a window is
+/// already serving this data directory, or None for any other outcome.
+///
+/// ⭐ The `code` is the contract — it is never translated and never reworded —
+/// while `message` is already in whatever language the data directory is set
+/// to. So the shell recognises the situation by the code and then says the
+/// command line's own sentence, which is how the window and the terminal end
+/// up telling a person the same thing.
+fn refused_because_open(answered: &str) -> Option<String> {
+    let line = answered.lines().rev().find(|line| !line.trim().is_empty())?;
+    let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if parsed.get("code")?.as_str()? != "UI_ALREADY_SERVING" {
+        return None;
+    }
+    Some(parsed.get("message")?.as_str()?.to_string())
 }
 
 /// Find the service's entry script, the directory to run it in, and where

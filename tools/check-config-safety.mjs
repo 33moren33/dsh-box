@@ -16,10 +16,10 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox } from '../src/paths.js'
+import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -29,7 +29,7 @@ if (root === undefined) {
   process.exit(2)
 }
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -184,6 +184,6 @@ check('但它不混进正经名单里',
   !(shown.plugins ?? []).some((row) => row.id === '缺了 path 的一行'),
   `名单 ${shown.plugins?.length} 条`)
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -17,12 +17,13 @@
 
 import { spawnSync } from 'node:child_process'
 import {
-  copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync,
+  copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { copyTree, removeTree } from '../src/paths.js'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 process.chdir(root)
@@ -49,11 +50,16 @@ const exeBuilt = join('src-tauri', 'target', 'release', 'dsh-box-shell.exe')
 if (!existsSync(exeBuilt)) fail(`没找到壳:${exeBuilt}`)
 const stage = join(tmpdir(), `dsh-box-portable-${version}`)
 const boot = join(stage, 'dsh-box', 'boot')
-rmSync(stage, { recursive: true, force: true })
+// ⛔ Not `rmSync({recursive})` / `cpSync({recursive})`: the staging directory
+// sits under `tmpdir()`, which on Windows is `C:\Users\<用户名>\AppData\Local\
+// Temp`. On the machine of anyone called 张三 or Müller the copies would report
+// success and put **nothing** in `boot/` — shipping a portable zip with an
+// empty program inside it, and no error anywhere to say so.
+removeTree(stage)
 mkdirSync(boot, { recursive: true })
 copyFileSync(exeBuilt, join(stage, 'dsh-box-shell.exe'))
-cpSync('bin', join(boot, 'bin'), { recursive: true })
-cpSync('src', join(boot, 'src'), { recursive: true })
+copyTree('bin', join(boot, 'bin'))
+copyTree('src', join(boot, 'src'))
 copyFileSync('package.json', join(boot, 'package.json'))
 
 const zip = join(root, 'Releases', `dsh-box_${version}_x64-portable.zip`)
@@ -62,7 +68,7 @@ run('powershell.exe', [
   '-NoProfile', '-Command',
   `Compress-Archive -Path '${stage}\\*' -DestinationPath '${zip}'`,
 ], '压缩便携包')
-rmSync(stage, { recursive: true, force: true })
+removeTree(stage)
 
 // 4. 交卷:报出两个产物与大小,让人一眼核对。
 console.log('\n  Releases/ 已更新:')

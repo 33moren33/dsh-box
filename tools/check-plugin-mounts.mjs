@@ -24,7 +24,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox } from '../src/paths.js'
+import { boxLayout, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -34,7 +34,7 @@ if (root === undefined) {
   process.exit(2)
 }
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -109,7 +109,7 @@ await cli('plugins', 'install', roundTrip, '--sandbox', 'w1')
 await cli('plugins', 'uninstall', 'gamma-plugin', '--sandbox', 'w1')
 check('⛔ 手写的配置装了又卸,逐字节回到原样', readFileSync(patch, 'utf8') === handWritten,
   JSON.stringify(readFileSync(patch, 'utf8').slice(-24)))
-rmSync(join(layout.sandboxes, 'w1'), { recursive: true, force: true })
+removeTree(join(layout.sandboxes, 'w1'))
 
 // 0b. ⛔⛔ The file a new user actually gets, which is the one nobody ever tried.
 //     dsh writes a fresh profile patch as three comments and `[]` — a finished
@@ -145,7 +145,7 @@ check('⛔ 只卸掉一个的时候不还,因为块还在', !outsideBlock().incl
 await cli('plugins', 'uninstall', 'epsilon-plugin', '--sandbox', 'w1')
 check('⛔⛔ 全卸掉之后逐字节回到 dsh 写的原样,不多不少一个 []',
   readPatch() === dshDefault, JSON.stringify(readPatch().slice(-16)))
-rmSync(join(layout.sandboxes, 'w1'), { recursive: true, force: true })
+removeTree(join(layout.sandboxes, 'w1'))
 
 // 1. A fresh workspace has nothing, and says so rather than failing.
 const empty = await cli('plugins', '--sandbox', 'w1')
@@ -383,21 +383,40 @@ check('⛔ 会动到日常档案柜时先拦下来',
   halted.ok === false && halted.code === 'NEEDS_APPROVAL', halted.code)
 check('⛔ 拦下来时是真的什么都没做',
   readFileSync(dailyPatch, 'utf8').includes('reaching-plugin'))
+// ⛔ Asserted on identity, not on the label. `places` used to carry the
+// translated name of the daily cabinet, so this line only passed in a Chinese
+// locale — and worse, an agent reading `--json` got a different value depending
+// on whose machine it ran on. Both were fixed together: the field now names
+// cabinets the way everything else here does (`sandbox: null` is the daily one).
 check('而且说得出会动哪几处',
-  (halted.places ?? []).includes('日常档案柜'), (halted.places ?? []).join('、'))
+  (halted.places ?? []).some((place) => place.main === true)
+  && (halted.places ?? []).some((place) => place.sandbox === 'w6'),
+  JSON.stringify(halted.places ?? []))
 
+const flagAlone = await cli('plugins', 'rm', 'reaching-plugin', '--approved')
+check('⛔⛔ 光带旗标不算数——不是配置窗起的就不是点头',
+  flagAlone.ok === false && flagAlone.code === 'NEEDS_APPROVAL', flagAlone.code)
+
+// ⭐ Play the window: hold its seat, then run the command line as a child of
+// this process. That parentage is the whole of the evidence a person was there.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
 const approved = await cli('plugins', 'rm', 'reaching-plugin', '--approved')
-check('点过头之后照做', approved.ok === true && approved.detached.length === 2,
+check('人在配置窗里点过头,照做', approved.ok === true && approved.detached.length === 2,
   (approved.detached ?? []).map((one) => one.workspace).join('、'))
+rmSync(uiSeatFile(layout), { force: true })
 check('日常档案柜里真的没了', !readFileSync(dailyPatch, 'utf8').includes('reaching-plugin'))
 check('⛔ 别人本来就有的那条照旧没动', readFileSync(dailyPatch, 'utf8').includes('their-plugin'))
 
-// 关掉那个开关之后,两边都不再拦 —— 一个开关,两种投影。
+// ⛔⛔ 这个开关的意思变了。它曾经把闸门对**所有调用者**关掉,于是一个人为了
+// 自己少点一次而勾的框,顺带把同一扇门交给了机器上跑着的任何东西。现在它只
+// 说一件事:窗口不必再问我。命令行这一侧照拦不误。
 await cli('config', 'ask-on-daily', 'off')
 await cli('plugins', 'install', makePlugin('quiet-plugin'), '--main')
 const quiet = await cli('plugins', 'rm', 'quiet-plugin')
-check('⭐ 关掉「再问一次」之后直接执行', quiet.ok === true, quiet.code ?? 'ok')
+check('⛔⛔ 关掉「再问一次」之后,命令行照样拦——那是窗口的偏好,不是给外面的通行证',
+  quiet.ok === false && quiet.code === 'NEEDS_APPROVAL', quiet.code ?? 'ok')
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)
 process.exit(failures === 0 ? 0 : 1)

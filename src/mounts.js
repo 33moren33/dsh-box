@@ -33,6 +33,7 @@ import {
 import { dirname, join } from 'node:path'
 import { BoxError } from './errors.js'
 import { t } from './messages.js'
+import { removeTree } from './paths.js'
 
 /** The profile every launch uses. dsh's own default, and the only one offered. */
 export const DEFAULT_PROFILE = 'web'
@@ -257,7 +258,7 @@ export function unmountPlugin({ home, profile = DEFAULT_PROFILE, id, backupDir }
   // makes the next question ("is this plugin installed?") unanswerable.
   if (going.kind === 'link') {
     try {
-      rmSync(join(profileModules(home, profile), ...going.package.split('/')), { recursive: true, force: true })
+      removeTree(join(profileModules(home, profile), ...going.package.split('/')))
     } catch {
       // A link that will not go away is worth less than the removal succeeding.
     }
@@ -368,7 +369,7 @@ export function backupFile(file, backupDir) {
  */
 export function pruneBackups(backupDir, keep = KEEP_BACKUPS) {
   const going = listBackups(backupDir).slice(keep)
-  for (const entry of going) rmSync(entry.dir, { recursive: true, force: true })
+  for (const entry of going) removeTree(entry.dir)
   return going.map((entry) => entry.at)
 }
 
@@ -381,7 +382,7 @@ export function pruneBackups(backupDir, keep = KEEP_BACKUPS) {
 export function removeBackup(backupDir, at) {
   const going = listBackups(backupDir).find((entry) => entry.at === at)
   if (going === undefined) return false
-  rmSync(going.dir, { recursive: true, force: true })
+  removeTree(going.dir)
   return true
 }
 

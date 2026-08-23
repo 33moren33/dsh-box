@@ -14,10 +14,11 @@
  * Usage: node tools/check-scoped-link.mjs <一次性目录>
  */
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { linkPlugins } from '../src/launch.js'
 import { mountPlugin, profilePatchFile } from '../src/mounts.js'
+import { removeTree } from '../src/paths.js'
 
 // Resolved, because a link is created with the path it is handed and a
 // relative one resolves against the link's own folder rather than against here.
@@ -29,7 +30,7 @@ if (root === undefined) {
   process.exit(2)
 }
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 const home = join(root, 'home')
 const source = join(root, 'pretend-plugin')
 mkdirSync(source, { recursive: true })

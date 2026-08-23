@@ -47,8 +47,9 @@ import {
 } from '../src/logs.js'
 import { installRelease, listReleases, npmInvocation, resolveSource } from '../src/registry.js'
 import {
-  adoptSessions, clearMainRunning, clearRunning, createNewSandbox, deleteSandbox, ensureSandbox,
-  listSandboxes, mainDshRunning, mainRunningRecord, runningRecord, runningSandboxes,
+  adoptSessions, approvedByWindow, clearMainRunning, clearRunning, createNewSandbox, deleteSandbox,
+  ensureSandbox, hasCredentials, importCredentials, listSandboxes, mainDshRunning, mainRunningRecord,
+  removeCredentials, runningRecord, runningSandboxes,
 } from '../src/sandbox.js'
 import { launch, linkPlugins, stop } from '../src/launch.js'
 import { deleteVersion, downloadedVersions } from '../src/versions.js'
@@ -174,6 +175,8 @@ async function main(positional, opts) {
     case 'sandboxes': return showSandboxes(layout, opts)
     case 'start': return start(layout, opts)
     case 'stop': return halt(layout, rest[0], opts)
+    case 'signin': return signIn(layout, rest[0], opts)
+    case 'signout': return signOut(layout, rest[0], opts)
     case 'adopt': return adopt(layout, rest[0], opts)
     case 'rm': return remove(layout, rest[0], opts)
     case 'config': return settings(layout, rest, opts)
@@ -246,7 +249,7 @@ function describeAction(command, rest, opts) {
         : null
     case 'start':
       return { command, args: { version: opts.version, sandbox: opts.sandbox, main: opts.main === true } }
-    case 'stop': case 'rm':
+    case 'stop': case 'rm': case 'signin': case 'signout':
       return { command, args: { sandbox: rest[0], main: opts.main === true } }
     case 'adopt':
       // Replaced by the resolved pair once the direction is known; this stands
@@ -812,10 +815,15 @@ function removeEverywhere(layout, id, opts) {
   const daily = places.find((place) => place.main)
 
   // ⚠️ A gate rather than a warning, because the person named a row in a list
-  // and the consequence reaches into a workspace they did not name. It is the
-  // same switch in both faces: the window shows a dialog, the command line
-  // refuses and says where — and ticking "do not ask again" turns off both.
-  if (daily !== undefined && config.askOnDaily !== false && opts.approved !== true) {
+  // and the consequence reaches into a cabinet they did not name.
+  //
+  // ⭐⭐ What counts as approval is a person in the window, not the flag: see
+  // {@link approvedByWindow}. `ask-on-daily` no longer takes part in this
+  // decision at all — it now means only "the window need not ask me twice",
+  // which is a preference of somebody who is sitting there. It used to switch
+  // the gate off for every caller, so a person turning off their own prompt was
+  // quietly handing the same door to anything else running on the machine.
+  if (daily !== undefined && !approvedByWindow(layout, opts.approved === true)) {
     throw new BoxError(
       'NEEDS_APPROVAL',
       t(ours ? 'plugins.rmApprovalDownloaded' : 'plugins.rmApprovalYours', {
@@ -823,7 +831,21 @@ function removeEverywhere(layout, id, opts) {
         daily: daily.label,
         places: places.map((place) => place.label).join('、'),
       }),
-      { id, package: known?.package ?? null, places: places.map((place) => place.label), downloaded: ours },
+      // ⛔ Identifiers, not labels. `place.label` for the daily cabinet is a
+      // translated phrase, so a caller reading `--json` used to get
+      // 「日常档案柜」 or "your everyday cabinet" depending on whose machine it
+      // ran on — the command line is the interface, and an interface whose
+      // values move with the display language is not one. `sandbox: null` is
+      // the daily cabinet, exactly as everywhere else here.
+      // ⭐ Found by running the acceptance suite on a machine with no `LANG`
+      // set: the assertion about this field was written against the Chinese
+      // text and had never left a Chinese locale.
+      {
+        id,
+        package: known?.package ?? null,
+        places: places.map((place) => ({ sandbox: place.sandbox, main: place.main })),
+        downloaded: ours,
+      },
     )
   }
 
@@ -1598,6 +1620,12 @@ async function start(layout, opts) {
 
   const importSignIn = opts['no-sign-in'] !== true
   let boxName = t('cabinet.daily')
+  // Whether the cabinet about to be opened actually holds a sign-in, which is
+  // what decides whether the launch can spend money. The real home always does;
+  // a sandbox only does if one was imported now or by an earlier launch.
+  // ⛔ Not the same as `importSignIn`: `--no-sign-in` on a sandbox that was
+  // signed in yesterday still opens a cabinet with a key in it.
+  let hasCredentials = true
   if (main) {
     // ⭐ The gate, and the only one in this tool. Checked before anything else
     // about the world, so that the refusal is the same answer every time and
@@ -1610,11 +1638,12 @@ async function start(layout, opts) {
     // versions, and while that dsh runs, this home's module pointers aim into
     // dsh-box's folder.
     //
-    // ⛔ This is a declared gate, not a lock. Anything running as the user can
-    // pass the flag; the point is that passing it is a deliberate act that
-    // shows up in the journal, so nobody arrives here by accident. Locking the
-    // user out of their own computer is not on the table (see §9.2).
-    if (engine.kind === 'release' && opts.approved !== true) {
+    // ⛔ Still not a lock on the machine — an agent can go around this tool
+    // entirely — but no longer a plea either: the flag counts only when the run
+    // was started by the config window, which is the one thing an agent cannot
+    // be without a person being there. Locking the user out of their own
+    // computer remains off the table (see §9.2).
+    if (engine.kind === 'release' && !approvedByWindow(layout, opts.approved === true)) {
       throw new BoxError('NEEDS_APPROVAL', t('start.mainNeedsApproval'), { main: true, version, machine: 'release' })
     }
     if (await mainDshRunning()) {
@@ -1632,8 +1661,28 @@ async function start(layout, opts) {
       ? createNewSandbox(layout, { importSignIn })
       : ensureSandbox(layout, String(opts.sandbox ?? ''), { importSignIn })
     boxName = info.name
+    hasCredentials = info.hasCredentials
     say(`\n  ${t(created ? 'sandbox.created' : 'sandbox.reused', { name: info.name })}${signInImported ? t('start.signInSuffix') : ''}`)
     if (!created) say(`  ${t('sandbox.ownConversations')}`)
+  }
+  // ⭐ Sign-in changed on the way in, the same shape as `--plugin` / `--unplug`:
+  // saying neither changes nothing, because what a cabinet holds is a fact
+  // about the cabinet rather than a setting of this launch.
+  const cabinetHome = main ? userDshHome() : sandboxPaths(layout, boxName).home
+  if (opts['sign-out'] === true) {
+    if (main && !approvedByWindow(layout, opts.approved === true)) {
+      throw new BoxError('NEEDS_APPROVAL', t('signOut.mainNeedsApproval'), { main: true })
+    }
+    if (removeCredentials(cabinetHome)) {
+      hasCredentials = false
+      say(`  ${t('signOut.done', { name: boxName })}`)
+    }
+  } else if (opts['sign-in'] === true && !hasCredentials) {
+    if (main) throw new BoxError('MAIN_IS_THE_SOURCE', t('signIn.mainIsSource'))
+    if (importCredentials(cabinetHome)) {
+      hasCredentials = true
+      say(`  ${t('signIn.done', { name: boxName })}`)
+    }
   }
   say(`  ${t('start.usingEngine', { engine: engineLabel(engine) })}`)
 
@@ -1739,7 +1788,7 @@ async function start(layout, opts) {
     })
   } else {
     console.log(`\n  ${t('launch.open', { url: result.url })}`)
-    console.log(`  ${t('launch.realKey')}`)
+    console.log(`  ${t(hasCredentials ? 'launch.realKey' : 'launch.noKey')}`)
     console.log(`  ${t('launch.logAt', { file: logFile })}`)
     if (follow) console.log(`  ${t('launch.followStop', { pid: result.pid })}\n`)
     else console.log(`  ${t('launch.detached', { pid: result.pid, name: boxName })}\n`)
@@ -1789,6 +1838,67 @@ async function halt(layout, name, opts) {
   clearRunning(layout, name, record.pid)
   if (opts.json === true) return void emit({ action: 'stop', sandbox: name, pid: record.pid })
   console.log(`\n  ${t('stop.stopped', { name, pid: record.pid })}\n`)
+}
+
+/**
+ * Copy the user's sign-in into a sandbox that has none.
+ *
+ * ⛔ Only into a sandbox. The daily cabinet is where a sign-in comes *from*, so
+ * "import it into itself" is not a smaller version of this — it is a sentence
+ * that does not mean anything, and answering it with a shrug would leave
+ * somebody believing they had done something.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} name
+ * @param {Record<string, unknown>} opts
+ */
+function signIn(layout, name, opts) {
+  if (opts.main === true) throw new BoxError('MAIN_IS_THE_SOURCE', t('signIn.mainIsSource'))
+  const target = name ?? String(opts.sandbox ?? '')
+  if (target === '') throw new BoxError('MISSING_ARGUMENT', t('signIn.which'))
+  const home = sandboxPaths(layout, target).home
+  if (!existsSync(home)) throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name: target }), { sandbox: target })
+  if (hasCredentials(home)) {
+    if (opts.json === true) return void emit({ action: 'signin', sandbox: target, imported: false })
+    return void console.log(`\n  ${t('signIn.already', { name: target })}\n`)
+  }
+  if (!importCredentials(home)) {
+    throw new BoxError('NO_SIGN_IN_TO_COPY', t('signIn.nothingToCopy'), { sandbox: target })
+  }
+  recordResolved({ sandbox: target })
+  if (opts.json === true) return void emit({ action: 'signin', sandbox: target, imported: true })
+  console.log(`\n  ${t('signIn.done', { name: target })}\n`)
+}
+
+/**
+ * Take the sign-in out of a cabinet.
+ *
+ * ⛔ The daily cabinet's copy is the user's own and there is no backup, so this
+ * is the second thing behind the hard gate: it only runs when the config window
+ * started this process. See {@link approvedByWindow}.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} name
+ * @param {Record<string, unknown>} opts
+ */
+function signOut(layout, name, opts) {
+  const main = opts.main === true
+  const target = main ? null : (name ?? String(opts.sandbox ?? ''))
+  if (!main && target === '') throw new BoxError('MISSING_ARGUMENT', t('signOut.which'))
+  const home = main ? userDshHome() : sandboxPaths(layout, target).home
+  if (!existsSync(home)) {
+    throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name: target }), { sandbox: target })
+  }
+  if (main && !approvedByWindow(layout, opts.approved === true)) {
+    throw new BoxError('NEEDS_APPROVAL', t('signOut.mainNeedsApproval'), { main: true })
+  }
+  const label = main ? t('cabinet.daily') : target
+  if (!removeCredentials(home)) {
+    if (opts.json === true) return void emit({ action: 'signout', cabinet: label, removed: false })
+    return void console.log(`\n  ${t('signOut.none', { name: label })}\n`)
+  }
+  recordResolved({ sandbox: target, main })
+  if (opts.json === true) return void emit({ action: 'signout', cabinet: label, removed: true })
+  console.log(`\n  ${t('signOut.done', { name: label })}`)
+  console.log(`  ${t('signOut.noWayBack')}\n`)
 }
 
 /**

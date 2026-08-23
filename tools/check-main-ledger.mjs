@@ -17,11 +17,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveEngine } from '../src/host.js'
-import { boxLayout } from '../src/paths.js'
+import { boxLayout, uiSeatFile } from '../src/paths.js'
 import { launch, stop } from '../src/launch.js'
 import { clearMainRunning, mainRunningRecord } from '../src/sandbox.js'
 import { newLaunchLog } from '../src/logs.js'
@@ -120,10 +120,27 @@ function cli(...argv) {
 const refused = await cli('start', '--main', '--version', '9.9.9-stub')
 check('下载的版本 ＋ 真 home:没人点过头就拒绝',
   refused.ok === false && refused.code === 'NEEDS_APPROVAL', refused.code)
-check('拒绝里说清了去哪儿点头', String(refused.message ?? '').includes('配置窗'))
+// ⛔ Asserted on the command name, not on the sentence around it. The sentence
+// is translated, so looking for 「配置窗」 only ever passed in a Chinese locale —
+// this line went red the first time the suite ran on a machine with no `LANG`
+// set. `dsh-box ui` is a command name and therefore never translated, which is
+// exactly why it is the right thing to look for: it is the part of the refusal
+// the reader has to be able to act on.
+check('拒绝里说清了去哪儿点头', String(refused.message ?? '').includes('dsh-box ui'))
 
+const flagAlone = await cli('start', '--main', '--version', '9.9.9-stub', '--approved')
+check('⛔⛔ 光带旗标不算数——不是配置窗起的,agent 自己点头无效',
+  flagAlone.ok === false && flagAlone.code === 'NEEDS_APPROVAL', flagAlone.code)
+
+// ⭐ Now play the window: it holds the seat and starts the command line as a
+// child of itself, and that parentage is the whole of the evidence. This test
+// process can honestly do both, which is the point — the mechanism is about
+// where a run came from, not about a secret it could have leaked.
+writeFileSync(uiSeatFile(layout),
+  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
 const allowed = await cli('start', '--main', '--version', '9.9.9-stub', '--approved')
-check('人点过头之后同一条命令就放行', allowed.ok === true, allowed.code ?? 'ok')
+check('人在配置窗里点过头,同一条命令就放行', allowed.ok === true, allowed.code ?? 'ok')
+rmSync(uiSeatFile(layout), { force: true })
 if (allowed.ok === true) {
   await cli('stop', '--main')
   await new Promise((resolve) => { setTimeout(resolve, 300) })

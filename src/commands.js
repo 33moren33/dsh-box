@@ -179,7 +179,7 @@ export const COMMANDS = {
   },
   start: {
     mutates: true,
-    booleans: ['new', 'main', 'no-sign-in', 'follow', 'approved'],
+    booleans: ['new', 'main', 'no-sign-in', 'sign-in', 'sign-out', 'follow', 'approved'],
     values: ['version', 'sandbox', 'plugin', 'unplug'],
     // Every blank filled in: no `--new` (which names a different sandbox each
     // time it runs) and no reliance on the working directory.
@@ -200,7 +200,25 @@ export const COMMANDS = {
       ...(args.plugins ?? []).flatMap((id) => ['--plugin', id]),
       ...(args.unplugged ?? []).flatMap((id) => ['--unplug', id]),
       ...(args.importSignIn === false ? ['--no-sign-in'] : []),
+      ...(args.signIn === true ? ['--sign-in'] : []),
+      ...(args.signOut === true ? ['--sign-out'] : []),
     ],
+  },
+  // ⭐ Sign-in is a property of a cabinet, like a plugin is — not a choice made
+  // at launch. So it gets the same two shapes a plugin has: a standalone verb
+  // for changing it whenever, and a flag on `start` for changing it on the way
+  // in. `--no-sign-in` stays what it always was and says nothing about either:
+  // it is about the moment a sandbox is *created*.
+  signin: {
+    mutates: true,
+    values: ['sandbox'],
+    line: (args) => ['signin', args.sandbox],
+  },
+  signout: {
+    mutates: true,
+    booleans: ['main', 'approved'],
+    values: ['sandbox'],
+    line: (args) => ['signout', ...(args.main === true ? ['--main'] : [args.sandbox])],
   },
   stop: {
     mutates: true,

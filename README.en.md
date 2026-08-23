@@ -161,6 +161,21 @@ dsh ships through npm and its entry point is a Node script, so without Node ther
 
 **It imports no `@deepseek-ai` package.** Changes to the official plugin interface do not concern it: it stays outside the dsh process and only makes directories, writes config files, sets `DSH_HOME`, and starts the official dsh.
 
+### Windows: some Node versions cannot handle non-ASCII paths
+
+A defect in Node itself, not in this tool ([#61067](https://github.com/nodejs/node/issues/61067), [#61878](https://github.com/nodejs/node/issues/61878)). Recursive delete and recursive copy, given a path holding an accented letter, Chinese, Japanese or an emoji, **report success and do nothing** — and on some shapes they take the process down. **This tool works around both, so it behaves the same on every version below.**
+
+| Fine | Defective |
+|---|---|
+| 20.x, 21.x | **22.17 – 22.21** (the current LTS, still unfixed) |
+| 22.0 – 22.16 | the whole 23 line |
+| **24.15 or newer** | 24.0 – 24.14 |
+| 25.9 or newer, 26.x | 25.0 – 25.8 |
+
+Every cell was measured by downloading that version and running it. Windows only; Linux and macOS are unaffected.
+
+It is here because the other Node programs on your machine may not work around it. Anyone whose user name is `José` or `Müller` has these characters in every path they own. **For a clean one, install 24.15 or newer.**
+
 ## What a Sandbox Is
 
 A sandbox is one `DSH_HOME` — the whole cabinet of a dsh: which plugins are installed, the config, the workspace register, and **every conversation**. Hand it a new cabinet and you have a brand new dsh; delete the folder and that dsh ceases to exist. There is no uninstall step.

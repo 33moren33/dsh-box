@@ -15,14 +15,17 @@
  */
 
 import {
-  copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { BoxError } from './errors.js'
 import { engineRecord, sameEngine } from './host.js'
 import { t } from './messages.js'
 import { cabinetPlugins } from './mounts.js'
-import { boxLayout, sandboxNameProblem, sandboxPaths, safeName, userDshHome } from './paths.js'
+import {
+  boxLayout, copyTree, removeTree, sandboxNameProblem, sandboxPaths, safeName, uiSeatFile,
+  userDshHome,
+} from './paths.js'
 
 /**
  * The only file copied out of the user's real dsh home.
@@ -151,6 +154,147 @@ export function runningRecord(layout, name) {
 function aliveRecord(record) {
   const { pid } = record
   return Number.isInteger(pid) && Number(pid) > 0 && pidAlive(Number(pid)) ? record : null
+}
+
+/**
+ * Take a cabinet for the length of a launch, or fail because somebody else has.
+ *
+ * ⛔ The ledger alone cannot do this. It is written **after** dsh is serving,
+ * because until then there is no pid, port or url to write — so the seconds a
+ * boot takes were a hole nothing was watching. Two `start --sandbox <same>`
+ * fired together both read "not running", both booted, and two dsh ended up on
+ * one `DSH_HOME`: the shape of the 08-18 incident, which is the one failure in
+ * this tool that damages data rather than annoying somebody.
+ *
+ * ⭐ Same fix as the one `--new` already got, for the same reason: **between
+ * asking and using there must be no gap.** Not a check followed by a write, but
+ * a single exclusive create — the filesystem decides who won, and the loser
+ * hears about it instead of proceeding.
+ *
+ * A separate file rather than an early ledger entry, deliberately: the ledger
+ * is what every reader renders from, and a half-filled entry would have every
+ * screen printing a sandbox as running with no address. This claim is read by
+ * exactly one caller, the launcher, so nothing else has to learn a new state.
+ *
+ * A claim whose process is gone is not a claim — a launcher killed mid-boot
+ * must not lock a sandbox until somebody deletes a file they have never heard
+ * of.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string | null} name - a sandbox, or null for the daily cabinet.
+ * @returns {boolean} whether this process now holds it.
+ */
+export function claimStart(layout, name) {
+  return claimPath(startingFile(layout, name))
+}
+
+/**
+ * Let go of a launch claim, if it is ours to let go of.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string | null} name
+ */
+export function releaseStart(layout, name) {
+  releasePath(startingFile(layout, name))
+}
+
+/**
+ * Take a named claim, or fail because a living process already holds it.
+ *
+ * The mechanism behind {@link claimStart}, on its own because two different
+ * things need it: a launch, and the config window. Both are cases of "only one
+ * of these at a time per data directory", and both used to be written as look
+ * then act — which is not one question but two, with room between them.
+ * @param {string} file
+ * @param {Record<string, unknown>} [extra] - written alongside the pid.
+ * @returns {boolean} whether this process now holds it.
+ */
+export function claimPath(file, extra = {}) {
+  const mine = `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ...extra }, null, 2)}\n`
+  // Twice: once to try, once more after clearing a dead claim. A third would
+  // mean somebody is racing us to create and abandon claims, and losing to that
+  // is the correct outcome.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, mine, { flag: 'wx' })
+      return true
+    } catch (error) {
+      if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'EEXIST') throw error
+      if (aliveRecord(readState(file)) !== null) return false
+      rmSync(file, { force: true })
+    }
+  }
+  return false
+}
+
+/**
+ * Let go of a claim, if it is ours.
+ * @param {string} file
+ */
+export function releasePath(file) {
+  if (readState(file).pid !== process.pid) return
+  rmSync(file, { force: true })
+}
+
+/**
+ * Whoever holds this claim right now, or null — a claim whose process is gone
+ * is not a claim.
+ * @param {string} file
+ * @returns {Record<string, unknown> | null}
+ */
+export function liveClaim(file) {
+  return aliveRecord(readState(file))
+}
+
+/**
+ * Whether this run may act on the daily cabinet, because a person said so.
+ *
+ * ⭐⭐ The flag alone is not evidence. Anything running as the user can pass
+ * `--approved`, so as a promise it was only ever a plea — the message used to
+ * literally ask agents not to use it. What makes it evidence is **where the
+ * process came from**: the config window performs every action by starting the
+ * command line as a child of itself, so a run whose parent is the window on the
+ * seat is a run a person clicked for. An agent's own command line has its own
+ * shell as a parent and cannot become the window without being it.
+ *
+ * ⛔ This guards the tool's own path, not the machine. An agent can still
+ * delete the same file with `rm`, exactly as a model with shell access can edit
+ * a file the editor would have asked about. What it buys is that **the ordinary
+ * route through this tool cannot be taken without a person**, and that going
+ * around it is visibly going around it.
+ *
+ * ⚠️ The cost is real and deliberate: a person in their own terminal cannot
+ * approve either, because from here they are indistinguishable from an agent.
+ * They open the window instead.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {boolean} approved - whether `--approved` was passed at all.
+ * @returns {boolean}
+ */
+export function approvedByWindow(layout, approved) {
+  if (approved !== true) return false
+  const seat = liveClaim(uiSeatFile(layout))
+  return seat !== null && seat.pid === process.ppid
+}
+
+/**
+ * Add to a claim already held, once there is more to say about it.
+ * @param {string} file
+ * @param {Record<string, unknown>} extra
+ */
+export function describeClaim(file, extra) {
+  const held = readState(file)
+  if (held.pid !== process.pid) return
+  writeFileSync(file, `${JSON.stringify({ ...held, ...extra }, null, 2)}\n`)
+}
+
+/**
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string | null} name
+ * @returns {string}
+ */
+function startingFile(layout, name) {
+  return name === null
+    ? join(layout.root, 'main-starting.json')
+    : join(sandboxPaths(layout, name).root, 'starting.json')
 }
 
 /**
@@ -408,6 +552,39 @@ export function ensureSandbox(layout, name, { importSignIn = true, env = process
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {boolean} whether a file was copied.
  */
+/**
+ * Whether this cabinet can talk to a model at all.
+ * @param {string} home
+ * @returns {boolean}
+ */
+export function hasCredentials(home) {
+  return existsSync(join(home, CREDENTIALS_FILE))
+}
+
+/**
+ * Take the sign-in out of a cabinet.
+ *
+ * ⛔ No backup, on purpose (CEO 2026-08-23). A backup would be a second copy of
+ * a plaintext key sitting in a folder whose whole selling point is that you can
+ * zip it and carry it away. Signing in again costs a minute; a key in a place
+ * nobody remembers costs something else. So this is not undoable, which is
+ * exactly why the daily cabinet's copy is behind the hard gate.
+ * @param {string} home
+ * @returns {boolean} whether there was one to take out.
+ */
+export function removeCredentials(home) {
+  const file = join(home, CREDENTIALS_FILE)
+  if (!existsSync(file)) return false
+  rmSync(file, { force: true })
+  return true
+}
+
+/**
+ * Copy the user's real sign-in into a cabinet.
+ * @param {string} home
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {boolean} whether a file was copied.
+ */
 export function importCredentials(home, env = process.env) {
   const source = join(userDshHome(env), CREDENTIALS_FILE)
   if (!existsSync(source)) return false
@@ -431,7 +608,7 @@ export function importCredentials(home, env = process.env) {
 export function clearModuleFallback(home) {
   const fallback = join(home, 'profiles', 'node_modules')
   if (!existsSync(fallback)) return false
-  rmSync(fallback, { recursive: true, force: true })
+  removeTree(fallback)
   return true
 }
 
@@ -521,7 +698,7 @@ export function deleteSandbox(layout, name) {
       { sandbox: info.name, pid: info.running.pid },
     )
   }
-  rmSync(info.root, { recursive: true, force: true })
+  removeTree(info.root)
   return { name: info.name, root: info.root }
 }
 
@@ -675,7 +852,9 @@ export async function adoptSessions(layout, { from = null, to = null, force = fa
         skipped += 1
         continue
       }
-      cpSync(join(groupDir, session), target, { recursive: true })
+      // ⛔ Not `cpSync`: into a cabinet whose name is not plain ASCII it copies
+      // nothing and reports success. See {@link copyTree}.
+      copyTree(join(groupDir, session), target)
       adopted += 1
     }
   }

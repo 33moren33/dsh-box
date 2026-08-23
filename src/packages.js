@@ -21,6 +21,7 @@
 
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'node:path'
+import { removeTree } from './paths.js'
 
 /** Where npm puts what it fetches for us. */
 export function packageRoot(layout) {
@@ -118,13 +119,13 @@ function countFiles(dir, budget = 5000) {
 export function removePackage(layout, name) {
   const dir = join(packageRoot(layout), ...name.split('/'))
   if (!existsSync(dir)) return false
-  rmSync(dir, { recursive: true, force: true })
+  removeTree(dir)
   // A scope directory left empty is litter of exactly the kind this file is
   // about, so it goes too — but only when empty, never with anything in it.
   const [scope] = name.split('/')
   if (scope.startsWith('@')) {
     const scopeDir = join(packageRoot(layout), scope)
-    if (existsSync(scopeDir) && readdirSync(scopeDir).length === 0) rmSync(scopeDir, { recursive: true, force: true })
+    if (existsSync(scopeDir) && readdirSync(scopeDir).length === 0) removeTree(scopeDir)
   }
   return true
 }

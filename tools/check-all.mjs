@@ -15,10 +15,11 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -53,6 +54,23 @@ try {
   // first: a missing translation should be the first thing anyone hears
   // about, not something found after nine slower checks.
   if (!run('check-messages.mjs', [])) failed.push('check-messages')
+
+  // Also static, also needs nothing on disk: the page's marks against the
+  // command table. Second for the same reason the first one is first — a
+  // control that will never light up should not be found after nine slow checks.
+  if (!run('check-page-marks.mjs', [])) failed.push('check-page-marks')
+
+  // Static as well: nobody has gone back to the built-in recursive calls. Runs
+  // before the ones that need a disk, because every check below cleans up with
+  // the replacement — a new caller of the built-in would make their cleanup a
+  // lie rather than a failure.
+  if (!run('check-no-recursive-fs.mjs', [])) failed.push('check-no-recursive-fs')
+
+  // Needs a directory and nothing else. Third because a broken delete makes
+  // every check after it lie about what it cleaned up.
+  const deleting = mkdtempSync(join(tmpdir(), 'dsh-box-delete-'))
+  disposable.push(deleting)
+  if (!run('check-delete.mjs', [deleting])) failed.push('check-delete')
 
   // One box for the two that can share it, in the order that leaves the
   // consuming one last.
@@ -101,8 +119,31 @@ try {
   const newborn = mkdtempSync(join(tmpdir(), 'dsh-box-newborn-'))
   disposable.push(newborn)
   if (!run('check-new-sandbox.mjs', [newborn])) failed.push('check-new-sandbox')
+
+  // Its own box too, and it starts the stand-in three times over: the sister
+  // race to the one above, on a sandbox that already has a name.
+  const sameName = mkdtempSync(join(tmpdir(), 'dsh-box-same-'))
+  disposable.push(sameName)
+  if (!run('check-same-sandbox.mjs', [sameName])) failed.push('check-same-sandbox')
+
+  // Its own box and its own throwaway `DSH_HOME`, because it deletes the
+  // sign-in inside it.
+  const signIn = mkdtempSync(join(tmpdir(), 'dsh-box-signin-'))
+  disposable.push(signIn)
+  if (!run('check-sign-in.mjs', [signIn])) failed.push('check-sign-in')
+
+  // ⚠️ The only check that binds a port for a window service. It never opens a
+  // browser and stops both services it starts.
+  const oneWindow = mkdtempSync(join(tmpdir(), 'dsh-box-window-'))
+  disposable.push(oneWindow)
+  if (!run('check-one-window.mjs', [oneWindow])) failed.push('check-one-window')
 } finally {
-  for (const dir of disposable) rmSync(dir, { recursive: true, force: true })
+  // ⛔ Not `rmSync({recursive})`. Every box below lives under `tmpdir()`, which
+  // on Windows is `C:\Users\<名字>\AppData\Local\Temp` — so on the machine of
+  // anyone called 张三 or Müller the built-in call would silently leave all
+  // fourteen of them on disk. ⭐ The suite written to catch that defect was
+  // cleaning up with it.
+  for (const dir of disposable) removeTree(dir)
 }
 
 console.log(failed.length === 0

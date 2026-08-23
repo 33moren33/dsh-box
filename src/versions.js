@@ -7,7 +7,7 @@ import { readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { BoxError } from './errors.js'
 import { t } from './messages.js'
-import { versionDir } from './paths.js'
+import { removeTree, versionDir } from './paths.js'
 import { verifyPinned } from './registry.js'
 import { runningSandboxes } from './sandbox.js'
 
@@ -103,7 +103,10 @@ export async function deleteVersion(layout, version, onLog) {
     onLog?.(t('version.stillDeleting', { seconds: Math.round((Date.now() - started) / 1000) }))
   }, 3000)
   try {
-    await rm(dir, { recursive: true, force: true })
+    // ⛔ Not `fs.rm` — see {@link removeTree}. A data directory under a path
+    // with any non-ASCII character in it (a user called 张三 is enough) makes
+    // the built-in recursive delete do nothing at all, and say nothing.
+    removeTree(dir)
   } finally {
     clearInterval(beat)
   }

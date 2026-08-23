@@ -39,14 +39,18 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { COMMANDS, commandLine, mutates } from './commands.js'
 import { partitionPlugins, readConfig, SETTINGS } from './config.js'
+import { BoxError } from './errors.js'
 import { detectHostDsh } from './host.js'
 import { controlStatus, readSession } from './journal.js'
 import { LANGS, messagesFor, setLang, systemLang, t } from './messages.js'
 import { cabinetPlugins } from './mounts.js'
 import { isOurDownload } from './packages.js'
-import { nameRule, userDshHome } from './paths.js'
+import { nameRule, uiSeatFile, userDshHome } from './paths.js'
 import { listReleases } from './registry.js'
-import { listSandboxes, mainRunningRecord, runningSandboxes, suggestSandboxName } from './sandbox.js'
+import {
+  claimPath, describeClaim, hasCredentials, listSandboxes, liveClaim, mainRunningRecord,
+  releasePath, runningSandboxes, suggestSandboxName,
+} from './sandbox.js'
 import { findFreePort } from './launch.js'
 import { downloadedVersions } from './versions.js'
 
@@ -90,6 +94,23 @@ export const UI_PORT = 10130
  * @returns {Promise<void>} resolves when the server closes.
  */
 export async function serve(layout, { port = 0, open = true } = {}) {
+  // ⛔ One data directory, one window service. Not tidiness: the window's own
+  // close button runs `quit`, which stops every sandbox — so a second window is
+  // a second person's world being shut down by somebody who cannot see them.
+  // Two services also mean two logs of the same events and two ports for one
+  // address, and the reason the second one ever started is that `ui` used to
+  // answer a busy port by quietly moving to the next one.
+  //
+  // ⭐ Views are still free: any number of browser tabs can point at the one
+  // service. What is refused is a second *service* on the same data directory.
+  const seat = uiSeatFile(layout)
+  const held = liveClaim(seat)
+  if (held !== null || !claimPath(seat)) {
+    const other = held ?? liveClaim(seat) ?? {}
+    throw new BoxError('UI_ALREADY_SERVING', t('window.alreadyServing', {
+      url: String(other.url ?? '?'), pid: String(other.pid ?? '?'),
+    }), { url: other.url ?? null, pid: other.pid ?? null })
+  }
   if (port === 0) port = await findFreePort({ from: UI_PORT })
   const server = createServer((request, response) => {
     const refused = refuse(request, port)
@@ -101,12 +122,20 @@ export async function serve(layout, { port = 0, open = true } = {}) {
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {
       const url = `http://127.0.0.1:${server.address().port}`
+      // Now that there is an address, put it on the claim: the next `ui` is
+      // refused, and the refusal can say where the window already is instead of
+      // only that there is one.
+      describeClaim(seat, { url, port: server.address().port })
       console.log(`\n  ${t('window.address', { url })}\n`)
       if (open) openBrowser(url)
     })
-    server.once('close', resolve)
+    server.once('close', () => {
+      releasePath(seat)
+      resolve()
+    })
   })
 }
+
 
 /**
  * The pass this run's page carries, minted fresh at every start.
@@ -308,6 +337,11 @@ async function snapshot(layout) {
     // and the two stopped being the same thing when plugins became a property
     // of the workspace rather than of a launch.
     mainPlugins: cabinetPlugins(userDshHome()),
+    // Whether the user's own cabinet holds a sign-in. A fact about the cabinet,
+    // read the same way a sandbox's is, so the tick beside it can mean the same
+    // thing in both places instead of being a preference in one and a fact in
+    // the other.
+    mainSignedIn: hasCredentials(userDshHome()),
     sandboxes: listSandboxes(layout),
     suggestedName: suggestSandboxName(layout),
     last: config.last,

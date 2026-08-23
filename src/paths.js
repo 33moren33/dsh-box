@@ -8,9 +8,12 @@
  */
 
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync,
+  unlinkSync, writeFileSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { BoxError } from './errors.js'
 import { t } from './messages.js'
 
@@ -307,6 +310,129 @@ export function backupDir(layout, home) {
   // is only so a person can tell whose pile they are looking at.
   const fingerprint = createHash('sha1').update(full).digest('hex').slice(0, 8)
   return join(layout.backups, `${safeName(full) || 'home'}-${fingerprint}`)
+}
+
+/**
+ * Delete a file, a link, or a whole directory — without `fs.rmSync`.
+ *
+ * ⛔⛔ **On Windows, `rmSync(path, {recursive:true})` is broken on a wide band
+ * of Node versions when `path` itself contains a non-ASCII character.** A
+ * directory with anything in it returns cheerfully and deletes nothing; an
+ * empty one **takes the process down** (0xC0000409, no output at all). The same
+ * tree named `alpha/` deletes fine, and so does a Chinese *child* under an ASCII
+ * parent — it is the path handed to the call that decides.
+ *
+ * Upstream cause (nodejs/node#61067, fixed by #61108): the C++ rewrite built a
+ * `std::filesystem::path` from a narrow string, which Windows reads in the ANSI
+ * code page rather than UTF-8, so the path became a name that does not exist and
+ * the "does it exist" test said no. See {@link copyTree} for the sister defect.
+ *
+ * **Measured range (real node.exe of each version, not inferred):** broken from
+ * **23.0.0 through 24.13.0**, fixed in **24.13.1**. The 20, 21 and 22 lines are
+ * unaffected *for this call*.
+ *
+ * It reaches much further than sandbox names, which are allowed to be Chinese
+ * and usually are: a user called 张三 has non-ASCII in **every** path this tool
+ * owns, so dropping a release, pruning packages and clearing backups would all
+ * quietly do nothing. Silently, which is the worst part — `rm` said `ok:true`
+ * with the sandbox still on disk.
+ *
+ * ⭐ The walk below is what `rmSync` does internally, minus whatever is broken:
+ * every primitive it uses was measured working on a broken build.
+ * ⛔ It must never follow a link: a sandbox contains junctions pointing at the
+ * user's own plugin folders, and walking into one would delete their source
+ * instead of the link.
+ * @param {string} target
+ * @returns {boolean} whether there was something there to remove.
+ */
+export function removeTree(target) {
+  let stat
+  try {
+    stat = lstatSync(target)
+  } catch {
+    return false
+  }
+  // `isDirectory()` is true for a Windows junction as well, so the link test
+  // has to come first or the walk goes through it.
+  if (stat.isDirectory() && !stat.isSymbolicLink()) {
+    for (const entry of readdirSync(target)) removeTree(join(target, entry))
+    rmdirSync(target)
+    return true
+  }
+  removeEntry(target)
+  return true
+}
+
+/**
+ * Copy a file or a whole directory — without `fs.cpSync`.
+ *
+ * ⛔⛔ The same root cause as {@link removeTree} (nodejs/node#61878, fixed by
+ * #61950) but **a different bug in a different set of versions**, which is the
+ * part that matters: a non-ASCII **destination** copies nothing and reports
+ * success, a non-ASCII **source** takes the process down. `adopt` is the caller
+ * that matters — copying conversations into a cabinet whose name is Chinese
+ * would have said "copied 12" and copied none.
+ *
+ * **Measured range:** broken from **22.17.0 onwards in the 22 line — including
+ * 22.21.1, which is the current LTS and still has it** — and again from some
+ * point in the 24 line through **24.14.1**, fixed in **24.15.0**.
+ *
+ * ⛔⛔ **Do not collapse the two ranges into one sentence.** Reading only the
+ * delete defect suggests "the 22 LTS is a safe harbour"; it is not, and advising
+ * anyone to fall back to it would hand them this one instead. That mistake was
+ * live in this file until both calls were measured separately.
+ * @param {string} from
+ * @param {string} to
+ */
+export function copyTree(from, to) {
+  const stat = lstatSync(from)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    mkdirSync(dirname(to), { recursive: true })
+    copyFileSync(from, to)
+    return
+  }
+  mkdirSync(to, { recursive: true })
+  for (const entry of readdirSync(from)) copyTree(join(from, entry), join(to, entry))
+}
+
+/**
+ * Remove one file or one link, whatever the platform calls it.
+ * @param {string} target
+ */
+function removeEntry(target) {
+  try {
+    unlinkSync(target)
+  } catch (error) {
+    const code = /** @type {NodeJS.ErrnoException} */ (error).code
+    // A directory junction on Windows unlinks as a directory; a read-only file
+    // needs the bit cleared first, which is the one thing `rmSync`'s `force`
+    // did for us that plain `unlinkSync` does not.
+    if (code === 'EPERM' || code === 'EISDIR') {
+      try {
+        rmdirSync(target)
+        return
+      } catch {
+        chmodSync(target, 0o666)
+        unlinkSync(target)
+        return
+      }
+    }
+    throw error
+  }
+}
+
+/**
+ * The seat the one config window of this data directory holds.
+ *
+ * Two callers, for two different questions: the window takes it so a second
+ * window cannot start, and the command line reads it to tell whether the
+ * process asking for approval was started **by** that window — which is the
+ * only evidence this tool has that a person was present.
+ * @param {BoxLayout} layout
+ * @returns {string}
+ */
+export function uiSeatFile(layout) {
+  return join(layout.root, 'ui.json')
 }
 
 /**

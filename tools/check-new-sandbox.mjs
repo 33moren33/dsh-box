@@ -26,10 +26,10 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readdirSync, rmSync } from 'node:fs'
+import { readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { boxLayout, ensureBox } from '../src/paths.js'
+import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const root = process.argv[2] === undefined ? undefined : resolve(process.argv[2])
@@ -38,7 +38,7 @@ if (root === undefined) {
   process.exit(2)
 }
 
-rmSync(root, { recursive: true, force: true })
+removeTree(root)
 
 let failures = 0
 const check = (what, passed, detail = '') => {

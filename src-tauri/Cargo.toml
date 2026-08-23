@@ -1,6 +1,6 @@
 [package]
 name = "dsh-box-shell"
-version = "0.2.0"
+version = "0.3.0"
 description = "dsh 沙箱启动器的桌面壳:开一个原生小窗,里面还是同一个 Node 服务"
 edition = "2021"
 rust-version = "1.77.2"
@@ -15,3 +15,7 @@ tauri-build = { version = "2.6.3", features = [] }
 [dependencies]
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-dialog = "2"
+# Only to read the command line's one JSON line back. Already in the tree via
+# tauri, so it costs nothing to fetch and keeps this shell from re-deciding in
+# Rust what the command line has already decided.
+serde_json = "1"

@@ -13,10 +13,10 @@ import { BoxError } from './errors.js'
 import { engineRecord } from './host.js'
 import { tailLines } from './logs.js'
 import { t } from './messages.js'
-import { cleanPath, sandboxPaths, versionDir } from './paths.js'
+import { cleanPath, removeTree, sandboxPaths, versionDir } from './paths.js'
 import {
-  clearMainRunning, clearModuleFallback, clearRunning, noteBoot, noteMainRunning, noteRunning,
-  runningRecord, switchesEngine,
+  claimStart, clearMainRunning, clearModuleFallback, clearRunning, noteBoot, noteMainRunning,
+  noteRunning, releaseStart, runningRecord, switchesEngine,
 } from './sandbox.js'
 
 /** dsh's own default. Reserved for the user's real environment. */
@@ -95,7 +95,7 @@ export function linkPlugins(home, profile, plugins) {
     if (typeof plugin.path !== 'string' || plugin.path === '') continue
     const target = join(modules, ...plugin.package.split('/'))
     mkdirSync(dirname(target), { recursive: true })
-    if (existsSync(target) || lstatSafe(target) !== null) rmSync(target, { recursive: true, force: true })
+    if (existsSync(target) || lstatSafe(target) !== null) removeTree(target)
     // `junction` is the one link type Windows creates without elevation, and
     // it behaves like a directory symlink for resolution purposes.
     symlinkSync(cleanPath(plugin.path), target, 'junction')
@@ -200,157 +200,176 @@ export async function launch({
     }
     home = sandboxPaths(layout, sandbox).home
   }
-  if (direct || switchesEngine(layout, sandbox, engine)) {
-    // Boot re-points the flat module fallback for every package the running
-    // release knows about, and leaves alone any link naming a package that
-    // release has never heard of. On a normal machine those links dangle
-    // harmlessly because the other installation is gone. Here every release
-    // is kept side by side, so such a link still resolves — to the wrong
-    // release. Between rc.6 and rc.8 that is eleven packages. A directly
-    // booted home is cleared every time, because what last touched it is
-    // unknown to us; boot rebuilds the whole directory either way.
-    if (clearModuleFallback(home)) onLog?.(t('launch.clearedModuleLinks'))
+
+  // ⛔ The check above reads a ledger that does not exist yet for the launch
+  // about to happen, so on its own it leaves the whole boot unguarded. From
+  // here to the ledger being written the cabinet is claimed, and a second
+  // launcher arriving in those seconds is told rather than allowed.
+  const claimed = claimStart(layout, direct ? null : sandbox)
+  if (!claimed) {
+    throw direct
+      ? new BoxError('MAIN_STARTING', t('launch.mainStarting'))
+      : new BoxError('SANDBOX_STARTING', t('launch.sandboxStarting', {
+        name: sandboxPaths(layout, sandbox).name,
+      }), { sandbox: sandboxPaths(layout, sandbox).name })
   }
-
-  // 3080 belongs to the user's real dsh; sandboxes hunt from their own base
-  // so an idle 3080 is never squatted by something that only looks like it.
-  let port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
-
-  onLog?.(t('launch.starting', { version, port }))
-  // Output goes either to a caller watching live, or to a file. A pipe is
-  // owned by this process, so a detached launch must not use one: the moment
-  // the launcher exits, dsh's next write hits a closed pipe. Handing the
-  // child a file descriptor instead makes its output independent of us, and
-  // is also what makes a failed launch explainable after the fact.
-  /**
-   * Start dsh once and wait until it is genuinely serving.
-   * @param {string[]} nodeArgs - flags for node itself, before the entry file.
-   * @returns {Promise<import('node:child_process').ChildProcess>}
-   */
-  const bootOnce = async (nodeArgs) => {
-    // Built per attempt: a retry is a retry on a different port.
-    const args = ['--profile', profile, '--port', String(port)]
-    const sink = logFile === undefined ? null : openSync(logFile, 'a')
-    const child = spawn(process.execPath, [...nodeArgs, entry, ...args], {
-      // ⚠️ Just wherever this was typed. There used to be a `--workspace` flag
-      // setting it, dropped once it was measured: not passing it did exactly what
-      // passing `process.cwd()` did, and passing something else did not make dsh
-      // register that folder as a workspace either — it comes up with an empty
-      // list and waits to be told. Which folder dsh works in is `workspaces use`,
-      // and nothing else.
-      cwd: process.cwd(),
-      // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
-      // it can arrive from a text field or a drag-and-drop, where a trailing
-      // space survives and turns into a different directory.
-      env: { ...process.env, DSH_HOME: cleanPath(home) },
-      windowsHide: true,
-      ...(sink === null ? {} : { stdio: ['ignore', sink, sink], detached }),
-    })
-    // The child holds its own copy of the descriptor; keeping ours open would
-    // pin the file for as long as this process lives.
-    if (sink !== null) closeSync(sink)
-
-    if (sink === null) {
-      child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
-      child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+  try {
+    if (direct || switchesEngine(layout, sandbox, engine)) {
+      // Boot re-points the flat module fallback for every package the running
+      // release knows about, and leaves alone any link naming a package that
+      // release has never heard of. On a normal machine those links dangle
+      // harmlessly because the other installation is gone. Here every release
+      // is kept side by side, so such a link still resolves — to the wrong
+      // release. Between rc.6 and rc.8 that is eleven packages. A directly
+      // booted home is cleared every time, because what last touched it is
+      // unknown to us; boot rebuilds the whole directory either way.
+      if (clearModuleFallback(home)) onLog?.(t('launch.clearedModuleLinks'))
     }
 
-    if (direct) {
-      // The one thing a directly booted home must not be left holding.
-      //
-      // `profiles/node_modules` is not an installation but a layer of pointers
-      // into whichever installation booted last — so booting a real home from
-      // here leaves that home resolving its packages out of this tool's data
-      // directory. Measured on a real one: 251 links written in a single second,
-      // all aimed at a portable test folder, which the daily dsh then depended on
-      // for as long as nobody looked. Clearing costs nothing, because boot
-      // rebuilds the whole directory anyway — and rebuilds it from whatever starts
-      // next, which for a person typing `dsh` is their own installation.
-      //
-      // ⭐ Plugin links are deliberately NOT cleared with it. They belong to the
-      // workspace now, not to this launch, and removing them here would uninstall
-      // on exit whatever was installed on purpose.
-      //
-      // Best-effort: a launcher killed outright leaves this undone, and the
-      // pointer layer is repaired by the next boot that clears it.
-      child.once('exit', () => {
-        try {
-          clearModuleFallback(home)
-        } catch {
-          // An exit handler that throws helps nobody.
-        }
+    // 3080 belongs to the user's real dsh; sandboxes hunt from their own base
+    // so an idle 3080 is never squatted by something that only looks like it.
+    let port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
+
+    onLog?.(t('launch.starting', { version, port }))
+    // Output goes either to a caller watching live, or to a file. A pipe is
+    // owned by this process, so a detached launch must not use one: the moment
+    // the launcher exits, dsh's next write hits a closed pipe. Handing the
+    // child a file descriptor instead makes its output independent of us, and
+    // is also what makes a failed launch explainable after the fact.
+    /**
+     * Start dsh once and wait until it is genuinely serving.
+     * @param {string[]} nodeArgs - flags for node itself, before the entry file.
+     * @returns {Promise<import('node:child_process').ChildProcess>}
+     */
+    const bootOnce = async (nodeArgs) => {
+      // Built per attempt: a retry is a retry on a different port.
+      const args = ['--profile', profile, '--port', String(port)]
+      const sink = logFile === undefined ? null : openSync(logFile, 'a')
+      const child = spawn(process.execPath, [...nodeArgs, entry, ...args], {
+        // ⚠️ Just wherever this was typed. There used to be a `--workspace` flag
+        // setting it, dropped once it was measured: not passing it did exactly what
+        // passing `process.cwd()` did, and passing something else did not make dsh
+        // register that folder as a workspace either — it comes up with an empty
+        // list and waits to be told. Which folder dsh works in is `workspaces use`,
+        // and nothing else.
+        cwd: process.cwd(),
+        // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
+        // it can arrive from a text field or a drag-and-drop, where a trailing
+        // space survives and turns into a different directory.
+        env: { ...process.env, DSH_HOME: cleanPath(home) },
+        windowsHide: true,
+        ...(sink === null ? {} : { stdio: ['ignore', sink, sink], detached }),
       })
+      // The child holds its own copy of the descriptor; keeping ours open would
+      // pin the file for as long as this process lives.
+      if (sink !== null) closeSync(sink)
+
+      if (sink === null) {
+        child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+        child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+      }
+
+      if (direct) {
+        // The one thing a directly booted home must not be left holding.
+        //
+        // `profiles/node_modules` is not an installation but a layer of pointers
+        // into whichever installation booted last — so booting a real home from
+        // here leaves that home resolving its packages out of this tool's data
+        // directory. Measured on a real one: 251 links written in a single second,
+        // all aimed at a portable test folder, which the daily dsh then depended on
+        // for as long as nobody looked. Clearing costs nothing, because boot
+        // rebuilds the whole directory anyway — and rebuilds it from whatever starts
+        // next, which for a person typing `dsh` is their own installation.
+        //
+        // ⭐ Plugin links are deliberately NOT cleared with it. They belong to the
+        // workspace now, not to this launch, and removing them here would uninstall
+        // on exit whatever was installed on purpose.
+        //
+        // Best-effort: a launcher killed outright leaves this undone, and the
+        // pointer layer is repaired by the next boot that clears it.
+        child.once('exit', () => {
+          try {
+            clearModuleFallback(home)
+          } catch {
+            // An exit handler that throws helps nobody.
+          }
+        })
+      }
+
+      await waitUntilServing(port, child, onLog)
+      return child
     }
 
-    await waitUntilServing(port, child, onLog)
-    return child
-  }
-
-  /**
-   * Attach the end of the log to a failure.
-   *
-   * "Exit code 1" is not a reason. Whatever dsh said on its way down is in
-   * the log, and quoting the end of it here is the difference between a
-   * caller that can act and one that can only report failure.
-   * @param {unknown} error
-   * @returns {string[]} the same lines, for the caller to look at.
-   */
-  const explain = (error) => {
-    if (logFile === undefined) return []
-    const tail = tailLines(logFile, 30)
-    if (error instanceof BoxError) error.details = { ...error.details, logFile, tail }
-    return tail
-  }
-
-  const nodeArgs = await internalsReachable(entry) ? [] : ['--expose-internals']
-  if (nodeArgs.length > 0) {
-    onLog?.(t('launch.needsExposeInternals'))
-  }
-  // ⭐ The one thing here that genuinely cannot be asked in advance. A port is
-  // checked by binding it and letting go, and dsh binds it a moment later —
-  // the gap between those two is not removable, because we cannot hold a port
-  // and hand it over. Two launches started together therefore can pick the
-  // same number, and the loser dies with `EADDRINUSE` before serving anything.
-  // Measured on two concurrent starts.
-  //
-  // ⛔ Compare `--expose-internals` a few lines up, which is the opposite case
-  // and must NOT be a retry: whether this Node can reach the internals is a
-  // fact that exists before the launch, so waiting for the crash would be
-  // laziness. A lost race exists only after the fact. Same mechanism, opposite
-  // verdict — what decides is whether the answer was knowable beforehand.
-  let child
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      child = await bootOnce(nodeArgs)
-      break
-    } catch (error) {
-      const tail = explain(error)
-      if (attempt >= 3 || !tail.some((line) => line.includes('EADDRINUSE'))) throw error
-      const next = await findFreePort({ from: port + 1 })
-      onLog?.(t('launch.portTaken', { port, next }))
-      port = next
+    /**
+     * Attach the end of the log to a failure.
+     *
+     * "Exit code 1" is not a reason. Whatever dsh said on its way down is in
+     * the log, and quoting the end of it here is the difference between a
+     * caller that can act and one that can only report failure.
+     * @param {unknown} error
+     * @returns {string[]} the same lines, for the caller to look at.
+     */
+    const explain = (error) => {
+      if (logFile === undefined) return []
+      const tail = tailLines(logFile, 30)
+      if (error instanceof BoxError) error.details = { ...error.details, logFile, tail }
+      return tail
     }
+
+    const nodeArgs = await internalsReachable(entry) ? [] : ['--expose-internals']
+    if (nodeArgs.length > 0) {
+      onLog?.(t('launch.needsExposeInternals'))
+    }
+    // ⭐ The one thing here that genuinely cannot be asked in advance. A port is
+    // checked by binding it and letting go, and dsh binds it a moment later —
+    // the gap between those two is not removable, because we cannot hold a port
+    // and hand it over. Two launches started together therefore can pick the
+    // same number, and the loser dies with `EADDRINUSE` before serving anything.
+    // Measured on two concurrent starts.
+    //
+    // ⛔ Compare `--expose-internals` a few lines up, which is the opposite case
+    // and must NOT be a retry: whether this Node can reach the internals is a
+    // fact that exists before the launch, so waiting for the crash would be
+    // laziness. A lost race exists only after the fact. Same mechanism, opposite
+    // verdict — what decides is whether the answer was knowable beforehand.
+    let child
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        child = await bootOnce(nodeArgs)
+        break
+      } catch (error) {
+        const tail = explain(error)
+        if (attempt >= 3 || !tail.some((line) => line.includes('EADDRINUSE'))) throw error
+        const next = await findFreePort({ from: port + 1 })
+        onLog?.(t('launch.portTaken', { port, next }))
+        port = next
+      }
+    }
+    const url = `http://127.0.0.1:${port}`
+    if (direct) {
+      // A main-environment launch is recorded too — in this tool's data
+      // directory, never in the user's own home. The home is theirs; the process
+      // we started is ours to be able to stop.
+      noteMainRunning(layout, { pid: child.pid, port, url, version, engine: engineRecord(engine), home })
+      child.once('exit', () => clearMainRunning(layout, child.pid))
+    } else {
+      noteBoot(layout, sandbox, engine)
+      noteRunning(layout, sandbox, { pid: child.pid, port, url, version, engine: engineRecord(engine) })
+      // Best-effort: when the launcher lives long enough to see dsh exit, the
+      // ledger is cleared at once. A launcher killed outright leaves the entry
+      // behind — harmless, because every reader verifies the pid before
+      // believing it and deletes what proves dead.
+      child.once('exit', () => clearRunning(layout, sandbox, child.pid))
+    }
+    // Released only once the sandbox is genuinely up: until then this process
+    // is still the one reporting whether the launch worked.
+    if (detached) child.unref()
+    return { pid: child.pid, port, url, child }
+  } finally {
+    // After the ledger, never before: releasing any earlier would re-open the
+    // very gap this closes.
+    releaseStart(layout, direct ? null : sandbox)
   }
-  const url = `http://127.0.0.1:${port}`
-  if (direct) {
-    // A main-environment launch is recorded too — in this tool's data
-    // directory, never in the user's own home. The home is theirs; the process
-    // we started is ours to be able to stop.
-    noteMainRunning(layout, { pid: child.pid, port, url, version, engine: engineRecord(engine), home })
-    child.once('exit', () => clearMainRunning(layout, child.pid))
-  } else {
-    noteBoot(layout, sandbox, engine)
-    noteRunning(layout, sandbox, { pid: child.pid, port, url, version, engine: engineRecord(engine) })
-    // Best-effort: when the launcher lives long enough to see dsh exit, the
-    // ledger is cleared at once. A launcher killed outright leaves the entry
-    // behind — harmless, because every reader verifies the pid before
-    // believing it and deletes what proves dead.
-    child.once('exit', () => clearRunning(layout, sandbox, child.pid))
-  }
-  // Released only once the sandbox is genuinely up: until then this process
-  // is still the one reporting whether the launch worked.
-  if (detached) child.unref()
-  return { pid: child.pid, port, url, child }
 }
 
 /**
