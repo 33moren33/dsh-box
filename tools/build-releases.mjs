@@ -6,7 +6,7 @@
  *   Releases/dsh-box_<版本>_x64-setup.exe     NSIS 安装包
  *   Releases/dsh-box_<版本>_x64-portable.zip  便携包(exe + dsh-box 文件夹)
  *
- * 便携包顶层就两样:dsh-box-shell.exe 和 dsh-box/。dsh-box/ 里 boot 是程序、
+ * 便携包顶层就两样:dsh-box.exe 和 dsh-box/。dsh-box/ 里 boot 是程序、
  * data 是家当(启动后才长出来)。覆盖解压=升级:exe 与 boot 换新,data 一字不动。
  *
  * `--skip-build`:壳已经构建好,只做归位与压缩。CI 用这条——它自己跑 tauri
@@ -46,7 +46,12 @@ mkdirSync('Releases', { recursive: true })
 copyFileSync(setupBuilt, join('Releases', `dsh-box_${version}_x64-setup.exe`))
 
 // 3. 便携包:顶层 exe + dsh-box/(内含 boot);data 由首次启动在 dsh-box/ 里长出。
-const exeBuilt = join('src-tauri', 'target', 'release', 'dsh-box-shell.exe')
+// ⭐ The binary is named by `[[bin]]` in Cargo.toml, not by the crate: the file
+// people double-click and the word they type in a terminal are the same word as
+// the product. Up to 0.3.4 it shipped as `dsh-box-shell.exe` in both forms —
+// which would have put a `dsh-box-shell` command on PATH for a tool called
+// dsh-box.
+const exeBuilt = join('src-tauri', 'target', 'release', 'dsh-box.exe')
 if (!existsSync(exeBuilt)) fail(`没找到壳:${exeBuilt}`)
 const stage = join(tmpdir(), `dsh-box-portable-${version}`)
 const boot = join(stage, 'dsh-box', 'boot')
@@ -57,7 +62,7 @@ const boot = join(stage, 'dsh-box', 'boot')
 // empty program inside it, and no error anywhere to say so.
 removeTree(stage)
 mkdirSync(boot, { recursive: true })
-copyFileSync(exeBuilt, join(stage, 'dsh-box-shell.exe'))
+copyFileSync(exeBuilt, join(stage, 'dsh-box.exe'))
 copyTree('bin', join(boot, 'bin'))
 copyTree('src', join(boot, 'src'))
 copyFileSync('package.json', join(boot, 'package.json'))

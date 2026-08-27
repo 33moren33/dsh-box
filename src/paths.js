@@ -275,6 +275,9 @@ const BOX_GITIGNORE = `# Everything in this directory is reproducible except one
  * of downloaded plugins with a version-matched shelf of official packages beside
  * them. Entirely rebuildable from `packages` and the installation, so deleting
  * it costs a re-stage and never data.
+ * @property {string} envPath - copies of the user's PATH from before this tool
+ * changed it. The one thing it writes that lives outside this folder, so the way
+ * back has to be readable by a person with a text editor.
  */
 
 /**
@@ -295,6 +298,7 @@ export function boxLayout(dir) {
     packages: join(root, 'packages'),
     cabinets: join(root, 'cabinets'),
     engines: join(root, 'engines'),
+    envPath: join(root, 'env-path'),
   }
 }
 

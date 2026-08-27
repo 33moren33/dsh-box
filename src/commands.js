@@ -298,6 +298,22 @@ export const COMMANDS = {
     mutates: true,
     line: () => ['config', 'reset'],
   },
+  // ⭐ Three entries for one word, same as `plugins`: looking is not changing.
+  // And `add` has a counterpart that undoes it and a reading that shows it,
+  // because a tool that can only do a thing sends its user out to `regedit` to
+  // check on it — which is where actions stop being visible to the window.
+  path: {
+    mutates: false,
+  },
+  'path.add': {
+    mutates: true,
+    booleans: ['force'],
+    line: (args) => ['path', 'add', ...(args.force === true ? ['--force'] : [])],
+  },
+  'path.rm': {
+    mutates: true,
+    line: () => ['path', 'rm'],
+  },
   ui: {
     mutates: false,
     booleans: ['no-open'],

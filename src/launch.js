@@ -10,6 +10,7 @@ import {
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
 import { repointDownloads } from './engines.js'
+import { processStartedAt, sameProcess } from './process-identity.js'
 import { BoxError } from './errors.js'
 import { engineRecord } from './host.js'
 import { tailLines } from './logs.js'
@@ -358,15 +359,21 @@ export async function launch({
       }
     }
     const url = `http://127.0.0.1:${port}`
+    // ⭐⭐ The identity, written at the only moment it can be trusted. A pid on
+    // its own is a number the system hands out again; paired with the instant
+    // that process was born it is what the operating system itself uses to
+    // tell one holder of a number from the next. Everything downstream stops
+    // guessing because of this one field.
+    const pidBorn = processStartedAt(child.pid)
     if (direct) {
       // A main-environment launch is recorded too — in this tool's data
       // directory, never in the user's own home. The home is theirs; the process
       // we started is ours to be able to stop.
-      noteMainRunning(layout, { pid: child.pid, port, url, version, engine: engineRecord(engine), home })
+      noteMainRunning(layout, { pid: child.pid, pidBorn, port, url, version, engine: engineRecord(engine), home })
       child.once('exit', () => clearMainRunning(layout, child.pid))
     } else {
       noteBoot(layout, sandbox, engine)
-      noteRunning(layout, sandbox, { pid: child.pid, port, url, version, engine: engineRecord(engine) })
+      noteRunning(layout, sandbox, { pid: child.pid, pidBorn, port, url, version, engine: engineRecord(engine) })
       // Best-effort: when the launcher lives long enough to see dsh exit, the
       // ledger is cleared at once. A launcher killed outright leaves the entry
       // behind — harmless, because every reader verifies the pid before
@@ -376,7 +383,7 @@ export async function launch({
     // Released only once the sandbox is genuinely up: until then this process
     // is still the one reporting whether the launch worked.
     if (detached) child.unref()
-    return { pid: child.pid, port, url, child }
+    return { pid: child.pid, pidBorn, port, url, child }
   } finally {
     // After the ledger, never before: releasing any earlier would re-open the
     // very gap this closes.
@@ -490,24 +497,49 @@ async function servesBootManifest(port) {
 }
 
 /**
- * Stop a sandbox by process id.
+ * Stop a sandbox by process id — after proving the process holding that id now
+ * is the one the ledger meant.
  *
  * Named explicitly rather than matched by command line: a pattern like
  * "anything mentioning dsh" also matches the user's own running dsh, and
- * killing that is not a recoverable mistake.
+ * killing that is not a recoverable mistake. ⛔ That is not a hypothetical —
+ * `pkill -f "cli.js ui"`, typed to stop one service, also matched the ssh
+ * command that contained the same words and killed it.
+ *
+ * ⛔⛔ And a pid alone is not enough either. The line below reaches for
+ * `taskkill /T`, which takes the target's children with it; a five-day-old
+ * ledger row naming pid 6772 met a machine where 6772 had become a display
+ * service. **Nothing is killed until the process is shown to be the one we
+ * started**, and shown by equality — the instant it was born, written down at
+ * launch, read again now.
  * @param {number} pid
- * @returns {Promise<void>}
+ * @param {number | null} pidBorn - the instant recorded when this process was
+ * started. Every caller has one: readers take it from the ledger, and a caller
+ * stopping the child it just started takes it from what `launch` returned.
+ * @returns {Promise<boolean>} whether anything was killed. `false` means the id
+ * now belongs to somebody else and was deliberately left alone.
  */
-export async function stop(pid) {
+export async function stop(pid, pidBorn) {
   if (!Number.isInteger(pid) || pid <= 0) throw new BoxError('BAD_PID', t('launch.badPid', { pid }))
+  // ⛔⛔ Loud, never silent. "No proof" means "do not kill", so a caller that
+  // merely *forgot* the second argument would get a quiet no-op — and that is
+  // exactly what happened: one `stop(result.pid)` left in the acceptance suite
+  // stopped stopping anything, a stub dsh kept port 3080 for the rest of the
+  // run, and three later assertions failed while pointing at something else
+  // entirely. A caller who genuinely cannot know passes `null` and says so.
+  if (pidBorn === undefined) {
+    throw new BoxError('NO_PROCESS_PROOF', t('launch.noProcessProof', { pid }), { pid })
+  }
+  if (!sameProcess(pidBorn, processStartedAt(pid))) return false
   if (process.platform === 'win32') {
     await new Promise((resolve) => {
       // The launcher starts a tree; /T reaches the children it spawned.
       spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }).once('exit', resolve)
     })
-    return
+    return true
   }
   process.kill(pid, 'SIGTERM')
+  return true
 }
 
 /**

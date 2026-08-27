@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, removeTree, uiSeatFile } from '../src/paths.js'
-import { CREDENTIALS_FILE } from '../src/sandbox.js'
+import { CREDENTIALS_FILE, claimPath } from '../src/sandbox.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -115,8 +115,8 @@ check('⛔⛔ 关掉「下次不再提醒」也不算数——那是窗口的偏
 check('⛔ 三次都被拒之后,登录还在', existsSync(join(daily, CREDENTIALS_FILE)))
 
 // 4. And now as the window: hold the seat, run the command line as a child.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
+// ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
 const byWindow = await cli('signout', '--main', '--approved')
 check('⭐ 人在配置窗里点过头,才真的拿掉',
   byWindow.ok === true && !existsSync(join(daily, CREDENTIALS_FILE)), byWindow.code ?? 'ok')

@@ -50,6 +50,16 @@ npx dsh-box ui        # the window opens in your browser, nothing to install
 
 **For a double-clickable native window, grab an installer from [Releases](https://github.com/33moren33/dsh-box/releases).** Both routes are the same program: the same local service, the same page.
 
+**⭐ From 0.3.5 that exe is also a command line**: double-clicked it is a window, given arguments it is the command line.
+
+```bash
+dsh-box.exe status --json     # installed or portable: arguments make it a CLI
+dsh-box.exe path add          # put its folder on your own PATH
+dsh-box                       # once on PATH, from any directory
+```
+
+⛔ **0.3.4 and earlier have no such face**: arguments made it hang without answering, and the file was named `dsh-box-shell.exe`. From 0.3.5 it is `dsh-box.exe` everywhere. The installer runs `path add` for you; with the portable zip you run it once yourself. **The global npm install needs none of this** — npm already puts its shim on PATH.
+
 Once the window is open it is three steps: **pick a dsh → pick a cabinet → start**. With no release named it uses the dsh you installed yourself; name a downloaded release and the first run fetches it (about 200–260MB), after that it is reused.
 
 <div align="center">
@@ -134,6 +144,7 @@ packages / packages rm / packages prune           plugin packages dsh-box downlo
 workspaces / workspaces use <folder>              which project folder this cabinet opens next
 attach / detach / memory / history                take over, hand back, review
 config / config source / config lang              settings: install source, language
+path / path add / path rm                         whether this copy is on PATH; put it on, take it off
 status / logs <name> / ui / quit                  overview, logs, config window, quit everything
 ```
 

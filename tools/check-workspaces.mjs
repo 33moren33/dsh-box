@@ -20,6 +20,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { claimPath } from '../src/sandbox.js'
 import { boxLayout, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -39,8 +40,8 @@ const layout = boxLayout(box)
 // held for the run and the commands carry `--approved` — which is exactly what
 // the window does when somebody clicks. The rule itself is asserted in
 // `check-daily-gate`; here it is only the standing condition.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10140' }, null, 2)}\n`)
+// ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10140' })
 
 let failures = 0
 const check = (what, passed, detail = '') => {

@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { claimPath } from '../src/sandbox.js'
 import { boxLayout, cabinetLedgerFile, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -202,8 +203,8 @@ writeFileSync(dailyPatch, "# 假装这是日常档案柜\n- insert:\n    - id: t
 // now needs a person in the window (`check-daily-gate` is where that rule is
 // asserted). So the seat is held for this stretch — which is also the honest
 // picture: this is what the window does when somebody clicks.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
+// ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
 await cli('plugins', 'install', makePlugin('daily-plugin'), '--main', '--approved')
 const backups = await cli('plugins', 'backups', '--main')
 check('日常档案柜改过配置就有备份可还原', backups.backups.length > 0, `${backups.backups.length} 份`)
@@ -427,8 +428,7 @@ const reaching = makePlugin('reaching-plugin')
 // ⚠ Putting it there is itself a change to the daily cabinet, so the seat is
 // held for that one step and given straight back — the checks below need it
 // empty, since what they assert is that a flag alone is not approval.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10131' }, null, 2)}\n`)
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10131' })
 await cli('plugins', 'install', reaching, '--main', '--approved')
 rmSync(uiSeatFile(layout), { force: true })
 await cli('plugins', 'install', 'reaching-plugin', '--sandbox', 'w6')
@@ -453,8 +453,8 @@ check('⛔⛔ 光带旗标不算数——不是配置窗起的就不是点头',
 
 // ⭐ Play the window: hold its seat, then run the command line as a child of
 // this process. That parentage is the whole of the evidence a person was there.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
+// ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
 const approved = await cli('plugins', 'rm', 'reaching-plugin', '--approved')
 check('人在配置窗里点过头,照做', approved.ok === true && approved.detached.length === 2,
   (approved.detached ?? []).map((one) => one.workspace).join('、'))
@@ -468,8 +468,7 @@ check('⛔ 别人本来就有的那条照旧没动', readFileSync(dailyPatch, 'u
 await cli('config', 'ask-on-daily', 'off')
 // ⚠ Same as above: getting it in there needs the seat; taking it out is what
 // this checks, and that has to happen with the seat empty.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10132' }, null, 2)}\n`)
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10132' })
 await cli('plugins', 'install', makePlugin('quiet-plugin'), '--main', '--approved')
 rmSync(uiSeatFile(layout), { force: true })
 const quiet = await cli('plugins', 'rm', 'quiet-plugin')

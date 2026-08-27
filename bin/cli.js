@@ -37,6 +37,10 @@ import {
 } from '../src/packages.js'
 import { addProject, listProjects } from '../src/workspaces.js'
 import {
+  announceEnvChange, copiesOn, entriesOf, exeDir, readUserPath, sameEntry, writeUserPath,
+} from '../src/path-env.js'
+import { processStartedAt } from '../src/process-identity.js'
+import {
   describePlugin, partitionPlugins, readConfig, removePlugin, SETTINGS, updateConfig, upsertPlugin,
 } from '../src/config.js'
 import {
@@ -192,6 +196,7 @@ async function main(positional, opts) {
     case 'adopt': return adopt(layout, rest[0], opts)
     case 'rm': return remove(layout, rest[0], opts)
     case 'config': return settings(layout, rest, opts)
+    case 'path': return pathCommand(layout, rest, opts)
     case 'ui': return openUi(layout, opts)
     case 'quit': return quit(layout, opts)
     case 'status': return showStatus(layout, opts)
@@ -269,6 +274,10 @@ function describeAction(command, rest, opts) {
       return { command, args: { fromSandbox: rest[0] ?? opts.from ?? null, toSandbox: opts.to ?? null } }
     case 'config':
       return rest[0] === undefined ? null : { command: `config.${rest[0]}`, args: { value: rest[1] } }
+    case 'path':
+      return ['add', 'rm'].includes(rest[0])
+        ? { command: `path.${rest[0]}`, args: { force: opts.force === true } }
+        : null
     case 'quit':
       return { command, args: {} }
     default:
@@ -332,6 +341,11 @@ async function showStatus(layout, opts) {
     // dsh we know nothing about and must never be acted on.
     main: mainRunningRecord(layout),
     mainDshOnDefaultPort: await mainDshRunning(),
+    // ⭐ Whether this copy can be reached by typing its name. Here rather than
+    // only under `path` because this is the reader an agent already calls
+    // first: one that can see the answer fixes it in one command, while one
+    // that cannot has no way to know the question exists.
+    onPath: reachableByName(),
   }
   if (opts.json === true) return void emit(status)
 
@@ -1299,7 +1313,10 @@ async function downloadThenInstall(layout, name, target, opts) {
     // the part that hangs is a log that cannot explain the hang.
     await runNpm(layout.packages,
       ['install', name, '--no-audit', '--no-fund', '--foreground-scripts', '--registry', from], say,
-      (npm) => describeClaim(installClaimFile(layout), { npm }))
+      // ⛔ The birth instant travels with the pid, always. A second process in
+      // the same row needs its own, or that row answers "is this still npm"
+      // with nothing, and every reader concludes the download is over.
+      (npm) => describeClaim(installClaimFile(layout), { npm, npmBorn: processStartedAt(npm) }))
   }
   try {
     try {
@@ -2395,7 +2412,7 @@ async function start(layout, opts) {
   if (!follow) return
   const shutdown = async () => {
     console.log(`\n  ${t('launch.stopping')}`)
-    await stop(result.pid)
+    await stop(result.pid, result.pidBorn)
     if (!main) clearRunning(layout, boxName, result.pid)
     process.exit(0)
   }
@@ -2421,21 +2438,25 @@ async function halt(layout, name, opts) {
         note: t('stop.mainNote'),
       })
     }
-    await stop(held.pid)
+    const killed = await stop(held.pid, held.pidBorn)
     clearMainRunning(layout, held.pid)
-    recordResolved({ main: true, pid: held.pid })
-    if (opts.json === true) return void emit({ action: 'stop', main: true, pid: held.pid })
-    return void console.log(`\n  ${t('stop.mainStopped', { pid: held.pid })}\n`)
+    recordResolved({ main: true, pid: held.pid, killed })
+    if (opts.json === true) return void emit({ action: 'stop', main: true, pid: held.pid, killed })
+    return void console.log(`\n  ${t(killed ? 'stop.mainStopped' : 'stop.staleRow', { pid: held.pid })}\n`)
   }
   if (name === undefined) throw new BoxError('MISSING_ARGUMENT', t('stop.which'))
   const record = runningRecord(layout, name)
   if (record === null) {
     throw new BoxError('NOT_RUNNING', t('stop.notRunning', { name }), { sandbox: name })
   }
-  await stop(record.pid)
+  // ⭐ `killed === false` is not a failure: the row named a pid that now
+  // belongs to somebody else, so it was left alone and the row thrown away.
+  // Saying so plainly matters more than the tidier sentence — a person who is
+  // told "stopped" when nothing was stopped will go looking for the sandbox.
+  const killed = await stop(record.pid, record.pidBorn)
   clearRunning(layout, name, record.pid)
-  if (opts.json === true) return void emit({ action: 'stop', sandbox: name, pid: record.pid })
-  console.log(`\n  ${t('stop.stopped', { name, pid: record.pid })}\n`)
+  if (opts.json === true) return void emit({ action: 'stop', sandbox: name, pid: record.pid, killed })
+  console.log(`\n  ${t(killed ? 'stop.stopped' : 'stop.staleRow', { name, pid: record.pid })}\n`)
 }
 
 /**
@@ -2511,6 +2532,168 @@ function remove(layout, name, opts) {
   const gone = deleteSandbox(layout, name)
   if (opts.json === true) return void emit({ action: 'rm', sandbox: gone.name })
   console.log(`\n  ${t('rm.removed', { name: gone.name })}\n`)
+}
+
+/**
+ * Whether typing this program's name finds this copy.
+ *
+ * Costs a subprocess, so it is only asked when there is an exe behind this run
+ * — the npm install has no folder of its own to register, and npm has already
+ * put a shim where one belongs.
+ * @returns {{dir: string | null, present: boolean | null, copies: string[]}}
+ */
+function reachableByName() {
+  const dir = exeDir()
+  if (dir === null || process.platform !== 'win32') return { dir, present: null, copies: [] }
+  try {
+    const entries = entriesOf(readUserPath().value)
+    return {
+      dir,
+      present: entries.some((entry) => sameEntry(entry, dir)),
+      copies: copiesOn(entries).map((copy) => copy.dir),
+    }
+  } catch {
+    // `null` rather than `false`: not knowing and knowing it is not there are
+    // different answers, and a caller acting on the wrong one would add an
+    // entry that is already present.
+    return { dir, present: null, copies: [] }
+  }
+}
+
+/**
+ * Whether a person can reach this program by typing its name, and the two
+ * commands that change the answer.
+ *
+ * ⭐ This exists because being on PATH and being usable from a terminal are two
+ * different things, and only the second one is about the program itself. The
+ * exe learned to take arguments so that a full path works everywhere; this is
+ * the smaller, purely clerical half — so that the name works too. The npm
+ * package needs none of it: npm puts its own shim on PATH, which is why this
+ * refuses politely when there is no exe behind it rather than inventing a
+ * folder to register.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function pathCommand(layout, rest, opts) {
+  const [action] = rest
+  if (action === undefined) return showPath(layout, opts)
+  if (action !== 'add' && action !== 'rm') {
+    throw new BoxError('UNKNOWN_COMMAND', t('help.unknownCommand', { command: `path ${action}` }))
+  }
+  if (process.platform !== 'win32') throw new BoxError('PATH_UNSUPPORTED', t('path.windowsOnly'))
+  const dir = exeDir()
+  if (dir === null) throw new BoxError('PATH_NO_EXE', t('path.noExe'))
+  return action === 'add' ? addToPath(layout, dir, opts) : removeFromPath(layout, dir, opts)
+}
+
+/**
+ * Say what is on PATH now, and change nothing.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {Record<string, unknown>} opts
+ */
+function showPath(layout, opts) {
+  const dir = exeDir()
+  if (process.platform !== 'win32') {
+    if (opts.json === true) {
+      return void emit({ action: 'path', supported: false, dir, present: false, copies: [], dead: [] })
+    }
+    return void console.log(`\n  ${t('path.windowsOnly')}\n`)
+  }
+  const entries = entriesOf(readUserPath().value)
+  const copies = copiesOn(entries)
+  const dead = entries.filter((entry) => !existsSync(entry.trim()))
+  const present = dir !== null && entries.some((entry) => sameEntry(entry, dir))
+  if (opts.json === true) {
+    return void emit({ action: 'path', supported: true, dir, present, entries: entries.length, copies, dead })
+  }
+  console.log(`\n  ${dir === null ? t('path.noExeShort') : t(present ? 'path.hereOn' : 'path.hereOff', { dir })}`)
+  console.log(`  ${t('path.copies', { count: copies.length })}`)
+  for (const copy of copies) console.log(`    ${copy.dir}`)
+  if (dead.length > 0) console.log(`  ${t('path.dead', { count: dead.length })}`)
+  console.log()
+}
+
+/**
+ * Put this program's folder on the user's PATH.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} dir
+ * @param {Record<string, unknown>} opts
+ */
+function addToPath(layout, dir, opts) {
+  const { value, kind } = readUserPath()
+  const entries = entriesOf(value)
+  if (entries.some((entry) => sameEntry(entry, dir))) {
+    // Saying "nothing to do" rather than adding a second copy: a command run
+    // twice should leave one entry, and a PATH is the last place to learn that
+    // lesson the other way.
+    recordResolved({ action: 'path.add', dir, changed: false })
+    if (opts.json === true) return void emit({ action: 'path.add', dir, changed: false })
+    return void console.log(`\n  ${t('path.already', { dir })}\n`)
+  }
+  // ⛔ Refused rather than silently decided: with two copies registered, which
+  // one the name reaches depends on their order, and quietly picking a winner
+  // for somebody is how a person ends up debugging the wrong installation.
+  const others = copiesOn(entries).filter((copy) => !sameEntry(copy.dir, dir))
+  if (others.length > 0 && opts.force !== true) {
+    throw new BoxError('PATH_ANOTHER_COPY', t('path.anotherCopy', { dir: others[0].dir }), { copies: others })
+  }
+  const kept = keepPathBackup(layout, value)
+  // Last, so nothing that was already reachable stops being reachable — except
+  // with `--force`, which is a person saying they want this copy to win.
+  const next = opts.force === true ? [dir, ...entries].join(';') : [...entries, dir].join(';')
+  writeUserPath(next, kind)
+  const announced = announceEnvChange()
+  recordResolved({ action: 'path.add', dir, changed: true, backup: kept })
+  if (opts.json === true) {
+    return void emit({ action: 'path.add', dir, changed: true, backup: kept, first: opts.force === true, announced })
+  }
+  console.log(`\n  ${t('path.added', { dir })}`)
+  console.log(`  ${t('path.reopen')}\n`)
+}
+
+/**
+ * Take this program's folder back off the user's PATH.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} dir
+ * @param {Record<string, unknown>} opts
+ */
+function removeFromPath(layout, dir, opts) {
+  const { value, kind } = readUserPath()
+  const entries = entriesOf(value)
+  const left = entries.filter((entry) => !sameEntry(entry, dir))
+  if (left.length === entries.length) {
+    recordResolved({ action: 'path.rm', dir, changed: false })
+    if (opts.json === true) return void emit({ action: 'path.rm', dir, changed: false })
+    return void console.log(`\n  ${t('path.notThere', { dir })}\n`)
+  }
+  const kept = keepPathBackup(layout, value)
+  writeUserPath(left.join(';'), kind)
+  const announced = announceEnvChange()
+  recordResolved({ action: 'path.rm', dir, changed: true, backup: kept })
+  if (opts.json === true) {
+    return void emit({ action: 'path.rm', dir, changed: true, backup: kept, announced })
+  }
+  console.log(`\n  ${t('path.removed', { dir })}`)
+  console.log(`  ${t('path.reopen')}\n`)
+}
+
+/**
+ * Keep a copy of the PATH as it is right now.
+ *
+ * Written before every change, never overwritten, named by the moment. The
+ * journal already records that a change happened, but a journal entry is not
+ * something a person can paste back into the environment editor at two in the
+ * morning — this file is.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} value
+ * @returns {string} the file written.
+ */
+function keepPathBackup(layout, value) {
+  mkdirSync(layout.envPath, { recursive: true })
+  const file = join(layout.envPath, `before-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.txt`)
+  writeFileSync(file, value, 'utf8')
+  return file
 }
 
 /**
@@ -2619,29 +2802,32 @@ function resetConfig(layout, opts) {
 async function quit(layout, opts) {
   const live = runningSandboxes(layout)
   const stopped = []
+  const stale = []
   for (const entry of live) {
-    await stop(entry.pid)
+    const killed = await stop(entry.pid, entry.pidBorn)
     clearRunning(layout, entry.sandbox, entry.pid)
-    stopped.push({ sandbox: entry.sandbox, pid: entry.pid })
+    ;(killed ? stopped : stale).push({ sandbox: entry.sandbox, pid: entry.pid })
   }
 
   const held = mainRunningRecord(layout)
   let main = null
   if (opts.main === true && held !== null) {
-    await stop(held.pid)
+    const killed = await stop(held.pid, held.pidBorn)
     clearMainRunning(layout, held.pid)
-    main = { pid: held.pid }
+    if (killed) main = { pid: held.pid }
+    else stale.push({ sandbox: null, pid: held.pid })
   }
   const mainUp = await mainDshRunning()
   recordResolved({ stopped: stopped.map((entry) => entry.sandbox), main: opts.main === true })
 
   if (opts.json === true) {
     return void emit({
-      action: 'quit', stopped, main, mainStartedHere: held !== null, mainDshOnDefaultPort: mainUp,
+      action: 'quit', stopped, stale, main, mainStartedHere: held !== null, mainDshOnDefaultPort: mainUp,
     })
   }
   if (stopped.length === 0) console.log(`\n  ${t('quit.nothingRunning')}`)
   else console.log(`\n  ${t('quit.stopped', { count: stopped.length, names: stopped.map((entry) => entry.sandbox).join('、') })}`)
+  if (stale.length > 0) console.log(`  ${t('quit.staleRows', { count: stale.length })}`)
   if (main !== null) console.log(`  ${t('quit.mainStopped', { pid: main.pid })}`)
   else if (held !== null) console.log(`  ${t('quit.mainLeft')}`)
   else if (mainUp) console.log(`  ${t('quit.mainForeign')}`)

@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveEngine } from '../src/host.js'
 import { boxLayout, uiSeatFile } from '../src/paths.js'
+import { claimPath } from '../src/sandbox.js'
 import { launch, stop } from '../src/launch.js'
 import { clearMainRunning, mainRunningRecord } from '../src/sandbox.js'
 import { newLaunchLog } from '../src/logs.js'
@@ -70,7 +71,7 @@ check('另一个进程也认得出它', seenByStranger?.pid === result.pid)
 
 check('启动时先把旧的模块指针清了(那层由 boot 重建)', !existsSync(fallback))
 
-await stop(result.pid)
+await stop(result.pid, result.pidBorn)
 clearMainRunning(layout, result.pid)
 check('停掉之后账本清了', mainRunningRecord(layout) === null)
 
@@ -136,8 +137,10 @@ check('⛔⛔ 光带旗标不算数——不是配置窗起的,agent 自己点�
 // child of itself, and that parentage is the whole of the evidence. This test
 // process can honestly do both, which is the point — the mechanism is about
 // where a run came from, not about a secret it could have leaked.
-writeFileSync(uiSeatFile(layout),
-  `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10130' }, null, 2)}\n`)
+// ⛔ 座位由产品自己的写入口来写,夹具不手抄它的字段。手抄过一次:身份凭据
+// (`pidBorn`)加进记录之后,手抄的那份当场失效,而失效的样子是「窗口点过头也
+// 不放行」——看着像守卫坏了,其实是夹具旧了。**夹具要来自对方。**
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
 const allowed = await cli('start', '--main', '--version', '9.9.9-stub', '--approved')
 check('人在配置窗里点过头,同一条命令就放行', allowed.ok === true, allowed.code ?? 'ok')
 rmSync(uiSeatFile(layout), { force: true })

@@ -27,6 +27,7 @@ import {
   userDshHome,
 } from './paths.js'
 import { dateNow, instantNow } from './clock.js'
+import { processStartedAt, sameProcess } from './process-identity.js'
 
 /**
  * The only file copied out of the user's real dsh home.
@@ -164,16 +165,48 @@ export function runningRecord(layout, name) {
 const PID_FIELDS = ['pid', 'npm']
 
 /**
- * A record with at least one of its processes still there, or null.
+ * A record whose process is still the one it was written about, or null.
+ *
+ * ⛔⛔ Two questions, and only asking both is enough: is there a process on
+ * that number, and **is it still ours**. The number alone is not an identity —
+ * it gets recycled, and a reboot recycles every one of them at once. A ledger
+ * row from five days earlier named pid 6772; on the machine that read it, 6772
+ * had become a display service with nothing to do with dsh, and everything
+ * downstream believed the row. The window drew a running sandbox with a
+ * working "stop" button, and that button would have run `taskkill /T /F` on
+ * the display service and its children. ⛔ The note that used to sit here
+ * called that risk "one refused launch, not lost data".
+ *
+ * ⭐ The proof is an equality, not a time window: the moment the process
+ * itself started was written down at launch, and it either still reads the
+ * same or it does not. There is no tolerance to tune.
  * @param {Record<string, unknown>} record
  * @returns {Record<string, unknown> | null}
  */
 function aliveRecord(record) {
   const anyAlive = PID_FIELDS.some((field) => {
     const pid = record[field]
-    return Number.isInteger(pid) && Number(pid) > 0 && pidAlive(Number(pid))
+    if (!Number.isInteger(pid) || Number(pid) <= 0) return false
+    if (!pidAlive(Number(pid))) return false
+    // ⚠️ Only asked of numbers that answered the cheap question first. On
+    // Windows this costs a subprocess, so it is spent only on rows that claim
+    // to be running — which is exactly when being wrong matters.
+    return sameProcess(bornField(record, field), processStartedAt(Number(pid)))
   })
   return anyAlive ? record : null
+}
+
+/**
+ * Where the recorded birth moment for one pid field lives.
+ *
+ * `pid` and `npm` are two processes in one row, so each carries its own.
+ * @param {Record<string, unknown>} record
+ * @param {string} field
+ * @returns {number | null | undefined}
+ */
+function bornField(record, field) {
+  const born = record[field === 'pid' ? 'pidBorn' : `${field}Born`]
+  return born === undefined ? undefined : /** @type {number | null} */ (born)
 }
 
 /**
@@ -228,7 +261,15 @@ export function releaseStart(layout, name) {
  * @returns {boolean} whether this process now holds it.
  */
 export function claimPath(file, extra = {}) {
-  const mine = `${JSON.stringify({ pid: process.pid, startedAt: instantNow(), ...extra }, null, 2)}\n`
+  // ⛔⛔ `pidBorn` is not optional decoration. Every reader of a pid row now
+  // asks "is that process still the one that wrote this", and a row that
+  // cannot answer is treated as dead — so a claim written without it would be
+  // stale the instant it was written. Caught by `check-main-ledger`: the
+  // config window's own seat went unreadable, and with it every action that is
+  // only allowed because the window asked for it.
+  const mine = `${JSON.stringify({
+    pid: process.pid, pidBorn: processStartedAt(process.pid), startedAt: instantNow(), ...extra,
+  }, null, 2)}\n`
   // Twice: once to try, once more after clearing a dead claim. A third would
   // mean somebody is racing us to create and abandon claims, and losing to that
   // is the correct outcome.
@@ -405,7 +446,7 @@ export function mainRunningRecord(layout) {
   const file = mainRunningFile(layout)
   if (!existsSync(file)) return null
   const record = readState(file)
-  if (Number.isInteger(record.pid) && record.pid > 0 && pidAlive(record.pid)) {
+  if (aliveRecord(record) !== null) {
     return /** @type {RunningRecord & {home: string}} */ (record)
   }
   rmSync(file, { force: true })

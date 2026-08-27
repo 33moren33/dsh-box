@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "dsh-box",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "identifier": "com.dshbox.desktop",
   "build": {
     "frontendDist": "../src/ui"
@@ -18,8 +18,9 @@
     "targets": ["nsis"],
     "windows": {
       "nsis": {
-        "languages": ["SimpChinese"],
-        "displayLanguageSelector": false
+        "languages": ["SimpChinese", "English"],
+        "displayLanguageSelector": true,
+        "installerHooks": "installer.nsh"
       }
     },
     "icon": [

@@ -6,10 +6,19 @@
 //! and take the whole process tree down when the window closes. Keeping the
 //! shell this thin is what lets the browser version and the window version
 //! stay the same program.
+//!
+//! One exe, two faces: double-clicked it is a window, given arguments it is
+//! the command line — the same deal `claude -p` offers. The second face is
+//! not a convenience. An agent driving an installed copy has no other way in,
+//! and the way it used to reach for — running the bundled `cli.js` by hand —
+//! resolves its data directory against the working directory and therefore
+//! reports an empty world while the window shows three sandboxes. Here the
+//! two faces are handed the same directory by the same function, so they
+//! cannot disagree.
 
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -20,13 +29,177 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 /// command, so bookmarks made in either world keep working.
 const UI_PORT: u16 = 10130;
 
+/// Must stay equal to `identifier` in `tauri.conf.json`: it is the name of
+/// the per-user folder both faces fall back to when the exe sits somewhere
+/// unwritable, and the command line face has no Tauri app to ask.
+const IDENTIFIER: &str = "com.dshbox.desktop";
+
 /// One booted Node service.
 struct Server {
     pid: u32,
     url: String,
 }
 
+/// Where the program is, where to run it, and where its data lives.
+struct Layout {
+    entry: PathBuf,
+    cwd: PathBuf,
+    box_dir: Option<PathBuf>,
+}
+
+/// Which face was asked for.
+///
+/// ⭐ Arguments decide, nothing else. No hidden flag, no environment
+/// variable: `dsh-box` opens a window and `dsh-box status --json` answers on
+/// the terminal, which is the whole of the rule and all of it is visible.
 pub fn run() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        std::process::exit(run_command_line(&args));
+    }
+    #[cfg(windows)]
+    if handed_over_to_detached_copy() {
+        return;
+    }
+    run_window();
+}
+
+/// Pass the arguments to the command line and return its exit code.
+///
+/// Nothing is parsed here and nothing is reworded. The Node command line owns
+/// every command, every flag and every message; this face only finds it,
+/// points it at this installation's data directory, and gets out of the way —
+/// otherwise there would be two programs deciding what `--main` means, and
+/// two answers to that question is one too many.
+fn run_command_line(args: &[String]) -> i32 {
+    let wants_json = args.iter().any(|arg| arg == "--json");
+    let layout = match layout(None, app_data_dir()) {
+        Ok(layout) => layout,
+        Err(reason) => return refuse(wants_json, "BOOT_MISSING", &reason),
+    };
+    let (node, major) = match find_node() {
+        Some(found) => found,
+        None => return refuse(wants_json, "NODE_MISSING", NO_NODE),
+    };
+    if major < 20 {
+        return refuse(wants_json, "NODE_TOO_OLD", &old_node(major));
+    }
+
+    let mut command = Command::new(&node);
+    command
+        .arg(&layout.entry)
+        .args(args)
+        .current_dir(&layout.cwd)
+        // Which file the user double-clicks is something only this side knows,
+        // and `path add` needs it: a script cannot work out that it is being
+        // run by an exe, let alone which one.
+        .envs(exe_hint(layout.box_dir.is_some()))
+        // Inherited, unlike the window's captured pipes: whoever typed the
+        // command is the one who should see the output, as it appears.
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    if let Some(dir) = &layout.box_dir {
+        // Only when the caller has not already chosen one. An explicit
+        // `DSH_BOX_HOME` means someone deliberately pointed at another data
+        // directory, and `--box` still beats both. Which one won is never a
+        // guess: every command prints the directory it used as its first
+        // field.
+        if std::env::var_os("DSH_BOX_HOME").is_none() {
+            command.env("DSH_BOX_HOME", dir);
+        }
+    }
+    match command.status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => refuse(wants_json, "NODE_MISSING", &format!("起不了 Node:{error}")),
+    }
+}
+
+/// Say why nothing ran, in whichever form the caller asked for, and hand back
+/// the exit code.
+///
+/// ⭐ The `code` is the contract — never translated, never reworded — and the
+/// shape is the command line's own `{box, ok, code, message}`, because a
+/// caller that parses one of these should not have to learn a second layout
+/// for the handful of failures that happen before Node starts.
+fn refuse(wants_json: bool, code: &str, reason: &str) -> i32 {
+    if wants_json {
+        let line = serde_json::json!({ "box": null, "ok": false, "code": code, "message": reason });
+        println!("{line}");
+    } else {
+        eprintln!("\n  {reason}\n");
+    }
+    1
+}
+
+/// Deal with the console Windows hands a console-subsystem program, and say
+/// whether the window has been handed to a detached copy of ourselves.
+///
+/// ⭐⭐ Why this exists at all: on Windows an exe declares one subsystem for
+/// its whole life. Declared a window program, it has no console, and a
+/// terminal that starts it does not wait for it — `dsh-box status --json`
+/// would give the prompt back before the answer arrived, which is not a
+/// command line. So this is a console program, and the console it gets when
+/// nobody asked for one is dealt with here.
+///
+/// Three situations, told apart by who else is attached to the console:
+/// nobody else means Windows made it for a double-click and it is ours to
+/// hide; somebody else means we were started from a terminal, and rather than
+/// occupy that terminal for as long as the window lives, the window is handed
+/// to a detached copy so the prompt comes straight back; no console at all
+/// means we already are that copy.
+#[cfg(windows)]
+fn handed_over_to_detached_copy() -> bool {
+    const SW_HIDE: i32 = 0;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleWindow() -> isize;
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        fn ShowWindow(window: isize, command: i32) -> i32;
+    }
+
+    let (window, sharers) = unsafe {
+        let window = GetConsoleWindow();
+        if window == 0 {
+            return false;
+        }
+        let mut pids = [0u32; 4];
+        (window, GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32))
+    };
+
+    if sharers <= 1 {
+        // Ours alone. Hiding it is the whole cost of the second face: the
+        // console exists for the few milliseconds before this line runs.
+        unsafe {
+            ShowWindow(window, SW_HIDE);
+            FreeConsole();
+        }
+        return false;
+    }
+
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut copy = Command::new(exe);
+    copy.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    {
+        use std::os::windows::process::CommandExt;
+        copy.creation_flags(DETACHED_PROCESS);
+    }
+    // If the copy cannot be started, opening the window right here is still
+    // better than not opening it: the only thing lost is the terminal, and
+    // the person asked for a window.
+    copy.spawn().is_ok()
+}
+
+/// Open the window.
+fn run_window() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -104,18 +277,28 @@ impl From<&str> for NoWindow {
     }
 }
 
+/// What to say when there is no usable Node. Said the same way to both
+/// faces: the situation is identical and so is the fix.
+const NO_NODE: &str = "没找到 Node。这个工具和 dsh 本身都是 Node 程序,请先安装 Node 20 或更新版本(nodejs.org),装好后重新打开。";
+
+/// What to say when the Node that was found is too old.
+fn old_node(major: u32) -> String {
+    format!("本机的 Node 是 {major} 版,太旧了。dsh 需要 Node 20 或更新版本,请升级后重新打开。")
+}
+
 /// Start the Node service and wait until it answers.
 fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
-    let (node, major) = find_node().ok_or_else(|| {
-        NoWindow::Broken("没找到 Node。这个工具和 dsh 本身都是 Node 程序,请先安装 Node 20 或更新版本(nodejs.org),装好后重新打开。".to_string())
-    })?;
+    let (node, major) = find_node().ok_or_else(|| NoWindow::Broken(NO_NODE.to_string()))?;
     if major < 20 {
-        return Err(NoWindow::Broken(format!(
-            "本机的 Node 是 {major} 版,太旧了。dsh 需要 Node 20 或更新版本,请升级后重新打开。"
-        )));
+        return Err(NoWindow::Broken(old_node(major)));
     }
 
-    let (entry, cwd, box_dir) = locate_boot(app)?;
+    // Tauri knows two directories this crate cannot work out on its own on
+    // every platform, so the window hands them to the shared function rather
+    // than the function growing a second way to find them.
+    let resources = app.path().resource_dir().ok().map(plain);
+    let app_data = app.path().app_data_dir().ok().map(plain);
+    let Layout { entry, cwd, box_dir } = layout(resources, app_data)?;
     let port = free_port(UI_PORT).ok_or("找不到空闲端口")?;
 
     let mut command = Command::new(&node);
@@ -127,6 +310,9 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
         // instead of inventing its own wording.
         .args(["ui", "--port", &port.to_string(), "--no-open", "--json"])
         .current_dir(&cwd)
+        // Inherited by every command the window runs, so a button and a typed
+        // command have the same idea of which exe they belong to.
+        .envs(exe_hint(box_dir.is_some()))
         // Captured, not inherited: a double-clicked app has no terminal, so
         // whatever Node says on the way down is only readable if kept.
         .stdout(Stdio::piped())
@@ -204,6 +390,11 @@ fn refused_because_open(answered: &str) -> Option<String> {
 /// Find the service's entry script, the directory to run it in, and where
 /// its data should live.
 ///
+/// ⭐⭐ Both faces come through here, and that is the point. When the window
+/// worked this out for itself and the bundled `cli.js` worked it out from the
+/// working directory, the same installation reported three sandboxes in one
+/// face and none in the other. One function, one answer.
+///
 /// Two worlds: run from the repository (development), the entry sits next to
 /// this crate and data goes wherever it always went — the repository's own
 /// `dsh-box/data`. Installed or unzipped, the layout beside the exe is one
@@ -212,28 +403,49 @@ fn refused_because_open(answered: &str) -> Option<String> {
 /// portable form is that the folders you can see are the folders that hold
 /// everything. Only when the exe sits somewhere unwritable (Program Files)
 /// does data retreat to the per-user app directory.
-fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathBuf>), String> {
-    if let Ok(exe) = std::env::current_exe() {
+///
+/// `resources` and `app_data` are the two directories Tauri knows and this
+/// crate cannot always work out alone; the window passes what Tauri says and
+/// the command line passes its own equivalents. On Windows both are the same
+/// answer either way, so the faces cannot drift where it would matter most.
+fn layout(resources: Option<PathBuf>, app_data: Option<PathBuf>) -> Result<Layout, String> {
+    let exe = std::env::current_exe().ok().map(plain);
+    if let Some(exe) = &exe {
         for ancestor in exe.ancestors() {
             let entry = ancestor.join("bin").join("cli.js");
             if entry.exists() && ancestor.join("src").join("server.js").exists() {
-                return Ok((entry, ancestor.to_path_buf(), None));
+                return Ok(Layout { entry, cwd: ancestor.to_path_buf(), box_dir: None });
             }
         }
     }
-    let resources = plain(
-        app.path()
-            .resource_dir()
-            .map_err(|error| format!("找不到资源目录:{error}"))?,
-    );
-    let entry = resources
-        .join("dsh-box")
-        .join("boot")
-        .join("bin")
-        .join("cli.js");
-    if !entry.exists() {
-        return Err(format!("安装包里缺了启动脚本:{}", entry.display()));
+
+    // Beside the exe first: on Windows that is also what Tauri calls the
+    // resource directory, and it is the only answer the command line face can
+    // reach without a Tauri app to ask.
+    let packaged =
+        |root: &Path| root.join("dsh-box").join("boot").join("bin").join("cli.js");
+    let mut looked = Vec::new();
+    let mut found = None;
+    for root in [exe.as_deref().and_then(Path::parent).map(Path::to_path_buf), resources]
+        .into_iter()
+        .flatten()
+    {
+        let candidate = packaged(&root);
+        if candidate.exists() {
+            found = Some(candidate);
+            break;
+        }
+        looked.push(candidate);
     }
+    let entry = found.ok_or_else(|| {
+        let where_looked = looked
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join("\n      ");
+        format!("安装包里缺了启动脚本,找过:\n      {where_looked}")
+    })?;
+
     if let Some(beside) = box_beside_exe() {
         // The service runs where the exe lives, two levels up from
         // `dsh-box/data`, so anything resolved against the working
@@ -243,18 +455,65 @@ fn locate_boot(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf, Option<PathB
             .and_then(|p| p.parent())
             .map(PathBuf::from)
             .unwrap_or_else(|| beside.clone());
-        return Ok((entry, cwd, Some(beside)));
+        return Ok(Layout { entry, cwd, box_dir: Some(beside) });
     }
-    let data = plain(
-        app.path()
-            .app_data_dir()
-            .map_err(|error| format!("找不到数据目录:{error}"))?,
-    );
+    let data = app_data.ok_or("找不到数据目录")?;
     std::fs::create_dir_all(&data).map_err(|error| format!("建不了数据目录:{error}"))?;
     // Inside the per-user app directory the app's folder role is already
     // taken by the directory itself, so the data folder sits directly in it.
     let box_dir = data.join("data");
-    Ok((entry, data, Some(box_dir)))
+    Ok(Layout { entry, cwd: data, box_dir: Some(box_dir) })
+}
+
+/// Tell the Node side which exe it is running behind, when there is one worth
+/// naming.
+///
+/// ⛔ Deliberately empty when the program was found in a source checkout. The
+/// exe is real there too — `target\debug\dsh-box.exe` — but it is not a copy
+/// anybody installed, and the one command that reads this puts its folder on
+/// the user's PATH. Saying nothing is what makes that command refuse in
+/// development instead of registering a build directory.
+fn exe_hint(packaged: bool) -> Vec<(String, String)> {
+    if !packaged {
+        return Vec::new();
+    }
+    match std::env::current_exe() {
+        Ok(exe) => vec![("DSH_BOX_EXE".to_string(), plain(exe).display().to_string())],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The per-user application directory, worked out without asking Tauri.
+///
+/// The command line face runs before any Tauri app exists, so it cannot call
+/// `app_data_dir()`. These are the same three locations that call returns,
+/// written out per platform — deliberately, because the alternative is the
+/// two faces disagreeing about where a Program Files installation keeps its
+/// things, which is the exact bug this whole change exists to remove.
+fn app_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(|roaming| PathBuf::from(roaming).join(IDENTIFIER))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join(IDENTIFIER)
+        })
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".local").join("share"))
+            })
+            .map(|base| base.join(IDENTIFIER))
+    }
 }
 
 /// The data directory beside the exe, when that location can actually hold

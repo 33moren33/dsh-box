@@ -128,6 +128,12 @@ const DECISIONS = {
   'config.ask-on-quit.@': { offPage: '弹窗里那个「下次不再提醒」的勾' },
   'config.ask-on-daily.@': { offPage: '同上' },
   'config.reset.@': { offPage: '设置文件读坏了才用得上,是命令行的逃生口' },
+  // ⭐ 本表里第一条「改的不是这个数据目录」的动作:它动的是这台电脑的用户环境变量。
+  // 窗口是数据目录的脸,把改环境的开关摆在那儿,人会以为它跟别的设置一样跟着数据
+  // 目录走。而且 npm 装的那份根本没有可登记的目录,窗口却分不出自己是哪一种。
+  'path.add.@': { offPage: '改的是这台电脑的 PATH,不是这个数据目录;窗口上没有这个动作' },
+  'path.add.force': { offPage: '同上' },
+  'path.rm.@': { offPage: '同上' },
   'quit.@': { mark: 'go:quit' },
 
   'start.new': { mark: 'cabinet:' },

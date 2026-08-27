@@ -108,6 +108,14 @@ try {
   disposable.push(evidence.dir)
   if (!run('check-running-evidence.mjs', [evidence.data])) failed.push('check-running-evidence')
 
+  // The other half of that same question. Above: "the ledger is missing — is it
+  // really stopped?" Here: "the ledger names a pid — is that pid still ours?"
+  // Its own box, because it writes ledger rows by hand, one of them dated
+  // before the machine booted.
+  const stalePid = freshBox('stale-pid')
+  disposable.push(stalePid.dir)
+  if (!run('check-stale-pid.mjs', [stalePid.data])) failed.push('check-stale-pid')
+
   // Its own box: it asserts on a data directory nothing has ever attached to,
   // which is only true the first time.
   const agent = freshBox('agent')

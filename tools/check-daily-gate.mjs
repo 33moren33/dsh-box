@@ -29,6 +29,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, removeTree, uiSeatFile } from '../src/paths.js'
+import { claimPath } from '../src/sandbox.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -161,9 +162,8 @@ check('⭐ 沙箱照旧不用点头(删掉就没了,不值得一次弹窗)',
 
 // ── 人在窗口里点过头 ──────────────────────────────────────────────────────
 
-writeFileSync(uiSeatFile(layout), `${JSON.stringify({
-  pid: process.pid, url: 'http://127.0.0.1:1', startedAt: new Date().toISOString(),
-}, null, 2)}\n`)
+// ⛔ 同 `check-main-ledger`:座位走产品自己的写入口,夹具不手抄字段。
+claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:1' })
 const approved = await cli(['plugins', 'install', source, '--main', '--approved'])
 check('⭐⭐ 配置窗起的那次才放行', approved.ok === true, approved.code ?? 'ok')
 check('⭐ 放行之后别人那一行还在,没被顺手动掉',

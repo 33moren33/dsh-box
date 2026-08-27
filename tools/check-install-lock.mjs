@@ -47,6 +47,7 @@ import { downloadInFlight, installClaimFile } from '../src/packages.js'
 import { missingFromRegistry } from '../src/registry.js'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 import { claimPath, ensureSandbox, releasePath } from '../src/sandbox.js'
+import { processStartedAt } from '../src/process-identity.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -132,7 +133,7 @@ check('松手之后占位文件也没了', !existsSync(claim))
 // 得掉子进程、杀不掉 npm 那个孙进程,于是留下一个还在写 packages 的孤儿,收尾
 // removeTree 当场 EBUSY。⭐ 闸门就是 claimPath 本身,直接问它,离线且确定。
 const ghost = deadPid()
-writeFileSync(claim, `${JSON.stringify({ pid: ghost, name: '早就死了', log }, null, 2)}\n`)
+writeFileSync(claim, `${JSON.stringify({ pid: ghost, pidBorn: null, name: '早就死了', log }, null, 2)}\n`)
 check('⭐ 对照组:死进程留下的占位,窗口不当成「正在下载」',
   downloadInFlight(layout) === null, `ghost pid ${ghost}`)
 check('⭐⭐ 对照组:上一次装到一半被杀,下一次照样占得到 —— 一次崩溃不许把工具永久锁死',
@@ -146,7 +147,12 @@ check('⛔ 松手之后占位不留', !existsSync(claim))
 // 命令行被杀、npm 活着,是 Windows 上的常态(杀父不杀子)。只认持有者 pid 的话,
 // 占位当场作废,下一条安装被放行 —— 而那个孤儿 npm 还在写同一棵树。
 const liveNpm = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60_000)'], { windowsHide: true })
-writeFileSync(claim, `${JSON.stringify({ pid: deadPid(), npm: liveNpm.pid, name: '孤儿的活儿', log }, null, 2)}\n`)
+// ⛔ 每个 pid 都要带上它自己的出生时刻,否则读的那一侧一律判成「不是我们的」。
+// 手抄这条记录时漏掉它,症状是整套验收塌掉,看上去却像锁坏了。
+writeFileSync(claim, `${JSON.stringify({
+  pid: deadPid(), pidBorn: null, npm: liveNpm.pid, npmBorn: processStartedAt(liveNpm.pid),
+  name: '孤儿的活儿', log,
+}, null, 2)}\n`)
 check('⛔⛔ 持有者已死、npm 还活着 —— 照样算「正在下载」',
   downloadInFlight(layout)?.name === '孤儿的活儿')
 const stillRefused = install('@linxin666/dsh-web-ui-all')
@@ -169,7 +175,9 @@ console.log('\n正在下载的,停得掉\n')
 const sleeper = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300_000)'], { windowsHide: true })
 const npmish = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300_000)'], { windowsHide: true })
 writeFileSync(claim, `${JSON.stringify({
-  pid: sleeper.pid, npm: npmish.pid, name: 'stuck-package', log,
+  pid: sleeper.pid, pidBorn: processStartedAt(sleeper.pid),
+  npm: npmish.pid, npmBorn: processStartedAt(npmish.pid),
+  name: 'stuck-package', log,
 }, null, 2)}\n`)
 check('先确认它算「正在下载」', downloadInFlight(layout)?.name === 'stuck-package')
 check('⭐ 两个 pid 都被认出来要停',

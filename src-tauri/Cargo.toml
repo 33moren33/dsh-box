@@ -1,6 +1,6 @@
 [package]
 name = "dsh-box-shell"
-version = "0.3.4"
+version = "0.3.5"
 description = "dsh 沙箱启动器的桌面壳:开一个原生小窗,里面还是同一个 Node 服务"
 edition = "2021"
 rust-version = "1.77.2"
@@ -8,6 +8,16 @@ rust-version = "1.77.2"
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# ⭐ The file the user ends up double-clicking, and the word they type in a
+# terminal, is this name — not the crate's. Without this the binary inherits
+# the package name and ships as `dsh-box-shell.exe`, so putting it on PATH
+# would give people a `dsh-box-shell` command for a product called dsh-box.
+# The 2026-08-20 decision to unify the two only ever reached the installer's
+# title; this is the half that was missing.
+[[bin]]
+name = "dsh-box"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }

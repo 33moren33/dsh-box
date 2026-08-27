@@ -297,6 +297,37 @@ const MESSAGES = {
 ⛔ 旧文件是改名存档,不是删掉:里面记着你登记过哪些插件目录,那份东西别处找不回来。
 存档之后登记表是空的,但档案柜里已经装着的插件不受影响:那些写在档案柜自己的配置里。`,
 
+    'cmd.path.usage': 'path',
+    'cmd.path.summary': '看这一份在不在 PATH 上,以及 PATH 上有几份',
+    'cmd.path.add.usage': 'path add [--force]',
+    'cmd.path.add.summary': '把这个 exe 所在的目录加进你自己的 PATH',
+    'cmd.path.add.notes': `加完之后新开的终端里敲 dsh-box 就能用,已经开着的终端要重开一次。
+只写你自己的 PATH(HKCU\\Environment),不动系统的,也不要管理员权限。
+⭐ 只加这一条,不整理你 PATH 里别的东西;改之前把原样存一份在数据目录的 env-path 里。
+⛔ npm 装的那份用不着它:npm 自己会把垫片放进全局目录,那个目录本来就在 PATH 上。
+⚠️ PATH 上已经有另一份 dsh-box 时会拒绝——两份都在,敲名字命中哪一份取决于顺序。要这一份赢就加 --force。`,
+    'cmd.path.rm.usage': 'path rm',
+    'cmd.path.rm.summary': '把这个目录从你的 PATH 上去掉',
+
+    'path.windowsOnly': '这条命令只在 Windows 上有意义。别的系统上 PATH 归 shell 的配置文件管,不该由一个启动器代改。',
+    'path.noExe': '这条命令要由 dsh-box 的 exe 自己来跑。npm 装的那份不需要它:npm 已经把垫片放好了。',
+    'path.noExeShort': '这一份不是 exe 起的,没有可登记的目录。',
+    'path.hereOn': '这一份:{dir}(在 PATH 上)',
+    'path.hereOff': '这一份:{dir}(不在 PATH 上)',
+    'path.copies': 'PATH 上的 dsh-box:{count} 份',
+    'path.dead': '另有 {count} 条 PATH 条目指向已不存在的目录(不归本工具管,只报给你看)',
+    'path.already': '已经在 PATH 上了,什么都没做:{dir}',
+    'path.notThere': '本来就不在 PATH 上,什么都没做:{dir}',
+    'path.anotherCopy': 'PATH 上已经有另一份 dsh-box:{dir}。两份都在,敲名字命中哪一份取决于顺序。确定要这一份赢就加 --force。',
+    'path.added': '已加进 PATH:{dir}',
+    'path.removed': '已从 PATH 去掉:{dir}',
+    'path.reopen': '新开一个终端才生效,已经开着的那些读的是旧的。',
+    'path.noPowershell': '起不了 PowerShell,没法读写 PATH:{why}',
+    'path.registryRefused': '读写 PATH 被拒绝:{why}',
+    'path.tooLong': '你的 PATH 有 {length} 个字符,太长了,这条命令不敢动它——改坏一个人的 PATH 比少一条命令严重得多。请自己把这个目录加进去。',
+    'path.mismatch': '写完再读回来对不上:写进去 {wrote} 个字符,读出来 {read} 个。原样那份在数据目录的 env-path 里。',
+    'path.kindChanged': '写完再读回来,值的类型从 {was} 变成了 {now}。原样那份在数据目录的 env-path 里。',
+
     'cmd.ui.usage': 'ui [--port n]',
     'cmd.ui.summary': '打开配置窗',
     'cmd.quit.usage': 'quit [--main]',
@@ -351,6 +382,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'launch.ready': '已就绪:页面带着启动清单,且进程稳定',
     'launch.portTaken': '端口 {port} 这一刻被别人占了,多半是同时启动的另一台;改用 {next} 再试一次',
     'launch.needsExposeInternals': '这台 Node 拿不到内部加载器,启动补上 --expose-internals;否则 dsh 起不来,插件也解析不到',
+    'launch.noProcessProof': '不能停进程 {pid}:没有给出它的身份凭据。进程号会被回收,没有凭据就无从证明它还是我们那个,所以拒绝动手。',
     'launch.clearedModuleLinks': '已清掉可能指错版本的模块链接,启动时会重建',
     'launch.open': '打开 {url}',
     'launch.realKey': '用的是你真实的 API Key,这里的对话真实计费',
@@ -774,6 +806,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'stop.which': '停哪个沙箱? 用 sandboxes 查看,或用 --main 停日常档案柜',
     'stop.notRunning': '沙箱「{name}」现在没有在跑',
     'stop.stopped': '已停掉「{name}」(进程号 {pid})',
+    'stop.staleRow': '账本上那条是旧的:进程号 {pid} 现在属于别的程序,没有动它。那条记录已经清掉。',
     'rm.which': '哪个沙箱? 用 sandboxes 查看',
     'rm.removed': '已删除「{name}」—— 那台 dsh 不复存在',
 
@@ -787,6 +820,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'config.freshStart': '下一条命令会从空的重新开始',
 
     'quit.nothingRunning': '没有沙箱在跑,不用停什么',
+    'quit.staleRows': '另有 {count} 条旧记录:它们记的进程号现在属于别的程序,没有动,记录已清掉。',
     'quit.stopped': '已停下 {count} 台沙箱:{names}',
     'quit.mainStopped': '日常档案柜也停了(进程号 {pid})——它的 home 是你日常那个,数据都还在',
     'quit.mainLeft': '日常档案柜是从这里启动的,还留着(要一起停:加 --main)',
@@ -1196,6 +1230,42 @@ you registered, and that is not recoverable anywhere else.
 After the reset the registry is empty, but plugins already installed in cabinets
 are unaffected: those live in each cabinet's own config.`,
 
+    'cmd.path.usage': 'path',
+    'cmd.path.summary': 'Whether this copy is on PATH, and how many copies are',
+    'cmd.path.add.usage': 'path add [--force]',
+    'cmd.path.add.summary': "Put this exe's folder on your own PATH",
+    'cmd.path.add.notes': `Afterwards, typing dsh-box works in newly opened terminals; already open
+ones have to be reopened.
+Only your own PATH is written (HKCU\\Environment), never the machine's, and no
+administrator rights are needed.
+⭐ Only this one entry is added, and nothing else in your PATH is tidied up; a copy
+of it as it was goes into env-path in the data directory first.
+⛔ The npm install does not need this: npm puts its own shim in its global folder,
+which is already on PATH.
+⚠️ Refused when another dsh-box is already on PATH — with two of them there, which
+one the name reaches depends on the order. Pass --force to make this one win.`,
+    'cmd.path.rm.usage': 'path rm',
+    'cmd.path.rm.summary': 'Take this folder back off your PATH',
+
+    'path.windowsOnly': 'This command only means anything on Windows. Elsewhere PATH belongs to your shell config, which is not a launcher\'s to edit.',
+    'path.noExe': 'This command has to be run by the dsh-box exe itself. The npm install does not need it: npm has already put its shim in place.',
+    'path.noExeShort': 'This run did not come from the exe, so there is no folder to register.',
+    'path.hereOn': 'This copy: {dir} (on PATH)',
+    'path.hereOff': 'This copy: {dir} (not on PATH)',
+    'path.copies': 'dsh-box copies on PATH: {count}',
+    'path.dead': '{count} more PATH entries point at folders that no longer exist (not this tool\'s business, just telling you)',
+    'path.already': 'Already on PATH, nothing done: {dir}',
+    'path.notThere': 'Was not on PATH, nothing done: {dir}',
+    'path.anotherCopy': 'Another dsh-box is already on PATH: {dir}. With both there, which one the name reaches depends on the order. Pass --force if you want this one to win.',
+    'path.added': 'Added to PATH: {dir}',
+    'path.removed': 'Removed from PATH: {dir}',
+    'path.reopen': 'Open a new terminal for this to take effect; the ones already open still have the old value.',
+    'path.noPowershell': 'PowerShell would not start, so PATH cannot be read or written: {why}',
+    'path.registryRefused': 'Reading or writing PATH was refused: {why}',
+    'path.tooLong': 'Your PATH is {length} characters, which is long enough that this command will not touch it — breaking somebody\'s PATH is far worse than being one command short. Please add this folder yourself.',
+    'path.mismatch': 'Reading it back does not match what was written: {wrote} characters in, {read} out. The original is in env-path in the data directory.',
+    'path.kindChanged': 'Reading it back, the value kind changed from {was} to {now}. The original is in env-path in the data directory.',
+
     'cmd.ui.usage': 'ui [--port n]',
     'cmd.ui.summary': 'Open the config window',
     'cmd.quit.usage': 'quit [--main]',
@@ -1260,6 +1330,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'launch.ready': 'Ready: the page carries the boot manifest and the process is still up',
     'launch.portTaken': 'Port {port} was taken just now, most likely by another launch starting at the same moment. Retrying on {next}',
     'launch.needsExposeInternals': 'This Node cannot reach the internal loader, so it starts with --expose-internals. Without it dsh will not come up and plugins will not resolve',
+    'launch.noProcessProof': 'Refusing to stop process {pid}: no identity was given for it. Process ids get recycled, so without one there is no way to show it is still ours.',
     'launch.clearedModuleLinks': 'Cleared module links that could point at the wrong release; boot rebuilds them',
     'launch.open': 'Open {url}',
     'launch.realKey': 'This uses your real API key, so conversations here are billed',
@@ -1685,6 +1756,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'stop.which': 'Which sandbox? See them with sandboxes, or use --main for the everyday cabinet',
     'stop.notRunning': 'Sandbox "{name}" is not running',
     'stop.stopped': 'Stopped "{name}" (process {pid})',
+    'stop.staleRow': 'That ledger row was stale: process {pid} now belongs to something else, so it was left alone. The row has been cleared.',
     'rm.which': 'Which sandbox? See them with sandboxes',
     'rm.removed': 'Deleted "{name}" — that dsh no longer exists',
 
@@ -1698,6 +1770,7 @@ Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX
     'config.freshStart': 'The next command starts from empty',
 
     'quit.nothingRunning': 'No sandbox is running; there is nothing to stop',
+    'quit.staleRows': '{count} more rows were stale: the process ids they named now belong to something else, so nothing was touched and the rows were cleared.',
     'quit.stopped': 'Stopped {count} sandboxes: {names}',
     'quit.mainStopped': 'The everyday cabinet was stopped too (process {pid}) — its home is your everyday one, and the data is all still there',
     'quit.mainLeft': 'The everyday cabinet was started from here and is still running (to stop it too: add --main)',

@@ -2,6 +2,22 @@
 
 本工具是 dsh 沙箱管理器,全部功能都有命令行,不需要打开图形窗。
 
+## 先决定用哪条路进来
+
+下面所有例子写的是 `node bin/cli.js`,那是**源码仓**里的写法。手上是装好的那份就整段换掉:
+
+```
+<目录>\dsh-box.exe <命令>     安装版 / 便携包。同一个 exe:双击是窗口,带参数是命令行
+npx dsh-box <命令>            npm 上那份,不装
+dsh-box <命令>                npm i -g dsh-box 之后,或 exe 那份跑过 path add
+```
+
+⭐ **exe 那条路自己认数据目录**——它旁边的 `dsh-box\data`,不看工作目录。⛔ 别去手跑安装包里的 `dsh-box\boot\bin\cli.js`:那样它按**当前工作目录**找数据,于是报「一个沙箱都没有」,而窗口里明明有三个。
+
+⚠️ **其余几条路每次都要显式给 `--box <目录>`**。你每次调用的工作目录可能不同,不给就在当地建出一个空账本。**任何命令输出的第一个字段就是它实际用的目录**,拿它自查。
+
+⛔ 0.3.4 及更早的 exe 只有窗口一张脸,带参数会挂住不返回,文件名也还是 `dsh-box-shell.exe`。撞上那种版本走 `npx`。
+
 ```
 node bin/cli.js versions --json                  # 已下载哪些版本 / npm 上有哪些
 node bin/cli.js pull 0.1.0-rc.8 --json           # 下载并逐包钉版核对(原地等到完)
@@ -24,6 +40,8 @@ node bin/cli.js rm <沙箱名> --json               # 删除沙箱及其全部�
 
 node bin/cli.js config --json                    # 看设置
 node bin/cli.js config source mirror --json      # 换安装源:auto | official | mirror
+node bin/cli.js path --json                      # 这一份在不在 PATH 上(只对 exe 那条路有意义)
+node bin/cli.js path add --json                  # 把 exe 所在目录加进用户 PATH;path rm 撤销
 node bin/cli.js quit --json                      # 总退出:停下所有沙箱(不动用户日常那台)
 
 node bin/cli.js status --json                    # 此刻全景:谁在跑、装了什么、有没有人接管

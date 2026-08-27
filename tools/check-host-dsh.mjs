@@ -28,7 +28,8 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { detectHostDsh, engineRecord, resolveEngine, sameEngine } from '../src/host.js'
 import { boxLayout, sandboxPaths } from '../src/paths.js'
-import { switchesEngine } from '../src/sandbox.js'
+import { noteRunning, switchesEngine } from '../src/sandbox.js'
+import { processStartedAt } from '../src/process-identity.js'
 import { deleteVersion } from '../src/versions.js'
 
 const box = process.argv[2]
@@ -145,12 +146,12 @@ check('老沙箱没有机器记录,按「当年只有下载版」解读',
 // ── 6. The delete guard must object to the right thing ───────────────────────
 // A live process is needed for a running record to be believed; this script is
 // one, and it is never signalled — only read.
-const running = (engine) => writeFileSync(
-  join(twinBox.root, 'running.json'),
-  `${JSON.stringify({
-    pid: process.pid, port: 3099, url: 'http://127.0.0.1:3099', version: '9.9.8-broken', engine,
-  }, null, 2)}\n`,
-)
+// ⭐ 这条记录扮演的是**我们自己**起的那台,所以它必须带上产品会写的身份凭据:
+// 光有进程号不够,读的那一侧会问「这个号上的进程还是不是当初那个」。
+const running = (engine) => noteRunning(layout, 'engine-twin', {
+  pid: process.pid, pidBorn: processStartedAt(process.pid),
+  port: 3099, url: 'http://127.0.0.1:3099', version: '9.9.8-broken', engine,
+})
 
 running({ kind: 'release', version: '9.9.8-broken', dir: join(layout.versions, '9.9.8-broken') })
 let blocked = null

@@ -50,6 +50,16 @@ npx dsh-box ui        # 界面开在浏览器里，不用安装
 
 **想要双击打开的原生小窗，去 [Releases](https://github.com/33moren33/dsh-box/releases) 下安装包。** 两条路是同一个程序的两张皮——同一个本地服务、同一张页面。
 
+**⭐ 0.3.5 起，那个 exe 自己也是命令行**：双击是窗口，带参数就是命令行。
+
+```bash
+dsh-box.exe status --json     # 安装版 / 便携包，带参数即命令行
+dsh-box.exe path add          # 把它所在的目录加进你自己的 PATH
+dsh-box                       # 进了 PATH 之后，任何目录直接敲
+```
+
+⛔ **0.3.4 及更早的 exe 没有这张脸**：带参数会挂住不返回，文件名也还是 `dsh-box-shell.exe`。0.3.5 起统一叫 `dsh-box.exe`。安装版装完会自动替你敲一次 `path add`；便携包自己敲一次。**npm 全局装的那份用不着**——npm 已经把垫片放在它的全局目录里了。
+
 配置窗打开后是三步：**选一台 dsh → 选一个档案柜 → 起**。不选版本就用你自己装的那台 dsh；选了下载的版本，第一次会下（约 200–260MB），之后复用。
 
 <div align="center">
@@ -134,6 +144,7 @@ packages / packages rm / packages prune           dsh-box 替你下载的插件�
 workspaces / workspaces use <目录>                这个档案柜下次打开哪个项目文件夹
 attach / detach / memory / history                接管、交还、回看
 config / config source / config lang              设置：安装源、语言
+path / path add / path rm                         这一份在不在 PATH 上；加进去、撤下来
 status / logs <沙箱名> / ui / quit                全景、日志、配置窗、总退出
 ```
 

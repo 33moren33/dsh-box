@@ -30,6 +30,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, cabinetLedgerFile, ensureBox, removeTree } from '../src/paths.js'
 import { scanPatch } from '../src/patch-file.js'
+import { claimPath } from '../src/sandbox.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -200,7 +201,8 @@ writeFileSync(join(daily, 'profiles', 'web', 'package.json'), beforeManifest)
 mkdirSync(join(daily, 'profiles', 'web', 'node_modules', '@vendor'), { recursive: true })
 writeFileSync(join(daily, 'profiles', 'web', 'cordis.patch.yml'), original)
 const seat = join(layout.root, 'ui.json')
-writeFileSync(seat, `${JSON.stringify({ pid: process.pid, url: 'http://127.0.0.1:10140' }, null, 2)}\n`)
+// ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
+claimPath(seat, { url: 'http://127.0.0.1:10140' })
 const dropped = await new Promise((done) => {
   const child = spawn(process.execPath, [
     CLI, 'plugins', 'uninstall', '@vendor/suite', '--main', '--approved', '--box', box, '--json',
