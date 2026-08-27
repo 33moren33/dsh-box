@@ -19,12 +19,15 @@ import { t } from './messages.js'
 
 /**
  * Default location of the data directory, relative to wherever the tool
- * runs: a `data` folder inside the tool's own `dsh-box` folder. `dsh-box`
- * (hyphen) is the product's home, `data` is the user's things — the old
- * single `dsh_box` (underscore) name was one keystroke away from the product
- * name and confused everyone it met.
+ * runs: a `data` folder inside the tool's own `dsh-box-files` folder, which
+ * is the same layout the exe uses beside itself — one name for both faces.
+ *
+ * ⛔ The folder cannot be called `dsh-box`, the product's own name. Beside
+ * the exe it sits next to a file called `dsh-box`, and on any platform whose
+ * executables carry no extension a folder and a file cannot share a name;
+ * that collision broke the Linux and macOS builds of 0.3.5.
  */
-export const DEFAULT_BOX_NAME = 'dsh-box/data'
+export const DEFAULT_BOX_NAME = 'dsh-box-files/data'
 
 /**
  * Marker file that identifies a directory as ours. Its presence is the only

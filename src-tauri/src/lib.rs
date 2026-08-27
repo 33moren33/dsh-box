@@ -34,6 +34,14 @@ const UI_PORT: u16 = 10130;
 /// unwritable, and the command line face has no Tauri app to ask.
 const IDENTIFIER: &str = "com.dshbox.desktop";
 
+/// The one folder beside the exe, holding `boot` (the program) and `data`
+/// (the user's things).
+///
+/// ⛔ Must differ from `[[bin]] name` in `Cargo.toml`, and must stay equal to
+/// the resource targets in `tauri.conf.json` and to `DEFAULT_BOX_NAME` in
+/// `src/paths.js`.
+const BOX_FOLDER: &str = "dsh-box-files";
+
 /// One booted Node service.
 struct Server {
     pid: u32,
@@ -397,8 +405,9 @@ fn refused_because_open(answered: &str) -> Option<String> {
 ///
 /// Two worlds: run from the repository (development), the entry sits next to
 /// this crate and data goes wherever it always went — the repository's own
-/// `dsh-box/data`. Installed or unzipped, the layout beside the exe is one
-/// `dsh-box` folder holding `boot` (the program, replaced on upgrade) and
+/// `dsh-box-files/data`. Installed or unzipped, the layout beside the exe is
+/// one `dsh-box-files` folder holding `boot` (the program, replaced on
+/// upgrade) and
 /// `data` (the user's things, never touched) — the whole point of the
 /// portable form is that the folders you can see are the folders that hold
 /// everything. Only when the exe sits somewhere unwritable (Program Files)
@@ -422,8 +431,15 @@ fn layout(resources: Option<PathBuf>, app_data: Option<PathBuf>) -> Result<Layou
     // Beside the exe first: on Windows that is also what Tauri calls the
     // resource directory, and it is the only answer the command line face can
     // reach without a Tauri app to ask.
+    //
+    // ⛔ This folder must not be named after the binary. Cargo writes the
+    // executable straight into `target/release/`, and Tauri lands these
+    // resources in the same directory during a build — where a folder called
+    // `dsh-box` and a file called `dsh-box` are the same name. Windows was
+    // spared only because its executable carries `.exe`; Linux and macOS
+    // failed the build outright with `Is a directory`.
     let packaged =
-        |root: &Path| root.join("dsh-box").join("boot").join("bin").join("cli.js");
+        |root: &Path| root.join(BOX_FOLDER).join("boot").join("bin").join("cli.js");
     let mut looked = Vec::new();
     let mut found = None;
     for root in [exe.as_deref().and_then(Path::parent).map(Path::to_path_buf), resources]
@@ -448,7 +464,7 @@ fn layout(resources: Option<PathBuf>, app_data: Option<PathBuf>) -> Result<Layou
 
     if let Some(beside) = box_beside_exe() {
         // The service runs where the exe lives, two levels up from
-        // `dsh-box/data`, so anything resolved against the working
+        // `dsh-box-files/data`, so anything resolved against the working
         // directory stays in the visible folder.
         let cwd = beside
             .parent()
@@ -517,9 +533,10 @@ fn app_data_dir() -> Option<PathBuf> {
 }
 
 /// The data directory beside the exe, when that location can actually hold
-/// data. The layout is `dsh-box/boot` for the program and `dsh-box/data` for
-/// everything the user accumulates: replacing the program means replacing
-/// `boot`, and `data` is never touched by an upgrade or an uninstall.
+/// data. The layout is `dsh-box-files/boot` for the program and
+/// `dsh-box-files/data` for everything the user accumulates: replacing the
+/// program means replacing `boot`, and `data` is never touched by an upgrade
+/// or an uninstall.
 ///
 /// Writability is proved by writing: create the directory and put a probe
 /// file inside, because on Windows the only honest answer to "may I write
@@ -529,7 +546,7 @@ fn app_data_dir() -> Option<PathBuf> {
 fn box_beside_exe() -> Option<PathBuf> {
     let exe = plain(std::env::current_exe().ok()?);
     let dir = exe.parent()?;
-    let candidate = dir.join("dsh-box").join("data");
+    let candidate = dir.join(BOX_FOLDER).join("data");
     std::fs::create_dir_all(&candidate).ok()?;
     let probe = candidate.join(".write-probe");
     std::fs::write(&probe, b"probe").ok()?;

@@ -4,10 +4,12 @@
  * 双击仓根的 build-releases.bat 即可;也可直接 `node tools/build-releases.mjs`。
  * 产出两个文件(版本号取自 package.json):
  *   Releases/dsh-box_<版本>_x64-setup.exe     NSIS 安装包
- *   Releases/dsh-box_<版本>_x64-portable.zip  便携包(exe + dsh-box 文件夹)
+ *   Releases/dsh-box_<版本>_x64-portable.zip  便携包(exe + dsh-box-files 文件夹)
  *
- * 便携包顶层就两样:dsh-box.exe 和 dsh-box/。dsh-box/ 里 boot 是程序、
+ * 便携包顶层就两样:dsh-box.exe 和 dsh-box-files/。后者里 boot 是程序、
  * data 是家当(启动后才长出来)。覆盖解压=升级:exe 与 boot 换新,data 一字不动。
+ * ⛔ 那个文件夹不能叫 dsh-box:它和 exe 同处一层,而没有扩展名的平台上
+ * 同名的文件与文件夹不能共存——0.3.5 的 Linux 与 mac 构建就是这么红的。
  *
  * `--skip-build`:壳已经构建好,只做归位与压缩。CI 用这条——它自己跑 tauri
  * build,再借这里的布局定义出便携包,于是便携包的布局与本地打的完全一致,
@@ -45,7 +47,7 @@ if (!existsSync(setupBuilt)) fail(`构建完成但没找到安装包:${setupBuil
 mkdirSync('Releases', { recursive: true })
 copyFileSync(setupBuilt, join('Releases', `dsh-box_${version}_x64-setup.exe`))
 
-// 3. 便携包:顶层 exe + dsh-box/(内含 boot);data 由首次启动在 dsh-box/ 里长出。
+// 3. 便携包:顶层 exe + dsh-box-files/(内含 boot);data 由首次启动在里面长出。
 // ⭐ The binary is named by `[[bin]]` in Cargo.toml, not by the crate: the file
 // people double-click and the word they type in a terminal are the same word as
 // the product. Up to 0.3.4 it shipped as `dsh-box-shell.exe` in both forms —
@@ -54,7 +56,7 @@ copyFileSync(setupBuilt, join('Releases', `dsh-box_${version}_x64-setup.exe`))
 const exeBuilt = join('src-tauri', 'target', 'release', 'dsh-box.exe')
 if (!existsSync(exeBuilt)) fail(`没找到壳:${exeBuilt}`)
 const stage = join(tmpdir(), `dsh-box-portable-${version}`)
-const boot = join(stage, 'dsh-box', 'boot')
+const boot = join(stage, 'dsh-box-files', 'boot')
 // ⛔ Not `rmSync({recursive})` / `cpSync({recursive})`: the staging directory
 // sits under `tmpdir()`, which on Windows is `C:\Users\<用户名>\AppData\Local\
 // Temp`. On the machine of anyone called 张三 or Müller the copies would report

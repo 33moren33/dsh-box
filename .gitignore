@@ -3,6 +3,7 @@
 # must never reach a commit. The pattern is deliberately broad: users may
 # rename the directory, and "remember to add a line per sandbox" is not a
 # strategy that survives contact with reality.
+dsh-box-files/
 dsh-box/
 dsh_box/
 dsh_box*/

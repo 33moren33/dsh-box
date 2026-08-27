@@ -363,7 +363,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'help.common': `通用选项: --json 以 JSON 输出结果(给脚本和 Agent 用)。
   成功是一行 {"box":…,"ok":true,…},失败是一行 {"box":…,"ok":false,"code":…}。
   code 是不会变的标识,message 是给人看的、随时可能改写。
-数据默认放在 ./dsh-box/data(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。`,
+数据默认放在 ./dsh-box-files/data(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。`,
     'help.flags': '旗标',
     'help.valuePlaceholder': '值',
     'help.mutates': '会改变状态,所以会记进操作记录',
@@ -1311,7 +1311,7 @@ the thing most worth knowing next time.`,
     'help.common': `Common options: --json prints the result as JSON, for scripts and agents.
   Success is one line {"box":…,"ok":true,…}, failure is one line {"box":…,"ok":false,"code":…}.
   The code is a fixed identifier; the message is for people and may be reworded at any time.
-Data goes in ./dsh-box/data by default (change it with --box <folder> or DSH_BOX_HOME).`,
+Data goes in ./dsh-box-files/data by default (change it with --box <folder> or DSH_BOX_HOME).`,
     'help.flags': 'Flags',
     'help.valuePlaceholder': 'value',
     'help.mutates': 'Changes something, so it goes into the record',

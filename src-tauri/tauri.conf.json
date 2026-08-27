@@ -31,9 +31,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../bin": "dsh-box/boot/bin",
-      "../src": "dsh-box/boot/src",
-      "../package.json": "dsh-box/boot/package.json"
+      "../bin": "dsh-box-files/boot/bin",
+      "../src": "dsh-box-files/boot/src",
+      "../package.json": "dsh-box-files/boot/package.json"
     }
   }
 }

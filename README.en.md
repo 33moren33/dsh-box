@@ -46,7 +46,7 @@ The window caught up too: install a plugin **from npm by name**, watch the downl
 npx dsh-box ui        # the window opens in your browser, nothing to install
 ```
 
-**Mind which directory you type that in** — the data lands in `dsh-box/data` under it. Run from one folder today and another tomorrow and you get two data directories that cannot see each other; sandboxes look "gone" when they are simply elsewhere. To pin it down, see [The Data Directory](#the-data-directory).
+**Mind which directory you type that in** — the data lands in `dsh-box-files/data` under it. Run from one folder today and another tomorrow and you get two data directories that cannot see each other; sandboxes look "gone" when they are simply elsewhere. To pin it down, see [The Data Directory](#the-data-directory).
 
 **For a double-clickable native window, grab an installer from [Releases](https://github.com/33moren33/dsh-box/releases).** Both routes are the same program: the same local service, the same page.
 
@@ -164,8 +164,8 @@ The command line and the config window change together. The switch in the top ri
 
 Downloaded releases, every sandbox, plugin packages and the process logs all live in one folder called `data`. **The data travels with the program, and none of it lives in the browser** — the config window is only a view, so clearing browser data and cookies loses nothing:
 
-- Run through `npx` or from source and it is created under your current directory, at `dsh-box/data`.
-- Install the desktop build or unpack the portable one and it sits next to the exe, in `dsh-box/`. That folder holds two things: `boot` is the program, `data` is your belongings. **Unpacking over the top is the upgrade — `boot` is replaced, `data` is untouched.** Only when the exe lives somewhere unwritable (Program Files, say) does the data fall back to your user directory.
+- Run through `npx` or from source and it is created under your current directory, at `dsh-box-files/data`.
+- Install the desktop build or unpack the portable one and it sits next to the exe, in `dsh-box-files/`. That folder holds two things: `boot` is the program, `data` is your belongings. **Unpacking over the top is the upgrade — `boot` is replaced, `data` is untouched.** Only when the exe lives somewhere unwritable (Program Files, say) does the data fall back to your user directory.
 
 **If you run through `npx`, pin the location down**: either always run from the same folder, or set `DSH_BOX_HOME=<folder>` once (`--box <folder>` works for a single command) and every run finds the same data wherever you type it. Missing a sandbox? Look at the **first field** of any command's output — that is the data directory it is using.
 
