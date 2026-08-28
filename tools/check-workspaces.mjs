@@ -36,10 +36,13 @@ const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
 // ⭐ This whole file writes dsh's workspace table inside the daily cabinet, and
-// every write to that cabinet now needs a person in the window. So the seat is
-// held for the run and the commands carry `--approved` — which is exactly what
-// the window does when somebody clicks. The rule itself is asserted in
-// `check-daily-gate`; here it is only the standing condition.
+// every write to that cabinet now needs a person in the window. So the standing
+// condition is played the way the window really plays it, and it is two things,
+// neither of which is a word on the command line:
+//   ① 这个进程**坐在座位上**,于是它 spawn 出去的每个 CLI 的父进程就是那扇窗;
+//   ② 子进程带着 `DSH_BOX_APPROVAL=1` —— 服务端只在「人点了允许」那条路上设它。
+// ⛔⛔ `--approved` 已经从命令行整个删掉(CEO 2026-08-28「不留这个参数的后门」),
+//    现在敲它是 UNKNOWN_FLAG。规则本身在 `check-daily-gate` 里断言,这里只是前提。
 // ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10140' })
 
@@ -64,7 +67,15 @@ function cli(...argv) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
       windowsHide: true,
-      env: { ...process.env, DSH_HOME: daily },
+      env: {
+        ...process.env,
+        DSH_HOME: daily,
+        // ⭐ 上面那两条判据的第二条。⛔ 一并带 `DSH_BOX_NO_PANEL`:万一哪条没
+        //    被放行,当场拒绝而不是弹一扇窗、把这套验收挂住一分钟。它只会拒得
+        //    更快,不会让任何没点过头的动作跑起来。
+        DSH_BOX_APPROVAL: '1',
+        DSH_BOX_NO_PANEL: '1',
+      },
     })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
@@ -86,14 +97,14 @@ console.log('\n工作区:能指给 agent,而且不会写坏 dsh 的表\n')
 
 // 1. 一张都没有的时候,是「一个都没有」而不是出错 —— 这正是 dsh 新起一台时的
 //    真实状态(实测:它不会自己登记当前目录)。
-const empty = await cli('workspaces', '--main')
+const empty = await cli('ls', 'workspace', '--in', 'main')
 check('还没有表时报「一个都没有」而不是出错',
   empty.ok !== false && empty.projects.length === 0, empty.code ?? `${empty.projects?.length} 条`)
 
 // 2. 指一个,文件按 dsh 的 schema 长出来。⛔ 字段是照 dsh-workspace 的 zod
 //    schema 抄的,不是照别人的数据抄的 —— 头一版漏了 createdAt/updatedAt,真
 //    dsh 当场 exit 1 报 invalid-record。
-const first = await cli('workspaces', 'use', projectA, '--main', '--approved')
+const first = await cli('set', 'workspace', projectA, '--in', 'main')
 check('指得上', first.ok === true && first.added === true, first.code ?? 'ok')
 const raw = read()
 check('外层是 dsh 认的那个 unit',
@@ -106,17 +117,17 @@ check('顺序表里也有它,而且 initialized 是真',
   raw.global.initialized === true && raw.global.workspaceIds.length === 1)
 
 // 3. 再指一个,新的排在最前 —— dsh 打开的就是第一条。
-await cli('workspaces', 'use', projectB, '--main', '--approved')
-const two = await cli('workspaces', '--main')
+await cli('set', 'workspace', projectB, '--in', 'main')
+const two = await cli('ls', 'workspace', '--in', 'main')
 check('⭐ 后指的那个排在最前,也就是下次打开进的那个',
   two.projects[0].path === projectB && two.projects[0].current === true, two.projects[0]?.path)
 check('先指的那个还在,没被顶掉', two.projects.length === 2)
 
 // 4. 切回去:同一个目录不重复登记,只是提到最前。
-const back = await cli('workspaces', 'use', projectA, '--main', '--approved')
+const back = await cli('set', 'workspace', projectA, '--in', 'main')
 check('⭐ 切回已登记的那个,是提到最前而不是加一条',
   back.added === false && back.moved === true, `added=${back.added} moved=${back.moved}`)
-check('总数没变,一条都没多', (await cli('workspaces', '--main')).projects.length === 2)
+check('总数没变,一条都没多', (await cli('ls', 'workspace', '--in', 'main')).projects.length === 2)
 
 // 5. ⛔ 从不删。别人的行、别人的对话归属,一律原样留着。
 const withSessions = read()
@@ -124,7 +135,7 @@ const idA = Object.keys(withSessions.tables.workspaces)
   .find((id) => withSessions.tables.workspaces[id].path === projectA)
 withSessions.tables.workspaces[idA].sessionIds = ['session-别动我']
 writeFileSync(table, `${JSON.stringify(withSessions, null, 2)}\n`)
-await cli('workspaces', 'use', projectB, '--main', '--approved')
+await cli('set', 'workspace', projectB, '--in', 'main')
 check('⛔ 对话归属一个字没动', read().tables.workspaces[idA].sessionIds[0] === 'session-别动我')
 
 // 6. ⛔⛔ 版本号不认识就拒绝,绝不硬写。dsh 升过级、这张表换了形状时,写进旧
@@ -132,21 +143,21 @@ check('⛔ 对话归属一个字没动', read().tables.workspaces[idA].sessionId
 const future = read()
 future.unit.version = 99
 writeFileSync(table, `${JSON.stringify(future, null, 2)}\n`)
-const refusedVersion = await cli('workspaces', 'use', projectA, '--main', '--approved')
+const refusedVersion = await cli('set', 'workspace', projectA, '--in', 'main')
 check('⛔⛔ 表的版本不认识就拒绝',
   refusedVersion.ok === false && refusedVersion.code === 'PROJECT_LIST_UNKNOWN', refusedVersion.code)
 check('⛔ 拒绝时那个文件一个字节没动', read().unit.version === 99)
 
 // 7. 读不懂也一样:不覆盖看不懂的东西 —— 这是全项目同一条纪律。
 writeFileSync(table, '{ 这不是 JSON')
-const refusedBroken = await cli('workspaces', 'use', projectA, '--main', '--approved')
+const refusedBroken = await cli('set', 'workspace', projectA, '--in', 'main')
 check('⛔ 读不懂就拒绝,不拿新的盖回去',
   refusedBroken.ok === false && refusedBroken.code === 'PROJECT_LIST_UNREADABLE', refusedBroken.code)
 check('⛔ 那份坏的原样留着', readFileSync(table, 'utf8') === '{ 这不是 JSON')
 
 // 8. 指一个不存在的目录,当场说清楚。
 rmSync(table, { force: true })
-const missing = await cli('workspaces', 'use', join(root, '根本没有这个目录'), '--main', '--approved')
+const missing = await cli('set', 'workspace', join(root, '根本没有这个目录'), '--in', 'main')
 check('目录不存在就拒绝', missing.ok === false && missing.code === 'DIR_NOT_FOUND', missing.code)
 check('⛔ 而且没有因此造出一张空表', !existsSync(table))
 

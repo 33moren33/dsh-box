@@ -213,30 +213,73 @@ fn run_window() {
         .setup(|app| {
             match boot(app.handle()) {
                 Ok(server) => {
-                    let url: tauri::Url = server.url.parse().expect("a url built from a port");
-                    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                        .title("dsh 沙箱启动器")
-                        .inner_size(680.0, 780.0)
-                        .build()?;
+                    let address = server.url.clone();
+                    show_window(app, &address)?;
+                    // ⭐ The window closes when the service does, and this is
+                    // the arm that owns one: the page's own "quit" ends the
+                    // service, and without this the shell went on living with a
+                    // dead page in it — on screen, in the task list, and
+                    // (before this) still called "closed" by the page.
+                    watch_service(app.handle().clone(), &address);
                     app.manage(server);
                     Ok(())
                 }
-                // Not a failure: this data directory already has a window, and
-                // a second one is the thing being prevented. Said plainly and
-                // then out of the way — a person who double-clicked twice needs
-                // to know why nothing new appeared, not to be alarmed.
+                // ⭐⭐ Not a refusal, and no longer a dialog: this data
+                // directory already has a service, so show it. CEO 2026-08-28:
+                // 「既然都能检测到冲突,那肯定可以直接接入应用的,应用打开也是直接
+                // 给人观察窗不会冲突的」。
                 //
-                // ⛔ Whether a window is already serving is decided by the
+                // It is also what this program already believed: a second
+                // *service* on one data directory is refused, while **views are
+                // free** — any number of browser tabs may point at the one
+                // service. The shell simply never implemented the second half,
+                // so a person who double-clicked got an apology instead of the
+                // thing they asked for. ⛔ The apology was worse than useless:
+                // `blocking_show` parks the process on a modal until somebody
+                // clicks it, so every extra double-click left another dsh-box
+                // sitting in the task list.
+                //
+                // ⛔ No `app.manage(server)` here, deliberately. This window
+                // owns nothing: on exit the owner kills the service tree, and a
+                // mere viewer doing that would shut down the world of the
+                // person who actually started it — the exact harm the one
+                // service rule exists to prevent.
+                //
+                // ⛔ Whether a service is already here is still decided by the
                 // command line, never here. A copy of that rule in Rust would
                 // be a second rule, and two rules about one fact drift.
-                Err(NoWindow::AlreadyOpen(reason)) => {
-                    eprintln!("{reason}");
-                    app.dialog()
-                        .message(&reason)
-                        .kind(MessageDialogKind::Info)
-                        .title("dsh-box 已经开着了")
-                        .blocking_show();
-                    Err(reason.into())
+                Err(NoWindow::AlreadyOpen { message, url }) => {
+                    // ⚠ Attach only to something that answers. A seat can name
+                    // a process that is alive and no longer listening, and a
+                    // window opened onto that address shows a browser error
+                    // page under our own title — which reads as "the app is
+                    // broken" rather than "there is a stale seat here". The
+                    // sentence, which now names the command that clears it, is
+                    // the more useful of the two.
+                    let reachable = match url.as_deref().and_then(socket_of) {
+                        Some(socket) => {
+                            TcpStream::connect_timeout(&socket, Duration::from_millis(400)).is_ok()
+                        }
+                        None => false,
+                    };
+                    match url {
+                        Some(address) if reachable => {
+                            show_window(app, &address)?;
+                            watch_service(app.handle().clone(), &address);
+                            Ok(())
+                        }
+                        // Nothing to attach to: no address, or nothing at it.
+                        // Saying so beats opening a blank window onto nowhere.
+                        _ => {
+                            eprintln!("{message}");
+                            app.dialog()
+                                .message(&message)
+                                .kind(MessageDialogKind::Info)
+                                .title("dsh-box 已经开着了")
+                                .blocking_show();
+                            Err(message.into())
+                        }
+                    }
                 }
                 Err(NoWindow::Broken(reason)) => {
                     // A double-clicked app has no terminal; the dialog is the
@@ -266,10 +309,15 @@ fn run_window() {
         });
 }
 
-/// Why no window opened: because one is already there, or because something
-/// is wrong. Two very different sentences to say to a person.
+/// Why this run started no service of its own: because this data directory
+/// already has one, or because something is wrong. Two very different
+/// situations — and the first one is not a failure at all.
+///
+/// ⭐ `url` is what makes the difference actionable. Knowing *that* a service
+/// is already here only lets us apologise; knowing *where* it is lets us show
+/// it, which is what a person double-clicking actually wanted.
 enum NoWindow {
-    AlreadyOpen(String),
+    AlreadyOpen { message: String, url: Option<String> },
     Broken(String),
 }
 
@@ -321,6 +369,16 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
         // Inherited by every command the window runs, so a button and a typed
         // command have the same idea of which exe they belong to.
         .envs(exe_hint(box_dir.is_some()))
+        // ⛔⛔ Not inherited, which is what the default would be. By the time
+        // this runs the window face has no usable standard input: a
+        // double-click gets a console that the previous step hides and frees,
+        // and a launch from a terminal is handed to a detached copy that never
+        // had one. Either way the inherited handle names a console that is
+        // gone, and `CreateProcess` refuses the whole call — `os error 50`,
+        // reported to the user as "起不了 Node 服务", with nothing to say which
+        // of the three handles was at fault. The command line face never
+        // reaches here, which is why it kept working and hid this.
+        .stdin(Stdio::null())
         // Captured, not inherited: a double-clicked app has no terminal, so
         // whatever Node says on the way down is only readable if kept.
         .stdout(Stdio::piped())
@@ -347,8 +405,8 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
             if let Some(mut stdout) = child.stdout.take() {
                 let _ = stdout.read_to_string(&mut answered);
             }
-            if let Some(refusal) = refused_because_open(&answered) {
-                return Err(NoWindow::AlreadyOpen(refusal));
+            if let Some((message, url)) = refused_because_open(&answered) {
+                return Err(NoWindow::AlreadyOpen { message, url });
             }
             let mut said = String::new();
             if let Some(mut stderr) = child.stderr.take() {
@@ -386,13 +444,76 @@ fn boot(app: &tauri::AppHandle) -> Result<Server, NoWindow> {
 /// to. So the shell recognises the situation by the code and then says the
 /// command line's own sentence, which is how the window and the terminal end
 /// up telling a person the same thing.
-fn refused_because_open(answered: &str) -> Option<String> {
+fn refused_because_open(answered: &str) -> Option<(String, Option<String>)> {
     let line = answered.lines().rev().find(|line| !line.trim().is_empty())?;
     let parsed: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
     if parsed.get("code")?.as_str()? != "UI_ALREADY_SERVING" {
         return None;
     }
-    Some(parsed.get("message")?.as_str()?.to_string())
+    let message = parsed.get("message")?.as_str()?.to_string();
+    // ⭐ The refusal carries the address of the service already here, which is
+    // what turns "no" into "here it is". Optional on purpose: a refusal from an
+    // older service says only that one exists, and a window opened onto a
+    // guessed address would be worse than the sentence.
+    let url = parsed.get("url").and_then(|value| value.as_str()).map(str::to_string);
+    Some((message, url))
+}
+
+/// Put the window on screen, showing whatever service is at this address.
+///
+/// ⭐ One function for both arms, because from here they are the same thing: a
+/// view of a service. Which process started that service is a question about
+/// ownership, answered above by whether a `Server` is managed — not by drawing
+/// a different window.
+fn show_window(app: &tauri::App, address: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let url: tauri::Url = address.parse()?;
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+        .title("dsh 沙箱启动器")
+        .inner_size(680.0, 780.0)
+        .build()?;
+    Ok(())
+}
+
+/// Close this window once the service it is showing is gone.
+///
+/// ⛔⛔ The gap this fills was reported from the other side: press the page's
+/// own "close dsh-box" and the service really does end — but the shell went on
+/// living, its window still on screen still saying 已退出, and the process
+/// still in the task list. So the honest reading of the screen was that
+/// quitting had not worked, and the only way out was the task manager.
+///
+/// ⭐ The same ruler the boot used: a service is here while something answers
+/// on its port. Reusing it means the window cannot disagree with the check that
+/// let it open in the first place.
+///
+/// ⚠ Three misses rather than one. A single refused connect happens while the
+/// service is draining its last response, and a window that vanished on that
+/// would be closing itself for a hiccup.
+fn watch_service(app: tauri::AppHandle, address: &str) {
+    let Some(socket) = socket_of(address) else { return };
+    std::thread::spawn(move || {
+        let mut misses = 0;
+        loop {
+            std::thread::sleep(Duration::from_millis(700));
+            if TcpStream::connect_timeout(&socket, Duration::from_millis(400)).is_ok() {
+                misses = 0;
+                continue;
+            }
+            misses += 1;
+            if misses >= 3 {
+                // Exit, not "close the window": leaving the process behind with
+                // no window is the very thing being fixed.
+                app.exit(0);
+                return;
+            }
+        }
+    });
+}
+
+/// The loopback address a service url points at.
+fn socket_of(address: &str) -> Option<std::net::SocketAddr> {
+    let port: u16 = address.trim_end_matches('/').rsplit(':').next()?.parse().ok()?;
+    Some(([127, 0, 0, 1], port).into())
 }
 
 /// Find the service's entry script, the directory to run it in, and where

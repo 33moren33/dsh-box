@@ -1,5 +1,5 @@
 /**
- * Two `start --sandbox <the same name>` at once must give one dsh, not two.
+ * Two `start <the same name>` at once must give one dsh, not two.
  *
  * The sister case of `check-new-sandbox`, and the last one of its family left
  * open. `--new` was fixed by taking the name atomically; this one was not, for
@@ -30,6 +30,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { boxLayout, removeTree } from '../src/paths.js'
 import { claimStart, releaseStart } from '../src/sandbox.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -40,6 +41,11 @@ if (root === undefined) {
 }
 
 removeTree(root)
+// ⛔ Before anything spawns. This suite races real command lines, and without a
+// home of its own every one of them resolves `userDshHome()` to the real
+// `~/.dsh` of whoever is running the tests — which on this project's own machine
+// is the cabinet the whole tool exists to keep out of harm's way.
+useFakeDaily(root)
 const made = spawnSync(process.execPath, [join(HERE, 'make-test-box.mjs'), root], {
   stdio: 'ignore', windowsHide: true,
 })
@@ -155,9 +161,9 @@ check('⭐ 松手之后文件不留', !existsSync(join(layout.sandboxes, 'shared
 // 4. End to end, through the real command line and the dsh stand-in: the claim
 //    is only worth anything if `launch()` actually consults it.
 const together = await Promise.all([
-  cli('start', '--version', '9.9.9-stub', '--sandbox', 'twice', '--no-sign-in'),
-  cli('start', '--version', '9.9.9-stub', '--sandbox', 'twice', '--no-sign-in'),
-  cli('start', '--version', '9.9.9-stub', '--sandbox', 'twice', '--no-sign-in'),
+  cli('start', 'twice', '--version', '9.9.9-stub', '--no-sign-in'),
+  cli('start', 'twice', '--version', '9.9.9-stub', '--no-sign-in'),
+  cli('start', 'twice', '--version', '9.9.9-stub', '--no-sign-in'),
 ])
 const started = together.filter((answer) => answer.ok === true)
 const refused = together.filter((answer) => answer.ok === false)

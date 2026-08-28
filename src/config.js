@@ -372,45 +372,11 @@ function notAPluginMessage(path, manifest) {
     + t('plugin.monorepoPick')
 }
 
-/**
- * Add or replace a plugin in the registry, keyed by id.
- * @param {Config} config
- * @param {RegisteredPlugin} plugin
- * @returns {Config}
- */
-export function upsertPlugin(config, plugin) {
-  const plugins = config.plugins.filter((p) => p.id !== plugin.id)
-  plugins.push(plugin)
-  plugins.sort((a, b) => a.label.localeCompare(b.label))
-  return { ...config, plugins }
-}
 
-/**
- * @param {Config} config
- * @param {string} id
- * @returns {Config}
- */
-export function removePlugin(config, id) {
-  return { ...config, plugins: config.plugins.filter((p) => p.id !== id) }
-}
 
-/**
- * Registered plugins whose directory is still there.
- *
- * A plugin registered from a folder that has since been moved or deleted is
- * reported rather than dropped: silently removing a checkbox the user ticked
- * last time is how a launch quietly stops including something.
- * @param {Config} config
- * @returns {{live: RegisteredPlugin[], missing: RegisteredPlugin[]}}
- */
-export function partitionPlugins(config) {
-  const live = []
-  const missing = []
-  for (const plugin of config.plugins) {
-    (existsSync(join(plugin.path, 'package.json')) ? live : missing).push(plugin)
-  }
-  return { live, missing }
-}
+
+
+
 
 /**
  * @param {unknown} value

@@ -41,6 +41,7 @@ import {
 import { claimOn, mountPlugin, profileModules } from '../src/mounts.js'
 import { boxLayout, cabinetLedgerFile, ensureBox, removeTree } from '../src/paths.js'
 import { stageIntoCabinet, unstageFromCabinet } from '../src/staging.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const root = process.argv[2] === undefined ? undefined : resolve(process.argv[2])
@@ -53,6 +54,9 @@ void HERE
 removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const layout = boxLayout(box)
 
 let failures = 0

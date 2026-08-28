@@ -96,10 +96,10 @@
   .path { color: var(--dim); font-size: 12px; word-break: break-all; margin: 12px 0 0; }
   .quitrow { display: flex; justify-content: center; margin-top: 4px; }
   /*
-    Cream means one thing, on the two controls where that thing is true: this is
-    yours, not a copy we made. The machine already installed on this computer,
-    and the workspace you actually work in. Everything white is disposable — a
-    download, a sandbox.
+    Cream means one thing, wherever that thing is true: this is yours, not a
+    copy we made. The machine already installed on this computer, a folder you
+    pointed us at, and the workspace you actually work in. Everything white is
+    disposable — a download, a sandbox.
     It is not a state and not a selection: the native chip stays cream whether
     or not it is picked, and selection is said with the border instead, so both
     can be read at once without either borrowing the other's colour. Blue is
@@ -240,6 +240,21 @@
       <input type="text" id="customVersion" data-i18n-placeholder="ui.customVersionPh" style="flex:1;min-width:200px">
       <button class="chip" id="pullBtn" data-cmd data-mark="go:pull" data-i18n="ui.pull"></button>
     </div>
+    <!--
+      A dsh that is neither this computer's nor one we downloaded: a build made
+      from source, or the copy inside an application. Naming one is a choice,
+      not a command — nothing is fetched, nothing is written, and the same
+      folder typed twice means the same thing. So this box sends nothing; it
+      only puts another chip in the row above.
+      ⛔ No list of folders is stored anywhere. The chips are worked out from
+      what the sandboxes were last started on, the same way the plugin list
+      stopped being a registry: a name that can be derived should not also be
+      a thing to keep, delete and get out of date.
+    -->
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="enginePath" data-i18n-placeholder="ui.enginePathPh" style="flex:1;min-width:280px">
+      <button class="chip" id="usePathBtn" data-i18n="ui.usePath"></button>
+    </div>
     <div class="row" style="margin-top:10px">
       <span class="sub" style="margin:0" data-i18n="ui.sourceLabel"></span>
       <select id="source" data-cmd data-mark="go:source">
@@ -302,11 +317,11 @@
     </div>
     <!--
       The other way in: a published package, fetched by name. The command line
-      has had this road for a while (`plugins install <name> --sandbox <名>`);
-      this is the same road with the same words, aimed at the sandbox selected
-      above. First edition deliberately stops at sandboxes — installing into
-      the daily cabinet has its own approval gate, and the note below says
-      where that door is rather than pretending there is none.
+      has had this road for a while (`get plugin <包名> --to <档案柜>`); this is
+      the same road with the same words, aimed at the sandbox selected above.
+      ⚠️ 仍然只装进沙箱,而这条限制的**理由已经过期**:它当初是因为日常柜那道闸门
+      只能靠页面自己拼一个 --approved,而现在闸门有了真弹窗,页面走同一条路即可。
+      留着不动是因为它是产品行为不是改名(等 CEO 裁决)。
     -->
     <div class="row" style="margin-top:10px">
       <input type="text" id="npmName" data-cmd data-mark="go:npmName" data-i18n-placeholder="ui.npmNamePh" style="flex:1;min-width:280px">
@@ -399,19 +414,26 @@
 </dialog>
 
 <!--
-  Shown when getting rid of a plugin would reach into the daily workspace. The
-  person named a row in a list; the consequence lands somewhere they did not
-  name, and that gap is what this asks about. Same skeleton as the quit dialog —
-  what will happen, in short sentences, then the two buttons.
+  ⭐⭐ 闸门的唯一出口(2026-08-28 改形态)。
+
+  从前:页面自己弹个框,人点了就在 argv 里加一个 `--approved`。那句「同意」是页面
+  写的,而任何能 POST 到 /api/command 的东西都是这扇窗的子进程 —— 于是「有人点过头」
+  退化成一句打得出来的话。现在 `--approved` 已经从命令行里删掉了。
+
+  改成:命令行撞上闸门就在磁盘上写一条**待批请求**并等着,这扇窗把它画出来,人点
+  「允许」之后由**服务端自己**去跑那条 argv。谁在等这个答案不重要 —— 另一个终端里
+  的命令行、agent、还是这个页面自己按下的按钮,都走这一条路。
+
+  ⛔ 这两个按钮不带 data-cmd:agent 开车时别的控件都置灰,而它恰恰是 agent 撞上闸门
+  才出现的东西,跟着灰掉等于把闸门焊死成「永远没人点」。服务端也是这么分的
+  (/api/approve 不经过 heldAgainst)。
 -->
-<dialog id="dropDialog">
-  <h3 data-i18n="ui.notice"></h3>
-  <div id="dropWhat"></div>
-  <label class="check" style="margin-top:8px"><input type="checkbox" id="dropDontAsk">
-    <span><b data-i18n="ui.dontAskAgain"></b><i data-i18n="ui.dropDontAskNote"></i></span></label>
+<dialog id="approveDialog">
+  <h3 id="approveTitle"></h3>
+  <div id="approveWhat"></div>
   <div class="row">
-    <button class="chip" id="dropCancel" data-i18n="ui.cancel"></button>
-    <button class="chip danger" id="dropConfirm" data-i18n="ui.dropConfirm"></button>
+    <button class="chip" id="approveDeny"></button>
+    <button class="chip danger" id="approveAllow"></button>
   </div>
 </dialog>
 
@@ -425,12 +447,11 @@
   <h3 data-i18n="ui.notice"></h3>
   <div id="quitWhat"></div>
   <!--
-    The daily workspace is a choice rather than a rule: it is the user's own
-    dsh, and quitting a sandbox manager does not necessarily mean closing the
-    thing they work in. Unticked by default for the same reason.
+    ⛔ 「连日常档案柜一起停」那个勾没了(刀 2)。不是不给选,是这个选择换了个地方:
+    `stop --all` 字面就是全部,沙箱照停,轮到日常柜那一台会撞闸门 —— 于是「停不停它」
+    由上面那个闸门弹窗回答,而那个回答是真点击。留着勾就成了第二个说法,而它说了
+    不算。
   -->
-  <label class="check" id="quitMainWrap" hidden><input type="checkbox" id="quitMain">
-    <span><b data-i18n="ui.quitMainToo"></b><i id="quitMainNote"></i></span></label>
   <label class="check" style="margin-top:8px"><input type="checkbox" id="quitDontAsk">
     <span><b data-i18n="ui.dontAskAgain"></b><i data-i18n="ui.quitDontAskNote"></i></span></label>
   <div class="row">
@@ -471,13 +492,29 @@ function applyI18n() {
 applyI18n()
 
 let state = null
+
+/**
+ * 日常档案柜的名字。
+ *
+ * ⛔ 刀 2 之后「哪个柜子」是一个**值**,不再是 --main / --sandbox 那根二选一的轴,
+ * 所以日常柜也得有个名字。它必须和命令行认的那个逐字相同(src/paths.js 的
+ * DAILY_CABINET):对不上不会报错,只会安静地把每一条命令都打到一个不存在的沙箱上,
+ * 而页面上看着一切正常。check-page-marks 拿真值来对它,就是为了不让这件事只靠记性。
+ */
+const DAILY = 'main'
+
+/** 当前选中的档案柜,写成命令行认的那个值。`workspace === null` 就是日常柜。 */
+function chosenCabinet() {
+  return workspace === null ? DAILY : workspace
+}
+
 // Ends whatever is downloading, whoever started it — an agent's install is
 // stopped from here exactly as a person's is, because both are the same claim
 // on the same tree.
 $('npmCancelBtn').onclick = async () => {
   $('npmCancelBtn').disabled = true
   try {
-    const result = await run(['packages', 'cancel'])
+    const result = await run(['stop', '--download'])
     finalDownload = result.cancelled === null
       ? ''
       : `<div class="ok">${t('ui.npmCancelled', { name: escape(String(result.cancelled)) })}</div>`
@@ -514,7 +551,7 @@ let version = ''
 /**
  * Which workspace to open: `null` is the user's own `~/.dsh`, a string is a
  * sandbox by name. A name not among the existing sandboxes is one that will be
- * created by the launch — the same thing `--sandbox` has always done.
+ * created by the launch — the same thing naming one has always done.
  */
 let workspace = undefined
 /**
@@ -683,7 +720,7 @@ async function refresh() {
   for (const id of [...picked]) if (!known.has(id)) picked.delete(id)
   $('importSignIn').checked = state.last.importSignIn !== false
   $('boxPath').textContent = t('ui.boxPath', { box: state.box })
-  drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton(); drawDownload()
+  drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton(); drawDownload(); drawApprovals()
   // Last, because the frames are drawn onto the controls the lines above just
   // rebuilt.
   drawAgent()
@@ -725,12 +762,49 @@ function drawRunning() {
     const halt = document.createElement('button')
     halt.className = 'mini'; halt.dataset.cmd = ''; halt.textContent = t('ui.stop')
     halt.onclick = async () => {
-      await run(r.isMain ? ['stop', '--main'] : ['stop', r.sandbox])
+      // 停日常柜那一台要人点头,而点头的地方就是这扇窗:命令行会写一条待批请求,
+      // 上面的弹窗把它画出来。这里不必分两条路,argv 只是柜子的名字不同。
+      await run(['stop', r.isMain ? DAILY : r.sandbox])
       await refresh()
     }
     row.append(halt)
     host.append(row)
   }
+}
+
+/**
+ * The folders this box has been pointed at, worked out rather than stored.
+ *
+ * ⭐ Every sandbox already records which installation last booted it, so the
+ * list of named folders is a consequence of what has been run — not a second
+ * thing to keep in step with it. Nothing is registered, so nothing can go
+ * stale, and there is no list to delete from.
+ * ⚠️ The one being chosen right now is included even though no sandbox has used
+ * it yet: otherwise pasting a folder would select a chip that is not there.
+ */
+function namedEngines() {
+  const seen = new Map()
+  // ⛔ Ordered by when each was last used, and by nothing else. Selecting is
+  // not using: an order that also depended on what is currently picked made a
+  // chip jump to the front of the row the moment it was clicked — the control
+  // moved out from under the pointer, and the one now under the pointer was a
+  // different machine.
+  const used = (state.sandboxes ?? [])
+    .filter((box) => box.lastEngine !== null && box.lastEngine !== undefined
+      && (box.lastEngine.kind === 'tree' || box.lastEngine.kind === 'app'))
+    .sort((a, b) => String(b.lastUsed ?? '').localeCompare(String(a.lastUsed ?? '')))
+  for (const box of used) {
+    if (!seen.has(box.lastEngine.dir)) {
+      seen.set(box.lastEngine.dir, { dir: box.lastEngine.dir, version: box.lastEngine.version ?? null })
+    }
+  }
+  // ⚠️ Appended, never inserted: one that has just been pasted has never been
+  // used, so it belongs after everything that has. It moves into the ordering
+  // above the first time it actually starts something.
+  if (typeof version === 'string' && /[\\/]/.test(version) && !seen.has(version)) {
+    seen.set(version, { dir: version, version: null })
+  }
+  return [...seen.values()]
 }
 
 function drawVersions() {
@@ -770,7 +844,7 @@ function drawVersions() {
         })) return
         try {
           await watchLog($('pullOut'), ['logs', '--version', v], t('ui.deletingHead', { version: escape(v) }),
-            run(['drop', v]))
+            run(['rm', 'machine', v]))
           if (version === v) version = ''
           $('pullOut').innerHTML = `<div class="ok">${t('ui.deletedMsg', { version: escape(v) })}</div>`
           await refresh()
@@ -798,6 +872,53 @@ function drawVersions() {
     $('versions').append(mine)
   }
   $('machineHint').textContent = t(host.found ? 'ui.machineHintHost' : 'ui.machineHintNoHost')
+  // Folders somebody named, in the same row because they are the same axis.
+  // Cream for the same reason the machine above is cream: this is theirs, not
+  // a copy we made.
+  for (const named of namedEngines()) {
+    const button = document.createElement('button')
+    button.className = 'chip native'
+    button.setAttribute('aria-pressed', String(named.dir === version))
+    const where = named.dir.split(/[\\/]/).filter(Boolean).pop() ?? named.dir
+    const what = named.version === null || named.version === undefined
+      ? t('ui.pathChipUnstarted')
+      : escape(named.version)
+    button.innerHTML = `${escape(where)}<small>${what}</small>`
+    button.title = named.dir
+    // ⭐ The same key the command line emits: a folder rides `--version`, so a
+    // launch on one lights this chip with no extra wiring anywhere.
+    button.dataset.mark = `machine:${named.dir}`
+    button.onclick = () => { version = named.dir; drawVersions() }
+    // The same x as on a download, and deliberately: one rule, learned once —
+    // "take it out of here", and what happens depends on whose it is.
+    // The question has to say so out loud, though. On a download this same
+    // symbol deletes a quarter of a gigabyte; here it deletes nothing of
+    // theirs, and whoever learned the first meaning first will assume it does.
+    button.style.paddingRight = '26px'
+    const forgetX = document.createElement('span')
+    forgetX.className = 'x'
+    forgetX.textContent = '×'
+    forgetX.title = t('ui.forgetTitle')
+    forgetX.dataset.cmd = ''
+    forgetX.onclick = async (event) => {
+      event.stopPropagation()
+      if (!await ask({
+        title: t('ui.forgetAsk', { where }),
+        body: `<p>${t('ui.forgetBody', { path: escape(named.dir) })}</p>`,
+        ok: t('ui.forget'),
+      })) return
+      try {
+        await run(['rm', 'machine', named.dir])
+        if (version === named.dir) version = ''
+        $('pullOut').innerHTML = `<div class="ok">${t('ui.forgotMsg', { path: escape(named.dir) })}</div>`
+        await refresh()
+      } catch (error) {
+        $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+      }
+    }
+    button.append(forgetX)
+    $('versions').append(button)
+  }
   for (const v of offered) $('versions').append(chip(v))
   const older = (state.older ?? []).filter((v) => !have.has(v))
   $('olderWrap').hidden = older.length === 0
@@ -887,8 +1008,16 @@ function drawPlugins() {
   }
 
   // The registry: what this tool knows about and this workspace does not have.
+  //
+  // ⛔ 每一行原来右边还挂着一个「不再记 / 卸载并删除」,它发的是 `plugins rm` ——
+  // **刀 1(44daa49)把登记表这个对象整个删掉了**,那条命令一起没了,新形状里没有
+  // 替代品:`rm plugin <id> --from <柜>` 只管一个柜子,而这个按钮的意思是「从所有
+  // 柜子弄走」。要不要给 `--everywhere` 是 check-command-map.mjs 里 plugins.rm 那格
+  // 记着的**未决问题**,不是这里能顺手发明的,所以按钮删掉。
+  // ⭐ 从一个柜子里拿掉插件这件事页面并没有丢:取消勾选那一行,按启动 —— 走的是
+  // `start --unplug`。
   for (const plugin of state.plugins.filter((entry) => !already.has(entry.package))) {
-    const label = row({
+    row({
       title: plugin.version == null ? plugin.label : `${plugin.label} ${plugin.version}`,
       note: plugin.path,
       tick: 'add',
@@ -901,20 +1030,6 @@ function drawPlugins() {
         drawPlugins()
       },
     })
-    // ⭐ Same command behind both wordings; what differs is whose files they
-    // are, and therefore what will be left afterwards. Saying "forget" over a
-    // package we downloaded would be the old lie in a new place: the row goes,
-    // and something stays on disk that nothing can now remove.
-    const forget = document.createElement('button')
-    forget.className = 'mini'
-    forget.dataset.cmd = ''
-    forget.textContent = t(plugin.downloaded ? 'ui.uninstallDelete' : 'ui.forget')
-    forget.title = t(plugin.downloaded ? 'ui.uninstallDeleteTitle' : 'ui.forgetTitle')
-    forget.onclick = async (event) => {
-      event.preventDefault()
-      await removePlugin(plugin)
-    }
-    label.append(forget)
   }
 
   for (const plugin of state.missingPlugins) {
@@ -1049,7 +1164,9 @@ function drawWorkspaceDetail() {
       ok: t('ui.adoptOk'),
     })) return
     try {
-      const result = await run(['adopt', box.name])
+      // ⭐ 方向从此是两个值,不是一个功能:这个按钮固定「这台沙箱 → 日常档案柜」,
+      // 反向与任意两柜之间同一条命令换个旗标就成(check-page-marks 的 cliOnly 记着)。
+      const result = await run(['get', 'chat', '--from', box.name, '--to', DAILY])
       $('adoptOut').innerHTML = `<div class="ok">${t('ui.adoptDone', { adopted: result.adopted, skipped: result.skipped })}</div>`
     } catch (error) {
       $('adoptOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
@@ -1067,7 +1184,7 @@ function drawWorkspaceDetail() {
       ok: t('ui.delete'), danger: true,
     })) return
     try {
-      await run(['rm', box.name])
+      await run(['rm', 'sandbox', box.name])
       // Back to "no choice made", so the next refresh picks another sandbox.
       // Falling to the daily workspace here would quietly select the one option
       // that must never be selected by accident.
@@ -1090,8 +1207,9 @@ function drawWorkspaceDetail() {
  * One button, whose words follow the workspace that is selected.
  *
  * Opening the daily workspace is not a different feature — it is this same
- * launch with a different home, which is exactly what the command line says
- * (`--main` instead of `--sandbox`). Two buttons implied two mechanisms.
+ * launch with a different home, which is exactly what the command line says:
+ * one positional, and the daily cabinet's value is its name. Two buttons
+ * implied two mechanisms.
  */
 function drawStartButton() {
   const button = $('startBtn')
@@ -1124,9 +1242,18 @@ function markKeys(action) {
   // The empty machine key is not "nothing chosen": it is the computer's own
   // dsh, which is a real chip on the page and the answer that needs no flag.
   const machine = `machine:${args.version ?? ''}`
-  const workspace = args.main === true ? 'cabinet:main'
-    : typeof args.sandbox === 'string' ? `cabinet:${args.sandbox}` : null
-  const named = (value) => (value === null || value === undefined ? 'cabinet:main' : `cabinet:${value}`)
+  // ⛔ 读法跟着刀 2 走:柜子是一个**值**,可能记在 sandbox / in / to / from 任意一
+  // 格里(取决于这条记录是命令刚开始时写下的,还是跑完之后重写的),而日常柜的值
+  // 就是它的名字。和 src/commands.js 的 cabinetOf 同一套读法,少读一格的后果是
+  // 这一步的框整个落空 —— 而落空是安静的。
+  const cabinetOf = (from) => {
+    if (from.main === true) return DAILY
+    const named = from.sandbox ?? from.in ?? from.to ?? from.from
+    return named === null || named === undefined ? null : String(named)
+  }
+  const here = cabinetOf(args)
+  const workspace = here === null ? null : `cabinet:${here}`
+  const named = (value) => (value === null || value === undefined ? `cabinet:${DAILY}` : `cabinet:${value}`)
   switch (action.command) {
     case 'start':
       return [
@@ -1137,54 +1264,60 @@ function markKeys(action) {
         // Sign-in is a choice of the launch like any other, and the checkbox is
         // where a person makes it — but only for a sandbox. The daily cabinet's
         // sign-in is the user's own; nothing is imported and nothing is chosen.
-        ...(args.main === true ? [] : ['go:signIn']),
+        ...(here === DAILY ? [] : ['go:signIn']),
         'go:start',
       ]
-    case 'pull':
+    case 'get.machine':
       return [machine, 'go:pull']
-    case 'drop':
+    case 'rm.machine':
       // Only the chip. The × that deletes a release lives inside it, so the
       // frame already covers the control; lighting the download button as well
       // would point at the opposite action.
       return [machine]
-    case 'plugins.add':
-      return ['go:pluginDir', 'go:addPlugin']
-    case 'plugins.rm':
-      return [`plugin:${args.id ?? args.target}`]
-    case 'plugins.install':
+    case 'get.plugin':
+      // ⭐ Two homes now: the npm box for a package name, and the folder box
+      // for a directory — both end in the same command, so both light up.
       // The npm box and its button are this command's home on the page. Like
-      // `adopt`, they light for every install — including one the window could
-      // not have made (a registered id, a local folder, `--main`): the frame
-      // says where the command lives, not that a person could have clicked it.
-      return [`plugin:${args.id ?? args.target}`, workspace, 'go:npmName', 'go:npmInstall']
-    case 'packages.cancel':
-      // Its own control, and only that: cancelling says nothing about which
-      // cabinet or which plugin — it ends the one download the tree is holding.
-      return ['go:npmCancel']
-    case 'plugins.uninstall':
+      // `get chat`, they light for every install — including one the window
+      // could not have made (a local folder, `--to main`): the frame says where
+      // the command lives, not that a person could have clicked it.
+      return [`plugin:${args.id ?? args.target}`, workspace, 'go:npmName', 'go:npmInstall', 'go:pluginDir', 'go:addPlugin']
+    case 'rm.plugin':
       return [`plugin:${args.id ?? args.target}`, workspace]
-    case 'signin': case 'signout':
+    // ⭐ 开关一行 / 撤销这一柜的插件配置。页面上没有做这件事的控件(见 DECISIONS),
+    // 但它落在**哪一行、哪一个柜子**上是画得出来的 —— 框说的是「这一步发生在这里」,
+    // 从来不是「这里有个按钮」。
+    case 'set.plugin':
+      return args.undo === true ? [workspace] : [`plugin:${args.id ?? args.target}`, workspace]
+    case 'get.signin': case 'rm.signin':
       // One control for both directions, and the cabinet it belongs to. The
       // agent may have used the standalone verb while the window only offers it
       // through the tick — same place on the page either way.
-      return [args.main === true ? 'cabinet:main' : named(args.sandbox), 'go:signIn']
-    case 'plugins.restore':
-      return [workspace]
-    case 'config.source':
+      return [named(here), 'go:signIn']
+    case 'set.source':
       return ['go:source']
+    // ⭐⭐ 四种「停」收进一条命令,于是这里也是一条:停哪一样东西,就点亮做那件事的
+    // 那个控件。⛔ 不是二选一 —— `stop --all` 停的是一串沙箱,那一串每台都该亮,
+    // 而它同时也是退出按钮做的事。
     case 'stop':
-      return [args.main === true ? 'run:main' : `run:${args.sandbox}`]
-    case 'rm':
+      return [
+        ...(args.download === true ? ['go:npmCancel'] : []),
+        ...(args.all === true ? ['go:quit'] : []),
+        ...(args.stopped ?? []).map((name) => `run:${name}`),
+        // 只有 --all 那一路要单独说日常柜:它没有位置参数,停没停成只写在 main 上。
+        ...(args.all === true && args.main === true ? [`run:${DAILY}`] : []),
+        ...(args.all !== true && args.window !== true && args.download !== true && here !== null
+          ? [`run:${here}`] : []),
+      ]
+    case 'rm.sandbox':
       return [workspace]
-    case 'adopt':
+    case 'get.chat':
       // Both cabinets, and the button. ⚠️ The button is one fixed direction —
       // this sandbox into the daily cabinet — while the command runs between
       // any two. So an agent copying the other way still lights the two
       // cabinets, and lights a button that could not have done it: the frame
       // says where it happened, not that a person could have pressed it.
       return [named(args.fromSandbox), named(args.toSandbox), 'go:adopt']
-    case 'quit':
-      return ['go:quit']
     default:
       // No option of its own: the pale frame and the badge are its whole
       // appearance, which is the original design and not a gap.
@@ -1402,10 +1535,13 @@ function drawGhosts(session, seqs) {
   const gone = new Map()
   for (const action of session.actions) {
     const args = action.args ?? {}
-    if (action.command === 'rm' && typeof args.sandbox === 'string') {
+    if (action.command === 'rm.sandbox' && typeof args.sandbox === 'string') {
       gone.set(`cabinet:${args.sandbox}`, { where: 'workspaces', label: args.sandbox })
     }
-    if (action.command === 'plugins.rm') {
+    // ⭐ `rm plugin` 只从一个柜子里拿走,所以它常常**不**该留下墓碑 —— 那一行在别的
+    // 柜子里还在,页面上也还在。下面 `onPage.has(key)` 那一关正好把这种情况挡掉:
+    // 只有页面上真的再也找不到它时,框才需要一个落脚点。
+    if (action.command === 'rm.plugin') {
       const id = args.id ?? args.target
       if (typeof id === 'string') gone.set(`plugin:${id}`, { where: 'plugins', label: id })
     }
@@ -1451,7 +1587,7 @@ function endedWords(reason) {
 $('stopAgentBtn').onclick = async () => {
   $('stopAgentBtn').disabled = true
   try {
-    await run(['detach', '--forced'])
+    await run(['agent', 'detach', '--forced'])
     await refresh()
   } catch (error) {
     // ⛔ Never just "could not take it back". This button is the person's one
@@ -1540,6 +1676,27 @@ async function watchLog(host, argv, headline, work) {
   }
 }
 
+/**
+ * Take a folder as the machine for the next launch.
+ *
+ * ⛔ Sends nothing. Choosing which dsh to run is not an action on anything —
+ * it becomes one only when `start` is pressed, and then it travels as
+ * `--version`, exactly as a release number does.
+ */
+$('usePathBtn').onclick = () => {
+  // "Copy as path" wraps the value in quotes, and this box is where a pasted
+  // path lands; the same trimming happens again on the other side.
+  const typed = $('enginePath').value.trim().replace(/^"|"$/g, '')
+  if (typed === '') {
+    $('pullOut').innerHTML = `<div class="err">${t('ui.pathNeeded')}</div>`
+    return
+  }
+  version = typed
+  $('enginePath').value = ''
+  $('pullOut').innerHTML = ''
+  drawVersions()
+}
+
 $('pullBtn').onclick = async () => {
   const wanted = $('customVersion').value.trim() || version
   // Empty means the machine already installed here is selected, which is not
@@ -1549,10 +1706,17 @@ $('pullBtn').onclick = async () => {
     $('pullOut').innerHTML = `<div class="err">${t('ui.pullNeedsVersion')}</div>`
     return
   }
+  // ⛔ `--version` carries two meanings now, and this button only understands
+  // one of them. A folder is already on this computer; there is nothing to
+  // fetch, and asking the registry for it would fail with a sentence about npm.
+  if (/[\\/]/.test(wanted)) {
+    $('pullOut').innerHTML = `<div class="err">${t('ui.pullNotAPath')}</div>`
+    return
+  }
   $('pullBtn').disabled = true
   try {
     const result = await watchLog($('pullOut'), ['logs', '--version', wanted],
-      t('ui.pullingHead', { version: escape(wanted) }), run(['pull', wanted]))
+      t('ui.pullingHead', { version: escape(wanted) }), run(['get', 'machine', wanted]))
     version = result.version
     $('pullOut').innerHTML = `<div class="ok">${t('ui.pullDone', { version: escape(result.version), packages: result.packages })}</div>`
     await refresh()
@@ -1565,22 +1729,34 @@ $('pullBtn').onclick = async () => {
 
 $('source').onchange = async () => {
   try {
-    await run(['config', 'source', $('source').value])
+    await run(['set', 'source', $('source').value])
   } catch (error) {
     $('pullOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
   }
 }
 
+// ⭐⭐ This button used to run `plugins add`, which put the folder in a registry
+// and into no cabinet at all — so pressing it appeared to do something while the
+// plugin was still nowhere, and a second, differently-named step was needed to
+// make it real. That registry is gone, and with it the halfway state: **the
+// button now installs, into the cabinet selected above.**
+//
+// ⭐⭐ 「只装沙箱」那条限制 2026-08-28 拿掉了。它当初的理由是:日常柜那道闸门只认
+// 一个 --approved,而那个旗标只能由页面自己塞进 argv —— 于是这个按钮要么替人点头,
+// 要么什么都不做,选了后者。⭐ 闸门换形态之后这个两难消失了:按下去就是发一条普通
+// 命令,它撞上闸门、写一条待批请求,**这扇窗自己把请求画出来等人点**。所以现在装进
+// 日常柜和装进沙箱走的是同一条路,区别只在中间多一次真点击。
 $('addPluginBtn').onclick = async () => {
   const dir = $('pluginDir').value.trim()
   if (dir === '') return
+  const out = $('plugins')
   try {
-    const { plugin } = await run(['plugins', 'add', dir])
+    const { plugin } = await run(['get', 'plugin', dir, '--to', chosenCabinet()])
     picked.add(plugin.id)
     $('pluginDir').value = ''
     await refresh()
   } catch (error) {
-    $('plugins').insertAdjacentHTML('beforeend', `<div class="err">${escape(error.message)}</div>`)
+    out.insertAdjacentHTML('beforeend', `<div class="err">${escape(error.message)}</div>`)
   }
 }
 
@@ -1591,8 +1767,8 @@ $('addPluginBtn').onclick = async () => {
  */
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 
-// Download by name, into the sandbox selected above — the same `plugins
-// install` an agent would run, through the same channel. The busy state is the
+// Download by name, into the sandbox selected above — the same `get plugin`
+// an agent would run, through the same channel. The busy state is the
 // pull button's, exactly: the command journals its progress into a file named
 // after the package (heartbeat included, because npm resolves a big graph in
 // minutes of silence), and this tails it with `logs --package` while the
@@ -1605,14 +1781,7 @@ $('npmInstallBtn').onclick = async () => {
     out.innerHTML = `<div class="err">${t('ui.npmBadName', { name: escape(name) })}</div>`
     return
   }
-  // First edition: sandboxes only. The daily cabinet's install has an approval
-  // gate of its own, and this button quoting `--approved` at it would be the
-  // window handing itself the answer. Said in place instead of greyed out,
-  // because a refusal that explains beats a control that ignores.
-  if (workspace === null) {
-    out.innerHTML = `<div class="err">${t('ui.npmMainRefused')}</div>`
-    return
-  }
+  // ⭐ 同 addPluginBtn:「只装沙箱」那条限制已经拿掉,理由见那里。
   $('npmInstallBtn').disabled = true
   // ⭐ No `watchLog` here, unlike the pull button beside it. The progress of a
   // download is drawn by `drawDownload` off the ordinary snapshot, so it appears
@@ -1622,7 +1791,7 @@ $('npmInstallBtn').onclick = async () => {
   // command-line process every 800ms for the length of the install.
   finalDownload = null
   try {
-    const result = await run(['plugins', 'install', name, '--sandbox', workspace])
+    const result = await run(['get', 'plugin', name, '--to', chosenCabinet()])
     $('npmName').value = ''
     const brought = (result.brought ?? []).length
     finalDownload = `<div class="ok">${t('ui.npmInstalled', { name: escape(name), cabinet: escape(result.cabinet ?? workspace) })}`
@@ -1662,8 +1831,118 @@ function drawDownload() {
   log.scrollTop = log.scrollHeight
 }
 
+/** 正在问的那条待批请求的 id,null ＝ 没有在问。 */
+let asking = null
+/**
+ * 人已经答了,那个回答还在路上。
+ *
+ * ⛔ 两边都要拦,不只是「允许」那边:轮询每两秒读一次盘,而**刚刚被拒绝的那条请求在
+ * 服务端写下决定之前仍然是待批的** —— 少了这一格,人点完拒绝,同一个弹窗两秒后原样
+ * 弹回来。「允许」那边更长:装一个插件要几分钟。
+ */
+let answering = false
+
+/**
+ * 有人在等一个「行不行」。
+ *
+ * ⭐⭐ 请求是命令行写在磁盘上的,不是页面猜出来的:谁在等都一样 —— 另一个终端里的
+ * 命令行、一个 agent、还是这个页面自己按下的那个按钮。所以这里只做一件事:**有待批
+ * 的就画出来**,不为任何一条路开小灶。
+ *
+ * ⛔ `what` 原样给人看。它是那条**真要跑的 argv** 拼出来的一行,转述一遍就等于让人
+ * 对着我们的说法点头,而不是对着将要发生的事点头。
+ */
+function drawApprovals() {
+  const dialog = $('approveDialog')
+  const pending = state?.approvals ?? []
+  // 正在跑那条命令,画面归它。装一个插件要几分钟,轮询每两秒把弹窗重画一次,人就会
+  // 看见自己按下去的按钮被抽走。
+  if (answering) return
+  if (asking !== null) {
+    if (pending.some((one) => one.id === asking)) return
+    // 那条请求不在了:过了那一分钟,或者已经有人在别处答过。留着一个答不出的弹窗比
+    // 没有弹窗更糟 —— 点下去只会拿到 NO_SUCH_REQUEST。
+    asking = null
+    dialog.close()
+  }
+  const next = pending[0]
+  if (next === undefined) return
+  asking = next.id
+  $('approveTitle').textContent = t('ui.approvalTitle')
+  // ⛔ 两段,而且顺序是定的:先说**它会对你做什么**,再原样给出那条命令。只给命令
+  //   等于让人对着一个字符串点头 —— 会动哪几处、备份在哪、哪一步没有回头路,全在
+  //   拒绝那句话里,而那句话是闸门自己写的,不是页面转述的。
+  $('approveWhat').innerHTML = `${next.why === '' ? '' : `<p class="warn" style="margin-top:0">${escape(next.why)}</p>`}<pre style="margin:0">${escape(next.what)}</pre>`
+  $('approveAllow').hidden = false
+  $('approveAllow').disabled = false
+  $('approveDeny').disabled = false
+  $('approveAllow').textContent = t('ui.approvalAllow')
+  $('approveDeny').textContent = t('ui.approvalDeny')
+  // ⛔ 对一个已经开着的 <dialog> 调 showModal() 会当场抛错,而这里抛出去的错落在轮询
+  // 里 —— 被吞掉,于是画面停在上一条请求上再也不动。开着就只换内容。
+  if (!dialog.open) dialog.showModal()
+}
+
+/**
+ * 把人的回答送出去。
+ *
+ * ⭐⭐ 「允许」之后跑那条 argv 的是**服务端自己**,不是这里发一条命令 —— 只有面板起的
+ * 子进程才算数,这正是旧 `--approved` 缺的那一环。所以这条请求可能要跑很久,而这期间
+ * 弹窗不关:关掉等于让人对着一个没有反馈的页面猜它有没有在动。
+ * @param {'allow' | 'deny'} decision
+ */
+async function answerApproval(decision) {
+  const dialog = $('approveDialog')
+  const id = asking
+  // 同一下点两次,或者上一条还在跑:第二下什么也不该发生。
+  if (answering) return
+  // 上一条已经答完、弹窗只是还开着(答完之后报了错的那种):这一下只是把画面关掉。
+  if (id === null) return void dialog.close()
+  answering = true
+  const label = $('approveAllow').textContent
+  if (decision === 'deny') {
+    // 拒绝没有等待可言:画面立刻关掉,而 `answering` 还压着,直到服务端把这个决定
+    // 真的写下来 —— 否则轮询会把这条还没落盘的请求当成待批的再弹一次。
+    dialog.close()
+  } else {
+    $('approveAllow').disabled = true
+    $('approveDeny').disabled = true
+    // 反馈用画面不用字:转着就是「在跑」,不需要再写一句话去说它。
+    $('approveAllow').innerHTML = '<span class="spin"></span>'
+  }
+  try {
+    const answered = await api('/api/approve', { id, decision })
+    const ran = answered.result ?? {}
+    if (answered.ok === false || ran.ok === false) {
+      throw new Error(ran.message ?? answered.message ?? t('ui.unknown'))
+    }
+    dialog.close()
+  } catch (error) {
+    // 拒绝这条路上报错就只是关着窗:那条请求本来就不该跑,而人已经看不见这个弹窗了。
+    if (decision === 'deny') return
+    // 就在人点下去的地方说,而且不关窗:那条请求已经被答过了,重来一次是另一条命令
+    // 的事,所以「允许」这个按钮从此不该再出现。
+    $('approveWhat').insertAdjacentHTML('beforeend', `<div class="err">${escape(error.message)}</div>`)
+    $('approveAllow').hidden = true
+  } finally {
+    asking = null
+    answering = false
+    $('approveAllow').textContent = label
+    $('approveAllow').disabled = false
+    $('approveDeny').disabled = false
+    // 允许之后往往是窗口自己要关掉(stop --all),读不到状态是正常收场,不是错误。
+    await refresh().catch(() => {})
+  }
+}
+
+$('approveAllow').onclick = () => answerApproval('allow')
+$('approveDeny').onclick = () => answerApproval('deny')
+// Esc 关掉弹窗,和这个页面别处一样算「不」。悬着不答只会让那条命令干等满一分钟,
+// 而按 Esc 的人以为自己已经拒绝了。
+$('approveDialog').addEventListener('cancel', () => answerApproval('deny'))
+
 // Naming a new workspace selects it; it comes into existence when it is
-// started, which is what `--sandbox` has always done. Nothing is created by
+// started, which is what a new name has always done. Nothing is created by
 // typing, so nothing here needs to be a command.
 $('newSandboxBtn').onclick = () => {
   const name = $('sandboxName').value.trim()
@@ -1711,57 +1990,25 @@ function machineFlag() {
  *
  * One path, because there is one launch: the two axes chosen above turn into
  * the two things the command line takes. No `--version` is how "the machine
- * this computer has" is said, and `--main` is how the daily workspace is said.
+ * this computer has" is said, and the daily workspace is said by its name.
  * Same words a person or an agent would type, because this is that command
  * line.
  */
 $('startBtn').onclick = async () => {
   const main = workspace === null
-  // Only the combination that outlives the launch is asked about. The daily
-  // workspace on this computer's own dsh is what typing `dsh` does; asking
-  // permission for that would teach people to click through the dialog that
-  // does matter.
+  // ⛔⛔ 这里以前有两个弹窗,2026-08-28 一起删掉了 —— 一个问「要不要拿掉日常柜的登录」,
+  //    一个问「日常柜 ＋ 下载的版本」。它们当年是闸门的**页面那一半**:页面问过之后
+  //    往 argv 里塞 --approved,命令行照单放行。现在同意只来自待批弹窗,而那条拒绝
+  //    自己就带着要说的话(会动哪几处、备份在哪、哪一步没有回头路),原样画在弹窗里。
   //
-  // ⭐ The command line refuses this square outright (NEEDS_APPROVAL) unless
-  // `--approved` is passed, and this dialog is the only place that flag is
-  // supposed to come from. So the gate is not "the window is nicer about it" —
-  // an agent that tries the same launch is stopped, and told to come here.
-  // Taking the sign-in out of the daily cabinet is the second thing behind that
-  // gate, and the only one with no way back: nothing is kept, on purpose.
-  // ⚠️ "Do not ask again" silences the dialog, never the gate — the approval is
-  // still sent, and it still counts only because this window sent it.
-  const droppingDailySignIn = main && signInPlan === false
-  if (droppingDailySignIn && state?.settings?.['ask-on-daily'] !== 'off' && !await ask({
-    title: t('ui.signOutAskTitle'),
-    body: `<p class="warn" style="margin-top:0">${t('ui.signOutAskBody')}</p>`
-      + `<p style="margin:0">${t('ui.signOutAskNote')}</p>`,
-    ok: t('ui.signOutOk'), danger: true,
-  })) return
-
-  const approved = (main && version !== '') || droppingDailySignIn
-  if (main && version !== '' && !await ask({
-    title: t('ui.notice'),
-    // The two axes are named separately and up front. Written as one sentence
-    // they blur together — "your dsh will use another version" reads as a fact
-    // about the machine, when the thing being touched is the user's own
-    // workspace files. Which is exactly why this combination is the one worth
-    // asking about: neither half is dangerous alone.
-    //
-    // ⚠️ The third point is a notice, not a promise. `start --main` refuses
-    // when 3080 is already serving, so two launches *through here* cannot
-    // collide; a dsh the user starts some other way, or one moved to another
-    // port, is outside what this tool can see — let alone prevent.
-    body: `<p class="warn" style="margin-top:0">${t('ui.approveHead', { version: escape(version) })}</p>`
-      + `<p style="margin:0">${t('ui.approvePoint1')}</p>`
-      + `<p style="margin:6px 0 0">${t('ui.approvePoint2')}</p>`
-      + `<p style="margin:6px 0 0">${t('ui.approvePoint3')}</p>`,
-    ok: t('ui.approveOk'), danger: true,
-  })) return
-
+  // ⭐⭐ 留着它们不是「多一层保险」,是**连问两次**:同一件事问两遍,人学会的是把
+  //    第一个弹窗点掉,而第二个才是算数的那个。本仓早就写下过这条 ——「可撤销的动作
+  //    弹窗会训练人点掉真正重要的那个」—— 这里是它最直白的形态。
   $('startBtn').disabled = true
   const out = $('startOut')
   try {
-    const argv = ['start', ...(main ? ['--main'] : ['--sandbox', workspace]), ...machineFlag(), ...pluginFlags()]
+    // 柜子是位置参数,日常柜的值就是它的名字 —— 一条路,不是两条。
+    const argv = ['start', chosenCabinet(), ...machineFlag(), ...pluginFlags()]
     // Three different sentences, and only one of them is about creation:
     // `--no-sign-in` says what a cabinet is born without, while `--sign-in` and
     // `--sign-out` change one that already exists.
@@ -1770,9 +2017,10 @@ $('startBtn').onclick = async () => {
       if (signInPlan === false) argv.push('--no-sign-in')
     } else if (signInPlan === true) argv.push('--sign-in')
     else if (signInPlan === false) argv.push('--sign-out')
-    // Carried only because the dialog above was answered, just now, by a person.
-    if (approved) argv.push('--approved')
-    const result = await watchLog(out, main ? ['logs', '--main'] : ['logs', workspace], t('ui.startingHead'), run(argv))
+    // ⛔ 这里原来还有一句 `argv.push('--approved')`。那个旗标已经从命令行里彻底删掉:
+    // 页面加得上的「同意」就是任何人都打得出的「同意」。现在这条命令照发,撞上闸门
+    // 之后由待批弹窗接手。
+    const result = await watchLog(out, ['logs', chosenCabinet()], t('ui.startingHead'), run(argv))
     const where = main ? escape(t('ui.dailyCabinet')) : t('ui.sandboxQuoted', { name: escape(result.sandbox) })
     out.innerHTML = `<div class="ok">${t('ui.startedMsg', {
       where,
@@ -1830,98 +2078,37 @@ $('quitBtn').onclick = async () => {
         : t('ui.quitRowMainNone'))
     $('quitWhat').innerHTML = `<p class="warn" style="margin:0 0 10px">${rows.join('<br>')}</p>`
       + `<p style="margin:0">${t('ui.quitPoint1')}</p>`
-    $('quitMainWrap').hidden = main === null
-    $('quitMain').checked = false
-    if (main !== null) $('quitMainNote').textContent = t('ui.quitMainNote')
     $('quitDontAsk').checked = false
     return void $('quitDialog').showModal()
   }
-  await quitNow(false)
+  await quitNow()
 }
 
-/**
- * Get rid of a plugin, asking first when the daily workspace is involved.
- *
- * ⭐ The dialog is the same shape as the quit one, and its switch is a separate
- * one on purpose (CEO 2026-08-22): that one says "quitting stops the processes
- * behind this window", this one says "this also comes out of the workspace you
- * work in every day". Two different sentences, so silencing one must not
- * silence the other.
- *
- * ⛔ The tick is stored by a command, never in the page: anything that outlives
- * a reload is part of the model, and everything in the model is reachable from
- * the command line.
- */
-async function removePlugin(plugin) {
-  const failure = await run(['plugins', 'rm', plugin.id]).then(() => null, (error) => error)
-  if (failure === null) {
-    picked.delete(plugin.id)
-    return void await refresh()
-  }
-  // The refusal travels whole on `.result`, with its details at the top level —
-  // the same object the command line printed, not a paraphrase of it.
-  const refusal = failure.result ?? {}
-  if (refusal.code !== 'NEEDS_APPROVAL') {
-    $('startOut').innerHTML = `<div class="err">${escape(failure.message)}</div>`
-    return
-  }
-  // ⭐ The command line now refuses every caller that is not this window, so a
-  // refusal arrives even when the person has said "stop asking me". That switch
-  // was never about the gate — it is about being asked twice by a window they
-  // are already sitting in front of. So: no dialog, but still an approval, and
-  // the approval still only counts because it came from here.
-  if (state?.settings?.['ask-on-daily'] === 'off') {
-    try {
-      await run(['plugins', 'rm', plugin.id, '--approved'])
-      picked.delete(plugin.id)
-    } catch (error) {
-      $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
-    }
-    return void await refresh()
-  }
-  // The refusal names places by identifier, not by label — see `removeEverywhere`.
-  // Turning them into words is this side's job, which is what makes the same
-  // refusal readable here and stable for whatever else reads `--json`.
-  const places = (refusal.places ?? []).map((place) => (place.main === true ? t('cabinet.daily') : place.sandbox))
-  $('dropWhat').innerHTML = '<p class="warn" style="margin:0 0 10px">'
-    + `${t('ui.dropRowPlugin', { label: escape(plugin.label ?? plugin.package) })}<br>`
-    + `${t('ui.dropRowPlaces', { places: escape(places.join('、')) })}</p>`
-    + `<p style="margin:0 0 6px">${t('ui.dropPoint1')}</p>`
-    + `<p style="margin:0">${t(refusal.downloaded === true ? 'ui.dropPoint2Downloaded' : 'ui.dropPoint2Yours')}</p>`
-  $('dropDontAsk').checked = false
-  pendingDrop = plugin
-  $('dropDialog').showModal()
-}
-
-/** The plugin the confirm dialog is currently about. */
-let pendingDrop = null
-
-$('dropCancel').onclick = () => $('dropDialog').close()
-$('dropConfirm').onclick = async () => {
-  const plugin = pendingDrop
-  $('dropDialog').close()
-  if (plugin === null) return
-  if ($('dropDontAsk').checked) await run(['config', 'ask-on-daily', 'off']).catch(() => {})
-  try {
-    await run(['plugins', 'rm', plugin.id, '--approved'])
-    picked.delete(plugin.id)
-  } catch (error) {
-    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
-  }
-  await refresh()
-}
+// ⛔ 这里原来还有一整套「弄走一个插件」:一个 removePlugin()、一个 dropDialog、以及
+// 那条**静默同意**的分支(设置成「不再询问」就跳过弹窗、自己补一个 --approved)。
+// 三样一起没了,原因是两件事同时发生:
+//   ① 它发的 `plugins rm` 随刀 1(44daa49)的登记表一起删掉了,新形状里没有替代品;
+//   ② 更要紧的是那条静默分支本身 —— CEO 2026-08-28:「只能面板弹窗,人来点击,并且
+//      不留这个参数的后门」。一个能替人点头的设置,和一个能打出来的 --approved 是
+//      同一件事。
+// ⚠️ `set ask-on-daily` 这个设置还在(命令行照收),它只是不再有「替人同意」这个能力。
 
 $('quitCancel').onclick = () => $('quitDialog').close()
 $('quitConfirm').onclick = async () => {
-  const withMain = $('quitMain').checked
   $('quitDialog').close()
-  if ($('quitDontAsk').checked) await run(['config', 'ask-on-quit', 'off']).catch(() => {})
-  await quitNow(withMain)
+  if ($('quitDontAsk').checked) await run(['set', 'ask-on-quit', 'off']).catch(() => {})
+  await quitNow()
 }
 
-async function quitNow(withMain) {
+/**
+ * 停下全部,然后不再当一扇窗。
+ *
+ * ⭐ 「连日常柜一起停吗」不在这里问了:`stop --all` 字面就是全部,沙箱照停,轮到日常
+ * 柜那一台会撞闸门 —— 那个问题由待批弹窗问,而它的答案是一次真点击,不是一个勾。
+ */
+async function quitNow() {
   try {
-    const result = await run(withMain ? ['quit', '--main'] : ['quit'])
+    const result = await run(['stop', '--all'])
     stopPolling()
     const alsoMain = result.main === null ? '' : t('ui.quitAlsoMain', { pid: result.main.pid })
     document.body.innerHTML = `<main><section class="card"><h2>${t('ui.quitDoneTitle')}</h2>`
@@ -1945,7 +2132,7 @@ function escape(value) {
   $('langBtn').hidden = false
   $('langBtn').onclick = async () => {
     try {
-      await run(['config', 'lang', other])
+      await run(['set', 'lang', other])
       location.reload()
     } catch (error) {
       // An agent holding the window already answered with the hint; anything
@@ -1996,7 +2183,16 @@ const polling = setInterval(async () => {
     // disturb a choice being made.
     // `drawDownload` is here for the same reason the plugin rows are: another
     // entrance can start an install, and this tick is how the window finds out.
-    drawRunning(); drawWorkspaces(); drawPlugins(); drawDownload(); drawAgent()
+    // ⛔ `drawVersions` belongs here for that same reason and was missed: the
+    // tick that was added for download *progress* left the downloaded *list*
+    // behind, so a release pulled from the command line stayed "not
+    // downloaded" on screen until something else made the page call
+    // `refresh()`. Safe to redraw on a tick for the same reason the rows above
+    // are: the chosen release is the `version` variable, never read back off
+    // the page, so a redraw cannot move the selection.
+    // ⭐ `drawApprovals` 必须在这里,不能只在整页刷新里:待批请求多半是**别人**写下
+    // 的(另一个终端、一个 agent),没有任何点击会把它带出来,人也不会去点。
+    drawRunning(); drawWorkspaces(); drawPlugins(); drawVersions(); drawDownload(); drawApprovals(); drawAgent()
   } catch {
     // The next tick retries; a dead server shows up on the next click anyway.
   }

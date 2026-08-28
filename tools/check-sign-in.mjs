@@ -8,7 +8,7 @@
  *   2. The daily cabinet's sign-in is **the user's own**, not one this tool
  *      imported, and nothing is backed up when it goes. So it sits behind the
  *      hard gate: refused unless the run came from the config window.
- *   3. ⛔ `config ask-on-daily off` does not open that gate. It used to open
+ *   3. ⛔ `set ask-on-daily off` does not open that gate. It used to open
  *      every gate, for every caller — a person ticking "stop asking me" was
  *      quietly handing the same door to anything else on the machine.
  *
@@ -54,11 +54,42 @@ const check = (what, passed, detail = '') => {
   console.log(`  ${passed ? '通过' : '不通过'}  ${what}${detail === '' ? '' : `  —— ${detail}`}`)
 }
 
-/** The real command line, one JSON line back, with the fake home in place. */
+/**
+ * The real command line, one JSON line back, with the fake home in place.
+ *
+ * ⛔ DSH_BOX_NO_PANEL:撞上闸门时**当场拒绝**,不弹面板等六十秒。错误码仍是
+ * NEEDS_APPROVAL,所以下面每一条「没人点头就拒绝」的语义一个字没变。
+ */
 function cli(...argv) {
   return new Promise((done) => {
     const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
-      env: { ...process.env, DSH_HOME: daily }, windowsHide: true,
+      env: { ...process.env, DSH_HOME: daily, DSH_BOX_NO_PANEL: '1' }, windowsHide: true,
+    })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.resume()
+    child.once('close', () => {
+      const line = out.trim().split('\n').filter((text) => text.trim() !== '').at(-1)
+      try {
+        done(JSON.parse(line))
+      } catch {
+        done({ ok: false, code: 'NO_OUTPUT', message: out })
+      }
+    })
+  })
+}
+
+/**
+ * 同一条命令,但这次**扮演配置窗**跑它。
+ *
+ * ⭐⭐ 08-28 换了机制:同意不再是一个打得出来的词,判据是**父进程正是座位上那个
+ * 窗** ＋ 环境里带着 DSH_BOX_APPROVAL=1(src/sandbox.js 的 approvedByWindow)。
+ * 这个测试进程两件都做得到而且是诚实的 —— 座位是它自己占的,子进程是它自己起的。
+ */
+function asWindow(...argv) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      env: { ...process.env, DSH_HOME: daily, DSH_BOX_APPROVAL: '1' }, windowsHide: true,
     })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
@@ -79,37 +110,42 @@ const sandboxCreds = (name) => join(layout.sandboxes, name, 'home', CREDENTIALS_
 console.log('\n登录是档案柜的属性,拿掉了就没有备份\n')
 
 // 1. A sandbox born without one, then given one, then relieved of it.
-await cli('start', '--version', '9.9.9-stub', '--sandbox', 'plain', '--no-sign-in')
+await cli('start', 'plain', '--version', '9.9.9-stub', '--no-sign-in')
 await cli('stop', 'plain')
 check('新沙箱带 --no-sign-in:里面没有登录', !existsSync(sandboxCreds('plain')))
 
-const brought = await cli('signin', 'plain')
-check('signin 之后有了', brought.ok === true && existsSync(sandboxCreds('plain')), brought.code ?? 'ok')
+const brought = await cli('get', 'signin', '--to', 'plain')
+check('get signin 之后有了', brought.ok === true && existsSync(sandboxCreds('plain')), brought.code ?? 'ok')
 
-const again = await cli('signin', 'plain')
+const again = await cli('get', 'signin', '--to', 'plain')
 check('再来一次不报错,只说本来就有', again.ok === true && again.imported === false, String(again.imported))
 
-const gone = await cli('signout', 'plain')
-check('signout 之后没了', gone.ok === true && !existsSync(sandboxCreds('plain')), gone.code ?? 'ok')
+const gone = await cli('rm', 'signin', '--from', 'plain')
+check('rm signin 之后没了', gone.ok === true && !existsSync(sandboxCreds('plain')), gone.code ?? 'ok')
 check('沙箱那一侧不需要任何人点头', gone.removed === true)
 
 // 2. The daily cabinet is the source, so importing into it means nothing.
-const silly = await cli('signin', '--main')
+const silly = await cli('get', 'signin', '--to', 'main')
 check('⛔ 往日常档案柜「导入它自己」被明确拒绝,而不是默默点头',
   silly.ok === false && silly.code === 'MAIN_IS_THE_SOURCE', silly.code)
 
 // 3. The hard gate, three ways round it that must all fail.
-const bare = await cli('signout', '--main')
+const bare = await cli('rm', 'signin', '--from', 'main')
 check('⛔⛔ 拿掉日常档案柜的登录:没人点头就拒绝',
   bare.ok === false && bare.code === 'NEEDS_APPROVAL', bare.code)
 check('⛔ 拒绝时那份登录一个字节都没动', existsSync(join(daily, CREDENTIALS_FILE)))
 
-const flagAlone = await cli('signout', '--main', '--approved')
-check('⛔⛔ 自己带旗标不算数——不是配置窗起的',
-  flagAlone.ok === false && flagAlone.code === 'NEEDS_APPROVAL', flagAlone.code)
+// ⭐⭐ 同一条断言,换了个更强的说法。原来问的是「自己把 --approved 打出来也不
+//    算数」;08-28 之后**这个词根本打不出来了**(CEO:「不留这个参数的后门」),
+//    所以它现在连命令都不成立。语义没变、而且变严了:同意从「写了不算数」变成
+//    「写不出来」。⛔ 断言换的是命令,不是它要守的那件事。
+const flagAlone = await cli('rm', 'signin', '--from', 'main', '--approved')
+check('⛔⛔ 同意打不出来——`--approved` 已经不是一个旗标了',
+  flagAlone.ok === false && flagAlone.code === 'UNKNOWN_FLAG', flagAlone.code)
+check('⛔ 那一步没走到登录那儿去', existsSync(join(daily, CREDENTIALS_FILE)))
 
-await cli('config', 'ask-on-daily', 'off')
-const quieted = await cli('signout', '--main', '--approved')
+await cli('set', 'ask-on-daily', 'off')
+const quieted = await cli('rm', 'signin', '--from', 'main')
 check('⛔⛔ 关掉「下次不再提醒」也不算数——那是窗口的偏好,不是通行证',
   quieted.ok === false && quieted.code === 'NEEDS_APPROVAL', quieted.code)
 check('⛔ 三次都被拒之后,登录还在', existsSync(join(daily, CREDENTIALS_FILE)))
@@ -117,12 +153,12 @@ check('⛔ 三次都被拒之后,登录还在', existsSync(join(daily, CREDENTIA
 // 4. And now as the window: hold the seat, run the command line as a child.
 // ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
-const byWindow = await cli('signout', '--main', '--approved')
+const byWindow = await asWindow('rm', 'signin', '--from', 'main')
 check('⭐ 人在配置窗里点过头,才真的拿掉',
   byWindow.ok === true && !existsSync(join(daily, CREDENTIALS_FILE)), byWindow.code ?? 'ok')
 rmSync(uiSeatFile(layout), { force: true })
 
-const empty = await cli('signout', 'plain')
+const empty = await cli('rm', 'signin', '--from', 'plain')
 check('⭐ 已经没有的再拿一次,不报错也不假装做了事',
   empty.ok === true && empty.removed === false, String(empty.removed))
 

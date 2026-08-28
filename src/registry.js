@@ -26,8 +26,15 @@ export const ROOT_PACKAGE = '@deepseek-ai/dsh'
  * Only packages under this prefix share the release version number. The
  * framework packages (`@deepseek-ai/cordis`, `@deepseek-ai/cordis-plugin-*`)
  * are versioned independently and must be left to npm to resolve.
+ *
+ * ⭐ Exported because the same rule has to be applied inside an application's
+ * archive, by a probe this process cannot share code with. Handed over as a
+ * value rather than copied, so there is one definition: written out a second
+ * time, the copy counts the framework packages as offenders and reports a
+ * perfectly good installation as mixed. Measured on a real desktop build —
+ * 199 packages, five "offenders", all of them the base.
  */
-const RELEASE_PREFIX = '@deepseek-ai/dsh'
+export const RELEASE_PREFIX = '@deepseek-ai/dsh'
 
 /**
  * The two places a release can be downloaded from.

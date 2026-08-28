@@ -29,6 +29,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { detectHostDsh } from '../src/host.js'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -45,6 +46,10 @@ if (!host.found) {
 }
 
 removeTree(root)
+// ⛔⛔ 空的日常档案柜替身。下面 `cli()` 起的每一条命令都会去问 `userDshHome()`,
+//    不设它读的就是跑测试那个人真实的 ~/.dsh。⚠️ 真 dsh 那两次 spawn 自己带
+//    DSH_HOME(指向沙箱),不受这里影响。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -57,7 +62,10 @@ const check = (what, passed, detail = '') => {
 
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时当场拒绝,不弹面板等一分钟。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -117,7 +125,7 @@ const aggregate = plugin(join(tree, AGGREGATE), AGGREGATE, { bundle: { patch: '.
 writeFileSync(join(aggregate, 'cordis.patch.yml'),
   [AGGREGATE, ...MEMBERS].map((name) => `# from ${name}\n- insert:\n    - id: row-${name.replace(/[@/]/g, '-')}\n      name: '${name}'\n`).join('\n'))
 
-const installed = await cli('plugins', 'install', aggregate, '--sandbox', 'real')
+const installed = await cli('get', 'plugin', aggregate, '--to', 'real')
 check('聚合包装得上,四行全进去', installed.ok === true && (installed.brought ?? []).length === 4,
   installed.code ?? `${(installed.brought ?? []).length} 行`)
 
@@ -149,10 +157,10 @@ check('⛔ 而且错里点得出是哪个包', broken.text.includes('@probe/beta
 
 // 4. Knife 6 through the same door: a row switched off has to be switched off in
 //    what dsh composes, not just in what we wrote.
-await cli('plugins', 'uninstall', AGGREGATE, '--sandbox', 'real')
+await cli('rm', 'plugin', AGGREGATE, '--from', 'real')
 mkdirSync(join(home, 'profiles', 'web', 'node_modules'), { recursive: true })
-await cli('plugins', 'install', join(tree, 'probe-alpha'), '--sandbox', 'real')
-const offed = await cli('plugins', 'disable', 'probe-alpha', '--sandbox', 'real')
+await cli('get', 'plugin', join(tree, 'probe-alpha'), '--to', 'real')
+const offed = await cli('set', 'plugin', 'probe-alpha', 'off', '--in', 'real')
 check('关得掉', offed.ok === true && offed.changed === true, offed.code ?? 'ok')
 const afterOff = dumpConfig()
 check('⭐ 真 dsh 合成出来的配置里,那一行确实是关着的',
@@ -172,9 +180,9 @@ check('⛔ 关掉一行之后照样起得来(关不等于把文件写坏)', stil
 //
 //    ⭐ 370 acceptance items missed it, and could not have caught it: not one of
 //    them ever handed the result to something that parses YAML.
-await cli('plugins', 'enable', 'probe-alpha', '--sandbox', 'real')
+await cli('set', 'plugin', 'probe-alpha', 'on', '--in', 'real')
 const patch = join(home, 'profiles', 'web', 'cordis.patch.yml')
-await cli('plugins', 'uninstall', 'probe-alpha', '--sandbox', 'real')
+await cli('rm', 'plugin', 'probe-alpha', '--from', 'real')
 check('⛔⛔ 我们建的那个文件,最后一行走掉之后被撤掉了(不是留一个空文件)', !existsSync(patch))
 check('⛔⛔ 于是这个档案柜照样起得来 —— 留空文件的话真 dsh 整份拒载', dumpConfig().code === 0)
 
@@ -185,9 +193,9 @@ const dshDefault = '# Your patch layer for this dsh profile, applied after every
   + '# overrides, disables, and insert lists; `!!js` expressions allowed).\n[]\n'
 mkdirSync(dirname(patch), { recursive: true })
 writeFileSync(patch, dshDefault)
-await cli('plugins', 'install', join(tree, 'probe-gamma'), '--sandbox', 'real')
+await cli('get', 'plugin', join(tree, 'probe-gamma'), '--to', 'real')
 check('⛔ 装进 dsh 自己写的那份之后,真 dsh 解析得了', dumpConfig().code === 0)
-await cli('plugins', 'uninstall', 'probe-gamma', '--sandbox', 'real')
+await cli('rm', 'plugin', 'probe-gamma', '--from', 'real')
 check('⛔⛔ 卸完逐字节回到 dsh 写的原样', readFileSync(patch, 'utf8') === dshDefault,
   JSON.stringify(readFileSync(patch, 'utf8').slice(-16)))
 check('⛔ 而且它还是解析得了的', dumpConfig().code === 0)

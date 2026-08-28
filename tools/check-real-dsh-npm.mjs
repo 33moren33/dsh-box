@@ -7,12 +7,12 @@
  * installs) and starts the dsh installed on this machine. Opt-in only.
  *
  * What it proves that nothing offline can: the farm road end to end —
- * `plugins install` fetches into our store, `start` re-points the sandbox's
+ * `get plugin` fetches into our store, `start` re-points the sandbox's
  * junction at the host engine's farm, and the **served page** carries the
  * plugin's own client bundles, which means every one of the aggregate's
  * `@deepseek-ai/*` imports resolved against the running installation.
  *
- * ⭐ The exit criterion is byte honesty: after `stop` and `uninstall`, the
+ * ⭐ The exit criterion is byte honesty: after `stop` and `rm plugin`, the
  * sandbox's patch file hashes identical to the moment before the install.
  *
  * ⚠️ Never touches the real `~/.dsh`; the sandbox is started with
@@ -32,6 +32,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { detectHostDsh } from '../src/host.js'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -50,6 +51,9 @@ if (!host.found) {
 removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const layout = boxLayout(box)
 const logFile = join(root, 'run.log')
 
@@ -67,7 +71,10 @@ const check = (what, passed, detail = '') => {
 function cli(...argv) {
   return new Promise((done) => {
     appendFileSync(logFile, `\n$ dsh-box ${argv.join(' ')}\n`)
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时当场拒绝,不弹面板等一分钟。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => {
       out += chunk
@@ -116,7 +123,7 @@ const hashBefore = sha(readFileSync(patch, 'utf8'))
 
 // 1. Download for real. Minutes, not seconds — that is the deal.
 const t0 = Date.now()
-const installed = await cli('plugins', 'install', PACKAGE, '--sandbox', SANDBOX)
+const installed = await cli('get', 'plugin', PACKAGE, '--to', SANDBOX)
 const installTook = Date.now() - t0
 const storeRoot = join(box, 'packages', 'node_modules')
 const storeCount = (() => {
@@ -141,7 +148,7 @@ check('聚合包整个家族都进了账', (installed.brought ?? []).length > 1,
 //    carries the boot manifest, so `ok:true` already means "served, not merely
 //    listening" — the fetch below re-verifies from outside the tool.
 const t1 = Date.now()
-const started = await cli('start', '--sandbox', SANDBOX, '--no-sign-in')
+const started = await cli('start', SANDBOX, '--no-sign-in')
 const startTook = Date.now() - t1
 check(`⭐⭐ 真 dsh 起来了(${seconds(startTook)})`, started.ok === true && typeof started.url === 'string',
   started.code ?? started.url ?? '')
@@ -168,7 +175,7 @@ const stopped = await cli('stop', SANDBOX)
 check('停得下来', stopped.ok === true, stopped.code ?? `pid=${stopped.pid}`)
 
 // 5. Take it back out, whole family at once.
-const removed = await cli('plugins', 'uninstall', PACKAGE, '--sandbox', SANDBOX)
+const removed = await cli('rm', 'plugin', PACKAGE, '--from', SANDBOX)
 check('卸载连家族一起走', removed.ok === true && (removed.alsoRemoved ?? []).length > 0,
   removed.code ?? `另有 ${(removed.alsoRemoved ?? []).length} 行同去`)
 

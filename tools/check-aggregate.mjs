@@ -1,5 +1,5 @@
 /**
- * Prove one npm package that is really seventeen plugins arrives as seventeen.
+ * Prove one npm package that is really many plugins arrives as all of them.
  *
  * ⛔⛔ The failure this exists to stop is silent. A row in a patch names one
  * package for dsh to import; dsh's own bundle list resolves the package, reads
@@ -27,6 +27,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 import { scanPatch } from '../src/patch-file.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -39,6 +40,9 @@ if (root === undefined) {
 removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const layout = boxLayout(box)
 
 let failures = 0
@@ -49,7 +53,11 @@ const check = (what, passed, detail = '') => {
 
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时当场拒绝,不弹面板等一分钟。
+    //   错误码仍是 NEEDS_APPROVAL,断言的语义一个字没变 —— 变的只是不会挂住。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -82,9 +90,28 @@ const source = existsSync(UPSTREAM) ? UPSTREAM : FALLBACK
 const aggregatePatch = readFileSync(source, 'utf8')
 const upstreamRows = scanPatch(aggregatePatch).items.flatMap((item) => item.entries)
 
-console.log('\n一个包其实是十七个插件\n')
+/**
+ * 上游那份 patch 里有几行 —— **问出来的,不是记住的**。
+ *
+ * ⛔⛔ 这个数以前写死成 17,而上游是个活的第三方包:它长到 20 之后,这一整套
+ * 六条断言就一直红着,册子里记成「Windows 上 HEAD 就红,Linux 上全过」——
+ * 听起来像平台差异,其实只是**那台 Linux 上没有这个 checkout**,于是回落到仓里
+ * 那份 17 行的备份夹具,断言就过了。
+ *
+ * ⭐⭐ 判词(CEO 2026-08-28):**测试要以实际测试包的数字为准,不能定死。**
+ * 这里真正要证的从来不是「上游有十七个」,而是「**上游有几个,我们就带进去几个**」。
+ * 把常数换成上游自己的行数,断言反而更强了:上游增删都不用改这个文件,
+ * 而任何一个「少带了一个进来」当场就红。
+ */
+const EXPECTED = upstreamRows.length
+
+console.log(`\n一个包其实是 ${EXPECTED} 个插件\n`)
 check('⭐ 夹具来自对方,不是我们写的', existsSync(source), source.replace(/.*[\\/]/, '…/'))
-check('那份 patch 里有十七行', upstreamRows.length === 17, `${upstreamRows.length} 行`)
+// ⛔ 仍然要有个下限。上游那份文件被截断、或者 scanPatch 哪天读歪了,都会让
+//    EXPECTED 变成 0 或 1,而那时上面每一条「和上游一样多」都会**空转着通过** ——
+//    一个跟着被测物一起变的期望值,必须自己先被检查一次。
+check('⭐ 上游那份 patch 读出来不止一行(否则下面全是空转)',
+  EXPECTED > 1, `${EXPECTED} 行,来源 ${source === UPSTREAM ? '本机 checkout' : '仓里的备份夹具'}`)
 
 // Build the aggregate as npm would leave it: the package itself, its patch, and
 // every member resolvable from beside it.
@@ -96,16 +123,16 @@ writeFileSync(join(aggregateDir, 'cordis.patch.yml'), aggregatePatch)
 const members = upstreamRows.map((row) => row.name).filter((name) => name !== AGGREGATE)
 for (const name of members) plainPlugin(join(tree, ...name.split('/')), name)
 
-// 1. ⭐⭐ The whole knife: seventeen rows, seventeen links.
-const installed = await cli('plugins', 'install', aggregateDir, '--sandbox', 'w1')
+// 1. ⭐⭐ The whole knife: as many rows as upstream has, and a link for each.
+const installed = await cli('get', 'plugin', aggregateDir, '--to', 'w1')
 check('装得上', installed.ok === true, installed.code ?? 'ok')
-check('⭐⭐ 十七个全进去了,不是只进去一个',
-  (installed.brought ?? []).length === 17, `${(installed.brought ?? []).length} 个`)
+check('⭐⭐ 上游有几个就进去几个,不是只进去一个',
+  (installed.brought ?? []).length === EXPECTED, `${(installed.brought ?? []).length} 个,上游 ${EXPECTED} 个`)
 
 const home = join(layout.sandboxes, 'w1', 'home')
 const patch = join(home, 'profiles', 'web', 'cordis.patch.yml')
 const rows = scanPatch(readFileSync(patch, 'utf8')).items.flatMap((item) => item.entries)
-check('写进档案柜的行数与上游那份对得上', rows.length === 17, `${rows.length} 行`)
+check('写进档案柜的行数与上游那份对得上', rows.length === EXPECTED, `${rows.length} 行,上游 ${EXPECTED} 行`)
 check('⭐ 逐行照抄:id 与 name 与上游一字不差',
   JSON.stringify(rows.map((one) => [one.id, one.name]))
   === JSON.stringify(upstreamRows.map((one) => [one.id, one.name])),
@@ -120,18 +147,21 @@ const unlinked = rows.map((one) => one.name).filter((name) => !existsSync(join(m
 check('⛔⛔ 每一个子包都链进了 profile 的 node_modules', unlinked.length === 0, unlinked.join('、'))
 check('带 @scope 的落在嵌套目录里', existsSync(join(modules, '@linxin666', 'dsh-pet')))
 
-// 3. The list has to say seventeen too, or the window and the file disagree.
-const listed = await cli('plugins', '--sandbox', 'w1')
-check('列出来也是十七个', listed.ours.length === 17, `${listed.ours.length} 个`)
+// 3. The list has to say the same number too, or the window and the file disagree.
+const listed = await cli('ls', 'plugin', '--in', 'w1')
+check('列出来也是同样多', listed.ours.length === EXPECTED, `${listed.ours.length} 个,上游 ${EXPECTED} 个`)
 check('⭐ 每一条都记着是随谁进来的',
   listed.ours.every((one) => one.via === AGGREGATE), JSON.stringify(listed.ours[3] ?? null))
 
-// 4. ⭐ One command in, one command out. Sixteen of these are rows the person
-//    never named, so leaving them behind would be litter with no command for it.
-const removed = await cli('plugins', 'uninstall', AGGREGATE, '--sandbox', 'w1')
+// 4. ⭐ One command in, one command out. All but one of these are rows the
+//    person never named, so leaving them behind would be litter with no command
+//    for it.
+const removed = await cli('rm', 'plugin', AGGREGATE, '--from', 'w1')
 check('一条命令整家拿掉', removed.ok === true, removed.code ?? 'ok')
-check('⭐ 顺带拿掉的十六个是说出来的,不是默默做掉的',
-  (removed.alsoRemoved ?? []).length === 16, `${(removed.alsoRemoved ?? []).length} 个`)
+// ⭐ 上游行数减一:那一条是聚合包自己,它是被点名拿掉的,不算「顺带」。
+check('⭐ 顺带拿掉的那些是说出来的,不是默默做掉的',
+  (removed.alsoRemoved ?? []).length === EXPECTED - 1,
+  `${(removed.alsoRemoved ?? []).length} 个,该有 ${EXPECTED - 1} 个`)
 // ⛔ Gone, not empty. This cabinet had no patch until we wrote one, and dsh
 // refuses an empty patch file outright — see `check-cabinet-ledger` §8.
 check('⛔ 我们建的那个文件跟着最后一行一起撤掉了', !existsSync(patch))
@@ -141,14 +171,14 @@ check('⛔ 链接也一个不剩', !existsSync(join(modules, '@linxin666', 'dsh-
 //    命令都收拾不到——正是「只给了做,没给撤」那条判据。
 check('⛔⛔ 为了放链接建的 @scope 空目录也收走了', !existsSync(join(modules, '@linxin666')))
 
-// 5. And the other direction: one member out, the other sixteen stay. Somebody
-//    who wants sixteen of them must not have to give up the aggregate.
-await cli('plugins', 'install', aggregateDir, '--sandbox', 'w2')
-const onlyPet = await cli('plugins', 'uninstall', 'web-ui-pet', '--sandbox', 'w2')
+// 5. And the other direction: one member out, all the others stay. Somebody who
+//    wants all but one of them must not have to give up the aggregate.
+await cli('get', 'plugin', aggregateDir, '--to', 'w2')
+const onlyPet = await cli('rm', 'plugin', 'web-ui-pet', '--from', 'w2')
 check('单独拿掉一个成员,不牵连别的',
   onlyPet.ok === true && (onlyPet.alsoRemoved ?? []).length === 0, `${(onlyPet.alsoRemoved ?? []).length} 个`)
-const left = await cli('plugins', '--sandbox', 'w2')
-check('剩下十六个还在', left.ours.length === 16, `${left.ours.length} 个`)
+const left = await cli('ls', 'plugin', '--in', 'w2')
+check('剩下的都还在', left.ours.length === EXPECTED - 1, `${left.ours.length} 个,该有 ${EXPECTED - 1} 个`)
 
 // 6. ⛔⛔ The refusal. Upstream applies each bundle as its own layer *before* the
 //    profile patch; we inline into the profile patch, which comes after. Rows
@@ -158,7 +188,7 @@ const targeted = join(root, 'targeted')
 plainPlugin(targeted, 'targeted-aggregate', { dsh: { bundle: { patch: './cordis.patch.yml' } } })
 writeFileSync(join(targeted, 'cordis.patch.yml'),
   '- insert:\n    - id: a-row\n      name: "some-plugin"\n- id: someone-elses-row\n  disabled: true\n')
-const refusedTargeted = await cli('plugins', 'install', targeted, '--sandbox', 'w3')
+const refusedTargeted = await cli('get', 'plugin', targeted, '--to', 'w3')
 check('⛔⛔ 带「冲着已有 id 去」的行的聚合包被拒,不硬展开',
   refusedTargeted.ok === false && refusedTargeted.code === 'AGGREGATE_NOT_INLINEABLE', refusedTargeted.code)
 check('⛔ 而且说得出是哪几行',
@@ -173,7 +203,7 @@ const incomplete = join(root, 'incomplete')
 plainPlugin(incomplete, 'incomplete-aggregate', { dsh: { bundle: { patch: './cordis.patch.yml' } } })
 writeFileSync(join(incomplete, 'cordis.patch.yml'),
   '- insert:\n    - id: missing-one\n      name: "never-shipped-plugin"\n')
-const missing = await cli('plugins', 'install', incomplete, '--sandbox', 'w4')
+const missing = await cli('get', 'plugin', incomplete, '--to', 'w4')
 check('⛔ 点名了却没随包发出来的成员,当场拒绝',
   missing.ok === false && missing.code === 'AGGREGATE_MEMBER_MISSING', missing.code)
 check('⛔ 而且指名道姓说是哪个包的问题',
@@ -185,7 +215,7 @@ check('⛔ 而且指名道姓说是哪个包的问题',
 const solo = join(root, 'solo')
 plainPlugin(solo, 'solo-plugin', { dsh: { bundle: { patch: './cordis.patch.yml' } } })
 writeFileSync(join(solo, 'cordis.patch.yml'), '- insert:\n    - id: solo-plugin\n      name: "solo-plugin"\n')
-const soloed = await cli('plugins', 'install', solo, '--sandbox', 'w5')
+const soloed = await cli('get', 'plugin', solo, '--to', 'w5')
 check('⭐ 只登记自己的普通插件不当聚合包处理',
   soloed.ok === true && (soloed.brought ?? []).length === 0, JSON.stringify(soloed.brought))
 
@@ -194,7 +224,7 @@ check('⭐ 只登记自己的普通插件不当聚合包处理',
 const w6 = join(layout.sandboxes, 'w6', 'home', 'profiles', 'web')
 mkdirSync(w6, { recursive: true })
 writeFileSync(join(w6, 'cordis.patch.yml'), "- insert:\n    - id: mine\n      name: '@linxin666/dsh-pet'\n")
-const clash = await cli('plugins', 'install', aggregateDir, '--sandbox', 'w6')
+const clash = await cli('get', 'plugin', aggregateDir, '--to', 'w6')
 check('⛔ 有一个成员名被占着,整包都不装',
   clash.ok === false && clash.code === 'AGGREGATE_MEMBER_TAKEN', clash.code)
 check('⛔ 拒绝时别人那行没动',

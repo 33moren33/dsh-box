@@ -97,12 +97,19 @@ check('退出后不再留下指向 dsh-box 的模块指针', !existsSync(fallbac
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.js')
 
-/** Drive the real command line, with the "real home" pointed somewhere throwaway. */
+/**
+ * Drive the real command line, with the "real home" pointed somewhere throwaway.
+ *
+ * ⛔ DSH_BOX_NO_PANEL:撞上闸门时**当场拒绝**,不去弹一个面板再等六十秒。错误码
+ * 仍然是 NEEDS_APPROVAL,所以下面「没人点过头就拒绝」的语义一个字没变。
+ * ⭐ `approved` 那一路走另一个函数({@link asWindow}),因为同意从 08-28 起不是
+ * 一个打得出来的旗标,而是「谁起的这个进程」＋一个只有窗口设得出的环境变量。
+ */
 function cli(...argv) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
       windowsHide: true,
-      env: { ...process.env, DSH_HOME: home },
+      env: { ...process.env, DSH_HOME: home, DSH_BOX_NO_PANEL: '1' },
     })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
@@ -118,7 +125,35 @@ function cli(...argv) {
   })
 }
 
-const refused = await cli('start', '--main', '--version', '9.9.9-stub')
+/**
+ * 同一条命令,但这次**扮演配置窗**跑它。
+ *
+ * ⭐⭐ 08-28 的新判据,两件缺一不可(src/sandbox.js 的 approvedByWindow):
+ * **父进程正是座位上那个窗**,以及**环境里带着 DSH_BOX_APPROVAL=1** —— 后者只有
+ * 服务端走在「人点了允许」那条路上时才设得出来。这个测试进程两件都做得到,而且
+ * 是诚实地做到:座位是它自己占的,子进程是它自己起的。
+ */
+function asWindow(...argv) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true,
+      env: { ...process.env, DSH_HOME: home, DSH_BOX_APPROVAL: '1' },
+    })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.resume()
+    child.once('close', () => {
+      const line = out.trim().split('\n').filter((text) => text.trim() !== '').at(-1)
+      try {
+        resolve(JSON.parse(line))
+      } catch {
+        resolve({ ok: false, code: 'NO_OUTPUT', message: out })
+      }
+    })
+  })
+}
+
+const refused = await cli('start', 'main', '--version', '9.9.9-stub')
 check('下载的版本 ＋ 真 home:没人点过头就拒绝',
   refused.ok === false && refused.code === 'NEEDS_APPROVAL', refused.code)
 // ⛔ Asserted on the command name, not on the sentence around it. The sentence
@@ -129,9 +164,13 @@ check('下载的版本 ＋ 真 home:没人点过头就拒绝',
 // the reader has to be able to act on.
 check('拒绝里说清了去哪儿点头', String(refused.message ?? '').includes('dsh-box ui'))
 
-const flagAlone = await cli('start', '--main', '--version', '9.9.9-stub', '--approved')
-check('⛔⛔ 光带旗标不算数——不是配置窗起的,agent 自己点头无效',
-  flagAlone.ok === false && flagAlone.code === 'NEEDS_APPROVAL', flagAlone.code)
+// ⭐⭐ 同一条断言,换了个更强的说法:原来问的是「自己把 --approved 打出来也不算
+//    数」,而 08-28 之后**这个词根本打不出来了**(CEO:「不留这个参数的后门」)。
+//    ⛔ 守的还是同一件事 —— agent 不能在参数表里给自己点头 —— 只是它现在连成
+//    一条合法命令都不成立,所以拦在解析那一步。
+const flagAlone = await cli('start', 'main', '--version', '9.9.9-stub', '--approved')
+check('⛔⛔ 同意打不出来——`--approved` 已经不是一个旗标了',
+  flagAlone.ok === false && flagAlone.code === 'UNKNOWN_FLAG', flagAlone.code)
 
 // ⭐ Now play the window: it holds the seat and starts the command line as a
 // child of itself, and that parentage is the whole of the evidence. This test
@@ -141,20 +180,23 @@ check('⛔⛔ 光带旗标不算数——不是配置窗起的,agent 自己点�
 // (`pidBorn`)加进记录之后,手抄的那份当场失效,而失效的样子是「窗口点过头也
 // 不放行」——看着像守卫坏了,其实是夹具旧了。**夹具要来自对方。**
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
-const allowed = await cli('start', '--main', '--version', '9.9.9-stub', '--approved')
+const allowed = await asWindow('start', 'main', '--version', '9.9.9-stub')
 check('人在配置窗里点过头,同一条命令就放行', allowed.ok === true, allowed.code ?? 'ok')
-rmSync(uiSeatFile(layout), { force: true })
 if (allowed.ok === true) {
-  await cli('stop', '--main')
+  // ⛔⛔ 停日常那一台从 08-28 起也在闸门里(bin/cli.js 的 halt),所以这一步同样得
+  //    扮演窗口 —— 而座位要**留到它跑完**再松手,松早了就是「窗口起的」这半边
+  //    证据当场消失,收尾停不掉,下一条断言会红在一个跟它无关的理由上。
+  await asWindow('stop', 'main')
   await new Promise((resolve) => { setTimeout(resolve, 300) })
 }
+rmSync(uiSeatFile(layout), { force: true })
 check('放行那次也进了账本又被停掉', mainRunningRecord(layout) === null)
 
-// ⛔ `logs --main` used to answer with `actions.log`, which lives in the same
+// ⛔ `logs main` used to answer with `actions.log`, which lives in the same
 // folder and is appended to by every command, so it is always the newest file
 // there. What was wanted is what dsh said during the launch.
-const said = await cli('logs', '--main', '--shape')
-check('logs --main 给的是那次启动的日志,不是操作记录',
+const said = await cli('logs', 'main', '--shape')
+check('logs main 给的是那次启动的日志,不是操作记录',
   said.ok === true && String(said.shape?.file ?? '').endsWith('_main.log'),
   said.shape?.file ?? said.code)
 

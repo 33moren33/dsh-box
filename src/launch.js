@@ -173,7 +173,12 @@ export async function launch({
   logFile, detached = false,
 }) {
   const { entry, version } = engine
-  if (!existsSync(entry)) {
+  // ⛔ Only asked of an installation lying on the filesystem. A dsh packed into
+  // an application archive is invisible to this process — `existsSync` on its
+  // entry is false for a tree that is perfectly fine — and it was already
+  // proved present, by the only interpreter that can see it, when the folder
+  // was resolved. Asking here anyway would refuse every one of them.
+  if (engine.kind !== 'app' && !existsSync(entry)) {
     throw new BoxError(
       engine.kind === 'host' ? 'NO_HOST_DSH' : 'VERSION_NOT_DOWNLOADED',
       engine.kind === 'host'
@@ -244,6 +249,22 @@ export async function launch({
     let port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
 
     onLog?.(t('launch.starting', { version, port }))
+    // ⭐ The key to the page dsh is about to serve, which only dsh knows. It is
+    // read out of whichever place dsh's output went, because the readiness
+    // judge cannot see the finished page without it on a release that
+    // authenticates. Kept once found: it does not change while this dsh runs.
+    let token = null
+    const notice = (text) => {
+      if (token === null) token = tokenFromOutput(text)
+    }
+    // ⛔ Read from **this launch's** log file, never from the sandbox's log
+    // directory: every earlier launch left its own token in its own file, and
+    // an old one would be offered forever while the current page kept refusing.
+    const readToken = () => {
+      if (token === null && logFile !== undefined) notice(tailLines(logFile, 40).join('\n'))
+      return token
+    }
+
     // Output goes either to a caller watching live, or to a file. A pipe is
     // owned by this process, so a detached launch must not use one: the moment
     // the launcher exits, dsh's next write hits a closed pipe. Handing the
@@ -258,7 +279,11 @@ export async function launch({
       // Built per attempt: a retry is a retry on a different port.
       const args = ['--profile', profile, '--port', String(port)]
       const sink = logFile === undefined ? null : openSync(logFile, 'a')
-      const child = spawn(process.execPath, [...nodeArgs, entry, ...args], {
+      // ⭐ The interpreter comes from the installation, not from us. For three
+      // of the four kinds it is this process's own Node; for a dsh shipped
+      // inside an application it is that application's binary, which is the
+      // only thing able to read the archive its code lives in.
+      const child = spawn(engine.exec, [...nodeArgs, entry, ...args], {
         // ⚠️ Just wherever this was typed. There used to be a `--workspace` flag
         // setting it, dropped once it was measured: not passing it did exactly what
         // passing `process.cwd()` did, and passing something else did not make dsh
@@ -269,7 +294,7 @@ export async function launch({
         // DSH_HOME decides which filing cabinet dsh opens. It is trimmed because
         // it can arrive from a text field or a drag-and-drop, where a trailing
         // space survives and turns into a different directory.
-        env: { ...process.env, DSH_HOME: cleanPath(home) },
+        env: { ...process.env, ...engine.execEnv, DSH_HOME: cleanPath(home) },
         windowsHide: true,
         ...(sink === null ? {} : { stdio: ['ignore', sink, sink], detached }),
       })
@@ -278,8 +303,9 @@ export async function launch({
       if (sink !== null) closeSync(sink)
 
       if (sink === null) {
-        child.stdout?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
-        child.stderr?.on('data', (chunk) => onLog?.(String(chunk).trimEnd()))
+        // Watched live, so there is no file to read the key back out of.
+        child.stdout?.on('data', (chunk) => { notice(String(chunk)); onLog?.(String(chunk).trimEnd()) })
+        child.stderr?.on('data', (chunk) => { notice(String(chunk)); onLog?.(String(chunk).trimEnd()) })
       }
 
       if (direct) {
@@ -309,7 +335,12 @@ export async function launch({
         })
       }
 
-      await waitUntilServing(port, child, onLog)
+      try {
+        await waitUntilServing(port, child, onLog, { readToken })
+      } catch (error) {
+        await abandonStart(child, error, onLog)
+        throw error
+      }
       return child
     }
 
@@ -329,7 +360,7 @@ export async function launch({
       return tail
     }
 
-    const nodeArgs = await internalsReachable(entry) ? [] : ['--expose-internals']
+    const nodeArgs = await internalsReachable(engine) ? [] : ['--expose-internals']
     if (nodeArgs.length > 0) {
       onLog?.(t('launch.needsExposeInternals'))
     }
@@ -392,6 +423,36 @@ export async function launch({
 }
 
 /**
+ * Give up on a dsh this process started, and leave nothing behind.
+ *
+ * ⛔⛔ A refusal must not leave a dsh running that nothing recorded. The ledger
+ * is written only after a launch is known to have worked, so a launch that
+ * fails after spawning has a live — and, when detached, orphaned — process with
+ * no row naming it: `stop` cannot reach it, the window cannot see it, and the
+ * next launch meets a port held by something nobody admits starting. Measured
+ * twice on one afternoon: dsh serving happily on 3090 while `ls` reported
+ * nothing running.
+ *
+ * ⭐ And it says so. A command that did half of something has to say which half,
+ * or the caller assumes nothing happened and does it again.
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {unknown} error - the failure being reported; it is annotated, not
+ * replaced, because what went wrong still matters more than the cleanup.
+ * @param {(line: string) => void} [onLog]
+ * @returns {Promise<boolean>} whether anything was still alive to stop.
+ */
+export async function abandonStart(child, error, onLog) {
+  const pid = child.pid
+  if (pid === undefined) return false
+  const stopped = await stop(pid, processStartedAt(pid)).catch(() => false)
+  if (stopped) onLog?.(t('launch.stoppedAfterFailure', { pid }))
+  if (error instanceof BoxError) {
+    error.details = { ...error.details, startedPid: pid, stopped }
+  }
+  return stopped
+}
+
+/**
  * Wait until the sandbox is actually usable.
  *
  * An open port proves nothing: the web server starts listening the moment its
@@ -407,9 +468,11 @@ export async function launch({
  * @param {(line: string) => void} [onLog]
  * @param {object} [options]
  * @param {number} [options.timeoutMs]
+ * @param {() => string | null} [options.readToken] - the key dsh printed, asked
+ * again on every attempt because it does not exist until dsh says it.
  * @returns {Promise<void>}
  */
-export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000 } = {}) {
+export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000, readToken } = {}) {
   const deadline = Date.now() + timeoutMs
   let exited = null
   child.once('exit', (code) => { exited = code ?? 0 })
@@ -418,7 +481,7 @@ export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000
     if (exited !== null) {
       throw new BoxError('BOOT_EXITED', t('launch.bootExited', { code: exited }), { exitCode: exited })
     }
-    if (await servesBootManifest(port)) {
+    if (await servesBootManifest(port, readToken?.() ?? null)) {
       // A plugin tree that throws during a later stage can take the process
       // down after the page is already being served, which is exactly the
       // failure a port check reports as success.
@@ -457,11 +520,16 @@ export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000
  * ⛔ Not done in this process: loading a native add-on to find out whether it
  * works is exactly the case where "it does not work" can mean a crash, and a
  * launcher that dies while checking is worse than one that waits 60ms.
- * @param {string} entry - the dsh entry file, used to resolve the add-on the
- * way dsh's own loader resolves it.
+ * ⭐ Put to the interpreter that is about to do the launching, not to ours.
+ * They are the same runtime for three of the four kinds of installation and a
+ * different one for the fourth, and asking the wrong runtime would answer a
+ * question nobody asked — this is a property of the Node build, which is
+ * exactly what differs there.
+ * @param {import('./host.js').Engine} engine - the installation about to boot;
+ * its entry file is what resolves the add-on the way dsh's own loader does.
  * @returns {Promise<boolean>}
  */
-function internalsReachable(entry) {
+function internalsReachable(engine) {
   // Mirrors `ModuleLoader.fromInternal` in @deepseek-ai/cordis-plugin-loader:
   // the handle has to come back, not merely the module.
   const probe = 'const {createRequire}=require("node:module");'
@@ -470,7 +538,11 @@ function internalsReachable(entry) {
     + '.requireBuiltin("internal/modules/esm/loader")?.getOrInitializeCascadedLoader()}catch{}'
     + 'process.exit(ok?0:3)'
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['-e', probe, entry], { stdio: 'ignore', windowsHide: true })
+    const child = spawn(engine.exec, ['-e', probe, engine.entry], {
+      env: { ...process.env, ...engine.execEnv },
+      stdio: 'ignore',
+      windowsHide: true,
+    })
     // An unanswerable probe is treated as "reachable", which is the shape the
     // tool had before this check existed: it changes nothing on a machine
     // where the question cannot be put, instead of adding a flag on a guess.
@@ -483,12 +555,64 @@ function internalsReachable(entry) {
 const BOOT_MARKER = '__DSH_BOOT__'
 
 /**
+ * The one-time key dsh prints for the page it just started serving.
+ *
+ * Taken from dsh's own output rather than invented: it is the only place the
+ * value exists, and it is different on every launch.
+ */
+const TOKEN_PATTERN = /[?&]token=([A-Za-z0-9._~-]+)/
+
+/**
+ * @param {string} text - anything dsh has said so far.
+ * @returns {string | null}
+ */
+export function tokenFromOutput(text) {
+  const found = TOKEN_PATTERN.exec(text)
+  return found === null ? null : found[1]
+}
+
+/**
+ * @param {Response} response
+ * @returns {string | null}
+ */
+function sessionCookie(response) {
+  const all = response.headers.getSetCookie?.() ?? []
+  if (all.length > 0) return all.map((one) => one.split(';')[0]).join('; ')
+  const single = response.headers.get('set-cookie')
+  return single === null ? null : single.split(';')[0]
+}
+
+/**
+ * Whether the page being served is the finished one.
+ *
+ * ⛔ Two requests, not one, and the second cannot be skipped. Newer dsh answers
+ * the index with 401 until a session exists, and a session is not obtained by
+ * putting the token in the URL — that request answers 303 and sets a cookie.
+ * `fetch` follows the redirect but does not keep cookies, so the "obvious" one
+ * request with `?token=` lands back on the same 401. Measured on
+ * `0.1.2-alpha.1`: no token 401, token with redirect followed 401, token
+ * exchanged for a cookie 200.
+ *
+ * ⭐ Why this matters more than it looks: without it the judge cannot ever say
+ * yes on such a release, so a dsh that is up and healthy is reported as "did
+ * not start within 120 seconds". The check was written against a release that
+ * served the index to anybody, and it silently became a check that only that
+ * release can pass.
  * @param {number} port
+ * @param {string | null} token - what dsh printed, when it has printed it yet.
  * @returns {Promise<boolean>}
  */
-async function servesBootManifest(port) {
+async function servesBootManifest(port, token) {
+  const index = `http://127.0.0.1:${port}/`
   try {
-    const response = await fetch(`http://127.0.0.1:${port}/`, { redirect: 'follow' })
+    let response = await fetch(index, { redirect: 'follow' })
+    if (response.status === 401) {
+      if (token === null) return false
+      const handshake = await fetch(`${index}?token=${encodeURIComponent(token)}`, { redirect: 'manual' })
+      const cookie = sessionCookie(handshake)
+      if (cookie === null) return false
+      response = await fetch(index, { headers: { cookie }, redirect: 'follow' })
+    }
     if (!response.ok) return false
     return (await response.text()).includes(BOOT_MARKER)
   } catch {

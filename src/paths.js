@@ -100,9 +100,37 @@ const NAME_ALLOWED = /^[\p{L}\p{M}\p{N}._-]+$/u
 export const NAME_MAX = 64
 
 /**
+ * The one name a cabinet already has: the daily one.
+ *
+ * ⭐⭐ It became a **name** rather than a flag when the command line was slimmed
+ * (2026-08-28). The old shape said which cabinet with two flags — `--main` or
+ * `--sandbox <名>` — so the two lived in separate namespaces and could not
+ * collide. The new shape says it with one value (`--in <档案柜>`), which is what
+ * lets a plugin move in either direction without the command knowing about
+ * directions at all; the price is that the daily cabinet now needs a name **in
+ * the same namespace the sandboxes use**.
+ *
+ * ⛔ `~` was chosen first and measured out again the same hour: bash and
+ * PowerShell both expand a bare `~` to the home directory, so `--in ~` arrived
+ * as `--in C:/Users/moreno`. ⭐⭐ The reason that mattered is not that it fails —
+ * it is that it fails into **a real, plausible directory path**, silently, on
+ * the most frequently typed value in the whole interface. Symbols that survive
+ * all three shells (`@ : + #`) were then rejected for a different reason: this
+ * tool's arguments are full of npm scopes, and `--in @` beside
+ * `@linxin666/dsh-pet` is one character meaning two things.
+ */
+export const DAILY_CABINET = 'main'
+
+/**
  * Names Windows refuses to give a directory, whatever the file system.
  * They are device names, and the refusal is silent enough to look like a bug
  * in this tool rather than a rule of the platform.
+ *
+ * ⛔ {@link DAILY_CABINET} is deliberately **not** in here, though it is also
+ * reserved: this set is matched on the stem (`con.log` is the console), and
+ * `main` needs an exact match — `main.1` collides with nothing and is somebody's
+ * perfectly good sandbox name. Two reservations, two rules; see
+ * {@link sandboxNameProblem}.
  */
 const RESERVED_NAMES = new Set([
   'con', 'prn', 'aux', 'nul',
@@ -129,7 +157,15 @@ export function sandboxNameProblem(value) {
   if (name.startsWith('.')) return t('name.leadingDot')
   if (name.endsWith('.')) return t('name.trailingDot')
   if (!NAME_ALLOWED.test(name)) return t('name.charset')
-  // The rule covers the name with any extension: `con.log` is refused too.
+  // ⛔ Two reservations, and they need different matching — the first draft used
+  // one rule for both and refused `main.1`, which collides with nothing.
+  //   · Windows device names: the extension does not save you, `con.log` **is**
+  //     the console, so the check is on the stem.
+  //   · The daily cabinet's name: the collision is with `--in main` and nothing
+  //     else, so only the exact name is taken. `main.1` is somebody's sandbox.
+  // ⭐ Both compared case-folded: `MAIN` and `main` are two names here and one
+  // directory on Windows.
+  if (name.toLowerCase() === DAILY_CABINET) return t('name.reservedDaily', { name })
   if (RESERVED_NAMES.has(name.split('.')[0].toLowerCase())) return t('name.reserved', { name })
   return null
 }

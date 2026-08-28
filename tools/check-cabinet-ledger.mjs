@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, cabinetLedgerFile, ensureBox, removeTree } from '../src/paths.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -44,6 +45,9 @@ if (root === undefined) {
 removeTree(root)
 const box = join(root, 'data')
 ensureBox(box)
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const layout = boxLayout(box)
 
 let failures = 0
@@ -54,7 +58,15 @@ const check = (what, passed, detail = '') => {
 
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], { windowsHide: true })
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true,
+      // ⛔⛔ 撞上闸门时命令行会**弹面板并等一分钟**(src/approval.js 的
+      //    APPROVAL_WINDOW_MS)。这一套全程只碰沙箱,照理撞不上 —— 但「照理」正是
+      //    验收挂住一分钟才被发现的那种理由。这个开关只让它**立刻拒绝**,错误码仍是
+      //    NEEDS_APPROVAL,所以任何断言的语义都不受影响,它只能让工具做得更少。
+      // ⚠️ DSH_HOME 由上面的 useFakeDaily 放进 process.env,在这儿一并继承下去。
+      env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -87,8 +99,8 @@ console.log('\n档案柜的文件是干净的,账在我们自己家里\n')
 
 // 1. ⭐⭐ The point of the knife. Two plugins in, and the file has to read like
 //    something a person wrote — no markers, no notes, nothing naming this tool.
-await cli('plugins', 'install', makePlugin('alpha-plugin'), '--sandbox', 'a')
-await cli('plugins', 'install', makePlugin('beta-plugin'), '--sandbox', 'a')
+await cli('get', 'plugin', makePlugin('alpha-plugin'), '--to', 'a')
+await cli('get', 'plugin', makePlugin('beta-plugin'), '--to', 'a')
 const written = readOf('a')
 check('⭐⭐ 写进去的文件里没有一个字提到 dsh-box', !written.includes('dsh-box'), JSON.stringify(written))
 check('⭐ 两条并在同一个 insert 底下,不是一个插件一个块',
@@ -101,7 +113,7 @@ check('两条都在,拼写和别人手写的一样',
 //    made impossible, and the reason they were given up (CEO 2026-08-23).
 mkdirSync(join(homeOf('b'), 'profiles', 'web'), { recursive: true })
 writeFileSync(patchOf('b'), written)
-const carried = await cli('plugins', '--sandbox', 'b')
+const carried = await cli('ls', 'plugin', '--in', 'b')
 check('⭐ 整份复制到别的档案柜,那边读出来就是两个插件',
   carried.inventory.rows.length === 2, JSON.stringify(carried.inventory.rows.map((one) => one.name)))
 check('⛔ 但那边不认领它们——账不在那儿,所以它们不是我们的',
@@ -115,11 +127,11 @@ const ledger = cabinetLedgerFile(layout, homeOf('a'))
 check('账确实是一柜一份,放在我们自己的数据目录里', existsSync(ledger), ledger.replace(root, '…'))
 const before = readOf('a')
 removeTree(ledger)
-const orphaned = await cli('plugins', 'uninstall', 'alpha-plugin', '--sandbox', 'a')
+const orphaned = await cli('rm', 'plugin', 'alpha-plugin', '--from', 'a')
 check('⛔⛔ 账没了就明说卸不了,而不是猜哪几行是我们的',
   orphaned.ok === false && orphaned.code === 'NOT_OURS', orphaned.code)
 check('⛔ 拒绝的时候一个字节都没动', readOf('a') === before)
-const unclaimed = await cli('plugins', '--sandbox', 'a')
+const unclaimed = await cli('ls', 'plugin', '--in', 'a')
 check('⛔ 那两条照旧在,只是改归「本来就有的」一栏',
   unclaimed.ours.length === 0 && unclaimed.theirs.length === 2, `theirs=${unclaimed.theirs.join('、')}`)
 
@@ -127,7 +139,7 @@ check('⛔ 那两条照旧在,只是改归「本来就有的」一栏',
 //    on this file can only be "we claim nothing" — the opposite default is the
 //    single way this module could destroy something.
 writeFileSync(ledger, '{ 这不是 JSON')
-const damaged = await cli('plugins', 'uninstall', 'alpha-plugin', '--sandbox', 'a')
+const damaged = await cli('rm', 'plugin', 'alpha-plugin', '--from', 'a')
 check('⛔ 账读坏了也是「卸不了」,不是「按我猜的删」',
   damaged.ok === false && damaged.code === 'NOT_OURS', damaged.code)
 check('⛔ 读坏之后那两条还在', readOf('a') === before)
@@ -135,14 +147,14 @@ check('⛔ 读坏之后那两条还在', readOf('a') === before)
 // 5. A row taken out by hand simply stops being ours. Two copies of one fact
 //    can disagree; "ours" is the intersection, so the file always wins.
 removeTree(ledger)
-await cli('plugins', 'install', makePlugin('gamma-plugin'), '--sandbox', 'c')
-await cli('plugins', 'install', makePlugin('delta-plugin'), '--sandbox', 'c')
+await cli('get', 'plugin', makePlugin('gamma-plugin'), '--to', 'c')
+await cli('get', 'plugin', makePlugin('delta-plugin'), '--to', 'c')
 writeFileSync(patchOf('c'), readOf('c').split('\n').filter((line) => !line.includes('gamma-plugin')).join('\n'))
-const handEdited = await cli('plugins', '--sandbox', 'c')
+const handEdited = await cli('ls', 'plugin', '--in', 'c')
 check('⭐ 有人手工删掉一行之后,我们就不再声称那条是我们的',
   handEdited.ours.length === 1 && handEdited.ours[0].package === 'delta-plugin',
   JSON.stringify(handEdited.ours.map((one) => one.package)))
-const goneByHand = await cli('plugins', 'uninstall', 'gamma-plugin', '--sandbox', 'c')
+const goneByHand = await cli('rm', 'plugin', 'gamma-plugin', '--from', 'c')
 check('⛔ 卸一条已经不在的,说不知道这回事', goneByHand.ok === false, goneByHand.code)
 
 // 6. ⛔ Migration. A cabinet still carrying a `v0.3.0` block: the rows are good
@@ -159,21 +171,21 @@ const legacy = `${original.trimEnd()}\n\n`
   + '# <<< dsh-box: end\n'
 mkdirSync(join(homeOf('d'), 'profiles', 'web'), { recursive: true })
 writeFileSync(patchOf('d'), legacy)
-const seen = await cli('plugins', '--sandbox', 'd')
+const seen = await cli('ls', 'plugin', '--in', 'd')
 check('⭐ 旧标记块里的插件,读的时候就认得出是我们的',
   seen.ours.length === 1 && seen.ours[0].package === 'old-plugin',
   JSON.stringify(seen.ours.map((one) => one.package)))
 check('⛔ 光是看不改文件', readOf('d') === legacy)
 
-await cli('plugins', 'install', makePlugin('fresh-plugin'), '--sandbox', 'd')
+await cli('get', 'plugin', makePlugin('fresh-plugin'), '--to', 'd')
 check('⛔⛔ 第一次写的时候顺手把旧标记清掉', !readOf('d').includes('dsh-box'), JSON.stringify(readOf('d')))
 check('⛔ 旧那条插件本身没被清掉,它是一条好行', readOf('d').includes('"old-plugin"'))
 check('别人手写的那两行照旧', readOf('d').includes("name: 'my-plugin'"))
-const migrated = await cli('plugins', '--sandbox', 'd')
+const migrated = await cli('ls', 'plugin', '--in', 'd')
 check('迁移之后两条都算我们的',
   migrated.ours.length === 2, JSON.stringify(migrated.ours.map((one) => one.package)))
-await cli('plugins', 'uninstall', 'fresh-plugin', '--sandbox', 'd')
-await cli('plugins', 'uninstall', 'old-plugin', '--sandbox', 'd')
+await cli('rm', 'plugin', 'fresh-plugin', '--from', 'd')
+await cli('rm', 'plugin', 'old-plugin', '--from', 'd')
 check('⛔⛔ 全卸完之后逐字节回到「那个块从来没来过」的样子',
   readOf('d') === original, JSON.stringify(readOf('d')))
 
@@ -182,7 +194,7 @@ check('⛔⛔ 全卸完之后逐字节回到「那个块从来没来过」的样
 mkdirSync(join(homeOf('e'), 'profiles', 'web'), { recursive: true })
 const truncated = '# >>> dsh-box: maintained automatically, rewritten whenever plugins change\n- insert:\n'
 writeFileSync(patchOf('e'), truncated)
-const refused = await cli('plugins', 'install', makePlugin('late-plugin'), '--sandbox', 'e')
+const refused = await cli('get', 'plugin', makePlugin('late-plugin'), '--to', 'e')
 check('⛔ 旧块只有开头没有收尾,就不动这个档案柜',
   refused.ok === false && refused.code === 'UNREADABLE_PATCH', refused.code)
 check('⛔ 拒绝时文件没动', readOf('e') === truncated)
@@ -197,9 +209,9 @@ check('⛔ 拒绝时文件没动', readOf('e') === truncated)
 //    ⭐ Asserted here as well because it is cheap here and this suite runs
 //    everywhere, but the credit belongs to the check that has a real parser.
 const fresh = 'f'
-await cli('plugins', 'install', makePlugin('lone-plugin'), '--sandbox', fresh)
+await cli('get', 'plugin', makePlugin('lone-plugin'), '--to', fresh)
 check('⭐ 这个档案柜本来没有 patch 文件,是我们建的', existsSync(patchOf(fresh)))
-await cli('plugins', 'uninstall', 'lone-plugin', '--sandbox', fresh)
+await cli('rm', 'plugin', 'lone-plugin', '--from', fresh)
 check('⛔⛔ 最后一行走掉之后,我们建的那个文件被撤掉了 —— 留一个空文件的话真 dsh 整份拒载',
   !existsSync(patchOf(fresh)), JSON.stringify(readOf(fresh)))
 
@@ -207,8 +219,8 @@ check('⛔⛔ 最后一行走掉之后,我们建的那个文件被撤掉了 —�
 //    remove, however empty it ends up.
 mkdirSync(join(homeOf('g'), 'profiles', 'web'), { recursive: true })
 writeFileSync(patchOf('g'), '# 我留在这儿的一句话\n')
-await cli('plugins', 'install', makePlugin('guest-plugin'), '--sandbox', 'g')
-await cli('plugins', 'uninstall', 'guest-plugin', '--sandbox', 'g')
+await cli('get', 'plugin', makePlugin('guest-plugin'), '--to', 'g')
+await cli('rm', 'plugin', 'guest-plugin', '--from', 'g')
 check('⛔ 本来就有的文件照旧在,逐字节回到原样',
   readOf('g') === '# 我留在这儿的一句话\n', JSON.stringify(readOf('g')))
 

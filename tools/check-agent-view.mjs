@@ -19,6 +19,8 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { VALUE_FLAGS } from '../src/commands.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -30,6 +32,15 @@ if (BOX === undefined || !existsSync(BOX)) {
   console.error('先跑: node tools/make-test-box.mjs <一次性目录> --broken')
   process.exit(2)
 }
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+// ⛔ 摆在参数检查之后:BOX 还没确认存在时 dirname(undefined) 会先崩,
+//    而那时报的是一句跟用法无关的类型错误。
+useFakeDaily(dirname(BOX))
+// ⛔ 撞上日常柜那道闸门时立刻拒绝,而不是弹一扇窗再等一分钟等一个不在场的人。
+//    ⭐ 和上面一样设一次而不是每个 spawn 抄一遍:子进程继承得到,后加的命令白白继承。
+//    它只会**拒得更快**——没有任何开关能让没点过头的动作跑起来(bin/cli.js 的 NO_PANEL_ENV)。
+process.env.DSH_BOX_NO_PANEL = '1'
 
 let failures = 0
 
@@ -104,7 +115,7 @@ check('没人接管时,窗口读到的是「没有」而不是出错',
 // 2. Taking control shows up in the window immediately, under the same session
 //    id the command line just handed out. The window has no second opinion to
 //    consult: it reads the file the command wrote.
-const held = await cli('attach')
+const held = await cli('agent', 'attach')
 const driving = await seen()
 check('接管之后,窗口当场认得出是哪一次会话',
   driving.agent?.session === held.session, driving.agent?.session)
@@ -113,14 +124,14 @@ check('接管之后,窗口当场认得出是哪一次会话',
 //    was a real mistake: making read-only commands leave no trace at all left
 //    the badge blank while an agent spent two minutes downloading, and letting
 //    them into the trail meant one `status` wiped the last run worth showing.
-await cli('status')
+await cli('ls')
 const afterRead = await seen()
-check('只读命令进得了角标', afterRead.agent?.lastCommand?.name === 'status',
+check('只读命令进得了角标', afterRead.agent?.lastCommand?.name === 'ls',
   afterRead.agent?.lastCommand?.name)
 check('只读命令进不了编号串', afterRead.session === null, `session=${afterRead.session}`)
 
 // 4. An action that changed something is numbered, from one.
-await cli('start', '--version', '9.9.9-stub', '--sandbox', 'a1', '--no-sign-in')
+await cli('start', 'a1', '--version', '9.9.9-stub', '--no-sign-in')
 const afterStart = await seen()
 check('改了状态的动作进编号串,序号从 1 起',
   afterStart.session?.actions?.length === 1 && afterStart.session.actions[0].seq === 1,
@@ -129,38 +140,44 @@ check('改了状态的动作进编号串,序号从 1 起',
 // 5. ⭐ The rendered line is filled in, including the parts nobody typed. It is
 //    rebuilt from what the launch resolved to rather than from what was typed,
 //    because `start` with blanks means "whatever is current" and current moves.
+// ⭐ 档案柜从旗标变成了位置参数,所以「哪个柜子」现在读的是 `start a1` 而不是
+//    `--sandbox a1`。断言问的还是同一件事:三个空都填满了没有。
 const line = afterStart.session?.actions?.[0]?.line ?? ''
 check('等价命令行每个空都填满了,拿去重跑得到同一台',
-  line.includes('--sandbox a1') && line.includes('--version 9.9.9-stub') && line.includes('--no-sign-in'),
+  line.includes('start a1') && line.includes('--version 9.9.9-stub') && line.includes('--no-sign-in'),
   line)
 
 // 6. A refusal is worth writing down precisely because it was refused: an agent
 //    that cannot see where it was stopped walks into the same wall next time.
-const refused = await cli('rm', 'a1')
+const refused = await cli('rm', 'sandbox', 'a1')
 const afterRefusal = await seen()
 const second = afterRefusal.session?.actions?.[1]
 check('被拒的动作也留在串里,带着代号',
   second?.ok === false && second.code === refused.code, `${second?.code} / ${refused.code}`)
 
 // 6b. ⛔⛔ And that line has to be re-runnable, which is the entire point of
-//     writing a refusal down. Measured: a `plugins uninstall` that failed
-//     before its cabinet had been resolved came out as `… --sandbox` with
-//     nothing after it — a line that looks runnable and is not. Two separate
-//     things had to be wrong for that, and either one alone brings it back:
-//     the record left the cabinet out, and the renderer dropped blanks one
-//     token at a time, so the value went while its flag stayed.
-const refusedPlugin = await cli('plugins', 'uninstall', '没装过这个', '--sandbox', 'a1')
+//     writing a refusal down. Measured: a `rm plugin` that failed before its
+//     cabinet had been resolved came out as `… --from` with nothing after it —
+//     a line that looks runnable and is not. Two separate things had to be
+//     wrong for that, and either one alone brings it back: the record left the
+//     cabinet out, and the renderer dropped blanks one token at a time, so the
+//     value went while its flag stayed.
+const refusedPlugin = await cli('rm', 'plugin', '没装过这个', '--from', 'a1')
 const afterPluginRefusal = await seen()
 const third = afterPluginRefusal.session?.actions?.[2]
 check('⛔ 被拒的插件命令也记下了是在哪个档案柜上被拦的',
   third?.ok === false && third.code === refusedPlugin.code, `${third?.code} / ${refusedPlugin.code}`)
-check('⛔⛔ 它的等价命令行拿去能重跑,不是一个空着的 --sandbox',
-  String(third?.line ?? '').includes('--sandbox a1'), third?.line)
+check('⛔⛔ 它的等价命令行拿去能重跑,不是一个空着的 --from',
+  String(third?.line ?? '').includes('--from a1'), third?.line)
+// ⭐ 名单不再手抄:带值的旗标 `VALUE_FLAGS` 已经在 src/commands.js 里申报过一次,
+//    再抄一份就是「下一个新旗标这道守卫看不见」——那正是这条断言防的那类事。
+//    ⛔ `--box` 与 `--json` 不进等价命令行,留在集合里也碰不到。
+const CARRIES_VALUE = new Set([...VALUE_FLAGS].map((flag) => `--${flag}`))
 check('⛔ 串里没有任何一条命令行把旗标孤零零地留在末尾',
   (afterPluginRefusal.session?.actions ?? []).every(({ line }) => {
     const tokens = String(line ?? '').trim().split(/\s+/)
     return !tokens.some((token, at) => token.startsWith('--')
-      && ['--sandbox', '--version', '--id', '--at', '--plugin', '--unplug'].includes(token)
+      && CARRIES_VALUE.has(token)
       && (tokens[at + 1] === undefined || tokens[at + 1].startsWith('--')))
   }), JSON.stringify((afterPluginRefusal.session?.actions ?? []).map((action) => action.line)))
 
@@ -168,7 +185,7 @@ check('⛔ 串里没有任何一条命令行把旗标孤零零地留在末尾',
 //    on the window, and the record says who ended it — an agent told "you
 //    finished" where it was actually stopped has been misinformed about the one
 //    thing it most needs to know.
-await cli('detach', '--forced')
+await cli('agent', 'detach', '--forced')
 const released = await seen()
 check('人按停止之后,窗口不再显示接管中', released.agent === null, `agent=${released.agent}`)
 check('记录说得出是被人收回的,不是自己交还的',
@@ -180,8 +197,8 @@ check('交还之后记录还在,回忆控件有东西可点',
   released.session?.actions?.length === 3, `${released.session?.actions?.length} 条`)
 
 // 9. Both entrances read the same two files, so they cannot disagree.
-const memory = await cli('memory')
-check('窗口与 memory 命令读的是同一份记录',
+const memory = await cli('ls', 'memory')
+check('窗口与 ls memory 读的是同一份记录',
   memory.session?.session === released.session?.session
   && memory.session?.actions?.length === released.session?.actions?.length,
   `${memory.session?.actions?.length} / ${released.session?.actions?.length}`)
@@ -190,37 +207,37 @@ check('窗口与 memory 命令读的是同一份记录',
 //     它一直被定义成「持久 log,人排查时读」,而**没有任何命令或界面打得开它**,
 //     自己还会到 2MB 就顶掉一代——攒着一份没人看、又会自己丢的东西。而唯一能看
 //     它的办法是开 shell 去 cat,那正是窗口跟不到的地方。
-//     ⚠️ 与 memory 是两样:memory 是上一轮接管的显示、下一轮会覆盖;这是只增的记录。
+//     ⚠️ 与 ls memory 是两样:那个是上一轮接管的显示、下一轮会覆盖;这是只增的记录。
 // 先攒够几条,否则「截断说得清不清楚」那一条会因为没东西可截而空转 —— 一个
 // 不会失败的断言什么都没证明。
-await cli('config', 'source', 'official')
-await cli('config', 'source', 'mirror')
-await cli('config', 'source', 'auto')
+await cli('set', 'source', 'official')
+await cli('set', 'source', 'mirror')
+await cli('set', 'source', 'auto')
 
-const shape = await cli('history', '--shape')
+const shape = await cli('ls', 'history', '--shape')
 check('⭐ 记录的形状问得出来,无论多长回答都是固定几行',
   shape.ok !== false && Number.isInteger(shape.entries) && shape.files.length > 0,
   `${shape.entries} 条,失败 ${shape.failures} 条`)
 check('形状里说得出时间范围', typeof shape.from === 'string' && typeof shape.to === 'string',
   `${shape.from} → ${shape.to}`)
 
-const recent = await cli('history', '--lines', '2')
+const recent = await cli('ls', 'history', '--lines', '2')
 check('⭐ 默认只给一小段,而且当场说清共有多少、省了多少',
   recent.entries.length === 2 && recent.total === shape.entries && recent.omitted === shape.entries - 2,
   `给 ${recent.entries.length} 条,共 ${recent.total},省 ${recent.omitted}`)
 check('⛔ 绝不安静截断:省略数目与全文路径都在数据里,不是一句提示语',
   recent.omitted > 0 && recent.files.length > 0, recent.files.join('、'))
 
-const everything = await cli('history', '--lines', '0')
+const everything = await cli('ls', 'history', '--lines', '0')
 check('要全部就给全部', everything.entries.length === shape.entries && everything.omitted === 0,
   `${everything.entries.length} 条`)
 check('⭐ 记下的都是改过状态的命令,只读的不占地方',
   everything.entries.every((entry) => typeof entry.command === 'string')
-  && !everything.entries.some((entry) => entry.command === 'status'),
+  && !everything.entries.some((entry) => entry.command === 'ls'),
   everything.entries.map((entry) => entry.command).join('、'))
 
-await cli('quit')
-await cli('rm', 'a1')
+await cli('stop', '--all')
+await cli('rm', 'sandbox', 'a1')
 ui.kill()
 
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)

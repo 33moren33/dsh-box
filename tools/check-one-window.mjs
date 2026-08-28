@@ -25,6 +25,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { removeTree } from '../src/paths.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -35,6 +36,9 @@ if (root === undefined) {
 }
 
 removeTree(root)
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const made = spawnSync(process.execPath, [join(HERE, 'make-test-box.mjs'), root], {
   stdio: 'ignore', windowsHide: true,
 })

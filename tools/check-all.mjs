@@ -36,10 +36,14 @@ function run(script, args) {
   return result.status === 0
 }
 
-/** A disposable data directory with the dsh stand-ins already in it. */
-function freshBox(label) {
+/**
+ * A disposable data directory with the dsh stand-ins already in it.
+ * @param {string} label
+ * @param {string[]} [extra] - further stand-ins this box needs.
+ */
+function freshBox(label, extra = []) {
   const dir = mkdtempSync(join(tmpdir(), `dsh-box-${label}-`))
-  const made = spawnSync(process.execPath, [join(HERE, 'make-test-box.mjs'), dir, '--broken'], {
+  const made = spawnSync(process.execPath, [join(HERE, 'make-test-box.mjs'), dir, '--broken', ...extra], {
     cwd: ROOT, stdio: 'ignore', windowsHide: true,
   })
   if (made.status !== 0) throw new Error(`造不出测试盒:${dir}`)
@@ -59,6 +63,35 @@ try {
   // command table. Second for the same reason the first one is first — a
   // control that will never light up should not be found after nine slow checks.
   if (!run('check-page-marks.mjs', [])) failed.push('check-page-marks')
+
+  // Static, and it guards a change rather than the code: the 44-into-10 slim.
+  // Every capability that exists today either has a new home or a written
+  // reason it can stop existing — so the cut is auditable instead of
+  // remembered, and nothing can be dropped by forgetting.
+  if (!run('check-command-map.mjs', [])) failed.push('check-command-map')
+
+  // Static as well, and the same shape of question one step over: the marks
+  // check asks whether a control can light up, this one asks whether a section
+  // of the window notices that somebody else changed the thing behind it. The
+  // bug it is named after shipped — a release downloaded from the command line
+  // read "not downloaded" on screen until something made the page refresh.
+  if (!run('check-page-tick.mjs', [])) failed.push('check-page-tick')
+
+  // ⭐⭐ Before any of the suites below run, ask whether they are allowed to be
+  // believed. Each one is supposed to read nothing but its own scratch
+  // directory; the ones that drive the command line will read **the daily
+  // cabinet of whoever is running the tests** unless they say otherwise, and
+  // that had gone unnoticed in one suite for as long as the plugin list was a
+  // stored registry. It surfaced only when the list started being worked out
+  // from the cabinets, and then as a count that differed between this machine
+  // and CI. ⛔ Put here, ahead of everything it judges: a failing result from a
+  // suite that was reading the wrong home is worse than no result, because it
+  // sends somebody to debug the product.
+  // ⚠️ A bare scratch directory, not `freshBox`: this one needs somewhere to
+  // write, not a stand-in dsh to drive.
+  const isolation = mkdtempSync(join(tmpdir(), 'dsh-box-isolation-'))
+  disposable.push(isolation)
+  if (!run('check-suite-isolation.mjs', [isolation])) failed.push('check-suite-isolation')
 
   // Static too, and third for the same reason: a clock that renders in the wrong
   // timezone makes every log and every filename below it misleading, and none of
@@ -88,6 +121,23 @@ try {
   disposable.push(gate)
   if (!run('check-daily-gate.mjs', [gate])) failed.push('check-daily-gate')
 
+  // ⭐⭐ The other half of the gate, in its own box because it starts a real
+  // window service. `check-daily-gate` holds the seat itself, so every command
+  // it runs is a child of the seat holder and the one interesting negative —
+  // the window started it, but nobody agreed — cannot be built there at all.
+  // Here the panel and the asker are two processes, which is what the
+  // 2026-08-28 change is.
+  const approval = mkdtempSync(join(tmpdir(), 'dsh-box-approval-'))
+  disposable.push(approval)
+  if (!run('check-approval.mjs', [approval])) failed.push('check-approval')
+
+  // ⭐ The composed scenario the slim-down owes the old shape: a whole cabinet's
+  // plugin setup moved into another, either direction, one command. Its own box
+  // because it fills several cabinets with several plugins each.
+  const copying = mkdtempSync(join(tmpdir(), 'dsh-box-copy-'))
+  disposable.push(copying)
+  if (!run('check-cabinet-copy.mjs', [copying])) failed.push('check-cabinet-copy')
+
   // Needs a directory and nothing else. Third because a broken delete makes
   // every check after it lie about what it cleaned up.
   const deleting = mkdtempSync(join(tmpdir(), 'dsh-box-delete-'))
@@ -101,6 +151,25 @@ try {
   if (!run('check-one-face.mjs', [shared.data])) failed.push('check-one-face')
   if (!run('check-main-ledger.mjs', [shared.data])) failed.push('check-main-ledger')
   if (!run('check-host-dsh.mjs', [shared.data])) failed.push('check-host-dsh')
+
+  // Static, and about the axis rather than about any launch: a folder somebody
+  // names, and which of the three questions — where the tree is, how its
+  // version is read, which interpreter starts it — each shape answers
+  // differently. Builds its own stand-in trees, including a stand-in
+  // application, and starts nothing.
+  const enginePath = mkdtempSync(join(tmpdir(), 'dsh-box-engine-path-'))
+  disposable.push(enginePath)
+  if (!run('check-engine-path.mjs', [enginePath])) failed.push('check-engine-path')
+
+  // ⚠️ The slowest check here, and deliberately not made faster: one of its
+  // cases waits out the real readiness timeout, because that is the only place
+  // the real launch path, the real giving-up, and the cleanup afterwards meet.
+  // Its own box, with two extra stand-ins: one that authenticates before it
+  // will show a page, and one that answers on its port forever without ever
+  // finishing.
+  const bootReady = freshBox('boot-ready', ['--guarded', '--silent'])
+  disposable.push(bootReady.dir)
+  if (!run('check-boot-ready.mjs', [bootReady.data])) failed.push('check-boot-ready')
 
   // Its own box: it starts a sandbox, deletes that sandbox's ledger on purpose,
   // and leaves the sandbox behind.
@@ -203,6 +272,14 @@ try {
   const oneWindow = mkdtempSync(join(tmpdir(), 'dsh-box-window-'))
   disposable.push(oneWindow)
   if (!run('check-one-window.mjs', [oneWindow])) failed.push('check-one-window')
+
+  // ⚠️ The other one that binds a port, and the only one that starts a window
+  // service **nothing is holding on to** — which is the whole subject: a seat
+  // held by an orphan used to lock the directory with no way out through this
+  // tool. Its own directory, because it deliberately leaves seats behind.
+  const windowSeat = mkdtempSync(join(tmpdir(), 'dsh-box-seat-'))
+  disposable.push(windowSeat)
+  if (!run('check-window-seat.mjs', [windowSeat])) failed.push('check-window-seat')
 } finally {
   // ⛔ Not `rmSync({recursive})`. Every box below lives under `tmpdir()`, which
   // on Windows is `C:\Users\<名字>\AppData\Local\Temp` — so on the machine of

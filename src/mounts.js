@@ -1069,12 +1069,29 @@ export function listBackups(backupDir) {
 
 /**
  * Put one back, whole.
+ *
+ * ⭐⭐ **Two intents, told apart by whether a timestamp was named** (CEO
+ * 2026-08-28: 「撤销要能连按,一步一步往回走」):
+ *
+ * - **No timestamp — one step back, and the step is consumed.** The newest
+ *   snapshot is restored and then deleted, so pressing again lands on the one
+ *   before it. ⛔ This is the whole of why nothing is backed up on the way: a
+ *   snapshot of the current state would become the new newest, and the next
+ *   press would restore the state this press just undid — **undo would oscillate
+ *   between two states instead of walking back**, which is what it did before.
+ * - **A timestamp — jump there, and keep the history.** A jump is not a walk;
+ *   somebody who named a moment may well want to come back from it, so the
+ *   current state is snapshotted first, exactly as it always was.
+ *
+ * ⭐ `remaining` is what lets the caller say 「还可再退几步」 without anybody
+ * having to read a table of timestamps — which is what made it possible to drop
+ * the `plugins backups` listing entirely.
  * @param {object} options
  * @param {string} options.home
  * @param {string} options.profile
  * @param {string} options.backupDir
- * @param {string} [options.at] - which one; the newest when not said.
- * @returns {{restored: string, from: string, backup: string | null}}
+ * @param {string} [options.at] - which one; one step back when not said.
+ * @returns {{restored: string[], from: string, backup: string | null, remaining: number}}
  */
 export function restoreBackup({ home, profile = DEFAULT_PROFILE, backupDir, at }) {
   const backups = listBackups(backupDir)
@@ -1092,16 +1109,18 @@ export function restoreBackup({ home, profile = DEFAULT_PROFILE, backupDir, at }
     'cordis.patch.yml': profilePatchFile(home, profile),
     'package.json': profilePackageFile(home, profile),
   }
-  // Backing up the current state before overwriting it: restoring is itself a
-  // change, and a restore to the wrong timestamp must not be the end of the road.
-  const backup = backupFile(targets['cordis.patch.yml'], backupDir)
+  const backup = at === undefined ? null : backupFile(targets['cordis.patch.yml'], backupDir)
   const restored = []
   for (const name of wanted.files) {
     mkdirSync(dirname(targets[name]), { recursive: true })
     copyFileSync(join(wanted.dir, name), targets[name])
     restored.push(targets[name])
   }
-  return { restored, from: wanted.at, backup }
+  // ⛔ Popped after the copies, never before: a read that fails partway through
+  // must leave the step still there to try again. Deleting first would spend the
+  // only copy of a state on an attempt that did not land.
+  if (at === undefined) removeTree(wanted.dir)
+  return { restored, from: wanted.at, backup, remaining: listBackups(backupDir).length }
 }
 
 /**

@@ -34,6 +34,16 @@
 
 ---
 
+**0.4.0: forty-five commands became ten verbs, and `--version` now takes a folder.**
+
+The ten are `ls`, `get`, `rm`, `start`, `stop`, `set`, `logs`, `ui`, `agent`, `help`; what used to be a command of its own is now an argument. ⛔ Not one old name is kept.
+
+Two more kinds of dsh are recognised: **one you built from source**, and **one that ships inside an application**. A `--version` with a slash in it is read as a folder, without one it is still a release — one axis, one flag. The pin check says what it found and does not refuse: that tree is not one we installed.
+
+⛔ **The 0.3.5 window never opened once on Windows.** This release fixes it.
+
+---
+
 **0.3.3: plugins from npm now install — and actually boot.**
 
 Most third-party plugins on npm ship without their official dependencies: they expect to borrow parts from whichever dsh is running. Installed through dsh-box, such a package used to make dsh refuse its whole plugin tree — the parts were never findable. This release fixes that at the root: **one download, and each dsh release gets its own version-matched shelf of official parts beside it** (hardlinks, no extra disk), so a sandbox stays correct whichever release boots it. **Installing into your daily cabinet copies the whole thing in** — after that your own `dsh` loads it, and deleting dsh-box costs it nothing.
@@ -53,12 +63,12 @@ npx dsh-box ui        # the window opens in your browser, nothing to install
 **⭐ From 0.3.5 that exe is also a command line**: double-clicked it is a window, given arguments it is the command line.
 
 ```bash
-dsh-box.exe status --json     # installed or portable: arguments make it a CLI
-dsh-box.exe path add          # put its folder on your own PATH
+dsh-box.exe ls --json         # installed or portable: arguments make it a CLI
+dsh-box.exe set path on       # put its folder on your own PATH
 dsh-box                       # once on PATH, from any directory
 ```
 
-⛔ **0.3.4 and earlier have no such face**: arguments made it hang without answering, and the file was named `dsh-box-shell.exe`. From 0.3.5 it is `dsh-box.exe` everywhere. The installer runs `path add` for you; with the portable zip you run it once yourself. **The global npm install needs none of this** — npm already puts its shim on PATH.
+⛔ **0.3.4 and earlier have no such face**: arguments made it hang without answering, and the file was named `dsh-box-shell.exe`. From 0.3.5 it is `dsh-box.exe` everywhere. The installer runs `set path on` for you; with the portable zip you run it once yourself. **The global npm install needs none of this** — npm already puts its shim on PATH.
 
 Once the window is open it is three steps: **pick a dsh → pick a cabinet → start**. With no release named it uses the dsh you installed yourself; name a downloaded release and the first run fetches it (about 200–260MB), after that it is reused.
 
@@ -70,12 +80,12 @@ Once the window is open it is three steps: **pick a dsh → pick a cabinet → s
 Skip the window and give commands instead — every step stands on its own:
 
 ```bash
-npx dsh-box versions                                  # what npm has, what is already downloaded
-npx dsh-box pull 0.1.1-rc.2                           # download an official release
-npx dsh-box plugins add ./my-plugin                   # remember a local plugin folder
-npx dsh-box plugins install dsh-memory-pyramid --sandbox trial   # install a plugin from npm into a sandbox
-npx dsh-box start --new --plugin my-plugin            # new sandbox, with that plugin installed
-npx dsh-box status --json                             # add --json to any command, for scripts and agents
+npx dsh-box ls machine                                # which dsh can be used: yours, downloads, folders you named
+npx dsh-box get machine 0.1.1-rc.2                    # download an official release
+npx dsh-box get plugin dsh-memory-pyramid --to trial  # install a plugin from npm into a sandbox
+npx dsh-box start --new --plugin ./my-plugin          # new sandbox, with that local plugin installed
+npx dsh-box start --new --version D:\dsh-build        # start on a dsh you built yourself
+npx dsh-box ls --json                                 # add --json to any command, for scripts and agents
 ```
 
 From source it is `node bin/cli.js ui`.
@@ -87,10 +97,10 @@ The command line was built for this: it has `--help`, and `--json` on any comman
 What is new is taking over:
 
 ```bash
-npx dsh-box attach          # I am driving
-npx dsh-box detach          # hand it back
-npx dsh-box memory          # what the last takeover did, refusals included
-npx dsh-box history         # everything ever done in this data directory
+npx dsh-box agent attach    # I am driving
+npx dsh-box agent detach    # hand it back
+npx dsh-box ls memory       # what the last takeover did, refusals included
+npx dsh-box ls history      # everything ever done in this data directory
 ```
 
 After `attach`, a blue band appears across the top of the config window, every control about to be touched gets a number, and a **trail of commands** unfolds below — each step rendered as a line you could re-run. What was done, what was refused, and why, are all on it.
@@ -103,7 +113,7 @@ One test says it all: **close the window, open it again, and nothing is lost.**
 
 | Word | What it is |
 |---|---|
-| **Cabinet** | One `DSH_HOME`. Conversations, config, sign-in. This is what `--sandbox <name>` and `--main` are about |
+| **Cabinet** | One `DSH_HOME`. Conversations, config, sign-in. The name in `start <name>` is this; the everyday one is called `main` |
 | **Workspace** | The **project folder** dsh works in. This is dsh's own term |
 
 ## One Launch = Two Axes
@@ -112,12 +122,12 @@ One test says it all: **close the window, open it again, and nothing is lost.**
 start  =  which dsh (machine)  ×  which cabinet (DSH_HOME)
 ```
 
-- **Machine**: unnamed means **the dsh you installed yourself**; `--version <release>` uses a release dsh-box downloaded.
-- **Cabinet**: `--sandbox <name>` an existing sandbox / `--new` a fresh one / `--main` your everyday `~/.dsh`.
+- **Machine**: unnamed means **the dsh you installed yourself**; `--version <release>` uses a release dsh-box downloaded; `--version <folder>` uses the one you point at — built from source, or shipped inside an application. A slash makes it a folder; a release number never has one.
+- **Cabinet**: a sandbox name for an existing one / `--new` a fresh one / `main` for your everyday `~/.dsh`.
 
 **Nothing carries over from last time.** Release, sandbox and workspace all used to be remembered; all three were removed. The same command always gives the same result, and that matters more than saving a few keystrokes.
 
-**There is exactly one gate**: opening your real `~/.dsh` with a downloaded release. That square is refused on the spot and only runs after a person has agreed in the config window. Nothing else prompts — a dialog in front of a reversible action only trains people to dismiss the one that matters.
+**The gate stops exactly one thing**: opening your real `~/.dsh` with a dsh that is **not the one you installed yourself** — a download, or a folder you named. That square is refused on the spot; dsh-box opens the config window itself and waits, and once a person allows it, that window is what runs the command. ⛔ No flag gets around it. Nothing else prompts — a dialog in front of a reversible action only trains people to dismiss the one that matters.
 
 ## Plugins Belong to the Cabinet
 
@@ -128,24 +138,21 @@ Not to the launch. A plugin installed into a cabinet is written into that cabine
 - Local folders and npm packages both work. A local one is linked, so editing the source is live on the next launch.
 - An npm package downloads once and serves every sandbox and every dsh release; each launch aims it at that release's own official parts automatically.
 - Installing into the daily cabinet copies the whole thing in — after that your own `dsh` loads it without dsh-box, and deleting dsh-box changes nothing.
-- Every change is backed up first and `plugins restore` puts the whole file back. Uninstalling returns it **byte for byte** — verified by hash, not by eye.
+- Every change is backed up first and `set plugin --undo` steps back one. Uninstalling returns it **byte for byte** — verified by hash, not by eye.
 
 ## Commands
 
 ```
-versions / pull <release> / drop <release>        download and manage dsh releases
-sandboxes / start / stop / rm <name>              start, stop and delete sandboxes
-adopt --from <name|main> --to <name|main>         copy conversations between cabinets
-plugins [--sandbox <name> | --main]               the register, or what a cabinet actually has
-plugins add / rm                                  remember a plugin folder / get rid of one entirely
-plugins install / uninstall                       into a cabinet / out of a cabinet
-plugins backups / backups rm / prune / restore    backups of the plugin config
-packages / packages rm / packages prune           plugin packages dsh-box downloaded for you
-workspaces / workspaces use <folder>              which project folder this cabinet opens next
-attach / detach / memory / history                take over, hand back, review
-config / config source / config lang              settings: install source, language
-path / path add / path rm                         whether this copy is on PATH; put it on, take it off
-status / logs <name> / ui / quit                  overview, logs, config window, quit everything
+ls    [object]                  look. With no object, the whole picture right now
+get   <object> [--from/--to]    bring in: machine (a release) - plugin - signin - chat
+rm    <object>                  take away: machine - plugin - sandbox - signin - setting
+start <cabinet> | --new         start one. Takes --version - --plugin - --unplug
+stop  <cabinet> | --all | --window | --download
+set   <key> <value>             plugin - workspace - source - lang - path - two reminders
+logs  <cabinet> | --version <release> | --package <name>
+ui                              open the config window (close it with stop --window)
+agent attach | detach           take over, hand back
+help                            three layers of detail; the more you ask, the finer it gets
 ```
 
 Details are in `help <command>` (say `help start`). **The machine-readable one is `--help --json`**, and what it returns is the very table this command line runs on.
@@ -155,7 +162,7 @@ Details are in `help <command>` (say `help start`). **The machine-readable one i
 English and Chinese are both built in and switchable. The language is a setting **of the data directory**, not a preference of the page:
 
 ```bash
-npx dsh-box config lang zh
+npx dsh-box set lang zh
 ```
 
 The command line and the config window change together. The switch in the top right corner of the window runs exactly that command — so the window still has no capability of its own. Unset, it follows this computer's system language.
@@ -206,7 +213,7 @@ Three things worth knowing:
 
 **A sandbox uses your real sign-in.** Importing it is on by default so you do not reconfigure an API key per sandbox; conversations in a sandbox are real requests and are really billed.
 
-**Conversations can be brought back.** `adopt` copies them from one cabinet into another, idempotent per session, so running it twice adds nothing.
+**Conversations can be brought back.** `get chat --from <cabinet> --to <cabinet>` copies them from one cabinet into another, idempotent per session, so running it twice adds nothing.
 
 ## Network
 

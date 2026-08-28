@@ -30,6 +30,7 @@ import { readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const root = process.argv[2] === undefined ? undefined : resolve(process.argv[2])
@@ -39,6 +40,10 @@ if (root === undefined) {
 }
 
 removeTree(root)
+// ⛔⛔ 空的日常档案柜替身。这里起的赛跑进程建的是真沙箱,而建沙箱这条路会去问
+//    `userDshHome()`;不设它,读的就是跑测试那个人真实的 ~/.dsh。理由全文＝
+//    tools/fake-daily.mjs。⚠️ 摆在 removeTree 之后,否则这个目录跟着被扫掉。
+useFakeDaily(root)
 
 let failures = 0
 const check = (what, passed, detail = '') => {

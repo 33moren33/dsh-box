@@ -21,11 +21,12 @@ import {
 import { join } from 'node:path'
 import process from 'node:process'
 import {
-  backupDir, boxLayout, ensureBox, pickFreeBoxDir, resolveBoxDir, sandboxPaths, userDshHome, versionDir,
+  backupDir, boxLayout, DAILY_CABINET, ensureBox, pickFreeBoxDir, resolveBoxDir, sandboxPaths, uiSeatFile,
+  userDshHome, versionDir,
 } from '../src/paths.js'
 import {
-  bundleNames, claimOn, DEFAULT_PROFILE, KEEP_BACKUPS, listBackups, mountPlugin, profilePackageFile,
-  pruneBackups, removeBackup, removeBundle, restoreBackup, setDisabled, unmountPlugin, cabinetInventory,
+  bundleNames, claimOn, DEFAULT_PROFILE, mountPlugin, profilePackageFile,
+  removeBundle, restoreBackup, setDisabled, unmountPlugin, cabinetInventory,
   cabinetPlugins,
 } from '../src/mounts.js'
 import { aggregateOf } from '../src/aggregate.js'
@@ -41,8 +42,9 @@ import {
 } from '../src/path-env.js'
 import { processStartedAt } from '../src/process-identity.js'
 import {
-  describePlugin, partitionPlugins, readConfig, removePlugin, SETTINGS, updateConfig, upsertPlugin,
+  describePlugin, readConfig, SETTINGS, updateConfig,
 } from '../src/config.js'
+import { everyCabinet, derivedRoster, partitionRoster } from '../src/roster.js'
 import {
   BOOLEAN_FLAGS, COMMANDS, commandLine, describeCommand, describeCommands, helpLines, HISTORY_LINES,
   PROGRAM, VALUE_FLAGS,
@@ -50,6 +52,7 @@ import {
 import { BoxError, errorCode, errorDetails } from '../src/errors.js'
 import { setLang, systemLang, t } from '../src/messages.js'
 import { detectHostDsh, engineLabel, engineRecord, resolveEngine } from '../src/host.js'
+import { looksLikePath } from '../src/engine-path.js'
 import {
   attach, controlStatus, detach, finishCommand, journalShape, noteCommand, readJournal, readSession, record,
 } from '../src/journal.js'
@@ -63,9 +66,13 @@ import {
 } from '../src/registry.js'
 import { showInstant } from '../src/clock.js'
 import {
-  adoptSessions, approvedByWindow, claimPath, clearMainRunning, clearRunning, createNewSandbox,
-  deleteSandbox, describeClaim, ensureSandbox, hasCredentials, importCredentials, listSandboxes,
-  mainDshRunning, mainRunningRecord, releasePath, removeCredentials, runningRecord, runningSandboxes,
+  APPROVAL_WINDOW_MS, askApproval, ensurePanel, waitForApproval,
+} from '../src/approval.js'
+import {
+  adoptSessions, APPROVAL_ENV, approvedByWindow, claimPath, clearMainRunning, clearRunning, createNewSandbox,
+  deleteSandbox, describeClaim, ensureSandbox, forgetEngine, hasCredentials, importCredentials, listSandboxes,
+  liveClaim, mainDshRunning, mainRunningRecord, releasePath, removeCredentials, runningRecord,
+  runningSandboxes,
 } from '../src/sandbox.js'
 import { launch, linkPlugins, stop } from '../src/launch.js'
 import { deleteVersion, downloadedVersions } from '../src/versions.js'
@@ -106,6 +113,10 @@ function commandHelpText(described) {
     ...described.values.map((flag) => `--${flag} <${t('help.valuePlaceholder')}>`),
   ]
   if (flags.length > 0) lines.push(`  ${t('help.flags')}  ${flags.join('  ')}`)
+  // ⭐ Above the read/write line and above the notes, because it is the part a
+  // caller acts on. A reader who stops here should still know whether to wait,
+  // what now exists, and what to type next.
+  if (described.after !== '') lines.push(`  ${t('help.after')}  ${described.after}`)
   lines.push(`  ${t(described.mutates ? 'help.mutates' : 'help.readOnly')}`)
   if (described.notes.length > 0) lines.push('', ...described.notes)
   return `${lines.join('\n')}\n`
@@ -119,6 +130,30 @@ function commandHelpText(described) {
  * command table rather than written out — help that is hand-maintained beside
  * a parser is help that will one day describe a flag nobody implements.
  * @param {string | undefined} topic - a command name, or nothing for the list.
+ * @param {Record<string, unknown>} opts
+ */
+/**
+ * The command a help request is about, from the words as they were typed.
+ *
+ * Longest match first, so `plugins backups rm` finds its own page rather than
+ * stopping at `plugins backups`. Anything that matches nothing comes back as
+ * the words joined the way the table writes them, which is what the "no such
+ * command" message should quote.
+ * @param {string[]} words
+ * @returns {string | undefined}
+ */
+function topicOf(words) {
+  const given = words.filter((word) => word !== undefined)
+  if (given.length === 0) return undefined
+  for (let take = given.length; take > 0; take -= 1) {
+    const name = given.slice(0, take).join('.')
+    if (COMMANDS[name] !== undefined) return name
+  }
+  return given.join('.')
+}
+
+/**
+ * @param {string | undefined} topic
  * @param {Record<string, unknown>} opts
  */
 function showHelp(topic, opts) {
@@ -172,7 +207,15 @@ async function main(positional, opts) {
   // `help` is a command people type, so it is answered rather than refused —
   // and `<command> --help` asks about that command, not about everything.
   if (command === undefined || command === 'help' || opts.help === true) {
-    return void showHelp(command === 'help' ? rest[0] : command, opts)
+    // ⭐ Sub-commands are asked about the way they are typed. The table keys
+    // them with a dot (`plugins.install`) because that is what a record needs
+    // to be one word, but nobody types a dot — and `help plugins install`
+    // silently fell back to the `plugins` page, which answers a different
+    // question and looks like a complete answer. Found by handing the help to
+    // an agent that had read nothing else: it could not ask about two thirds of
+    // the table. Both spellings work now; `describeCommand` still sees one name.
+    const asked = command === 'help' ? rest : [command, ...rest]
+    return void showHelp(topicOf(asked), opts)
   }
 
   layout = openBox(opts)
@@ -182,31 +225,114 @@ async function main(positional, opts) {
   noteCommand(layout, command, { ...opts, json: undefined })
 
   switch (command) {
-    case 'versions': return showVersions(layout, opts)
-    case 'pull': return pull(layout, rest[0], opts)
-    case 'drop': return drop(layout, rest[0], opts)
-    case 'plugins': return plugins(layout, rest, opts)
-    case 'packages': return packages(layout, rest, opts)
-    case 'workspaces': return workspaces(layout, rest, opts)
-    case 'sandboxes': return showSandboxes(layout, opts)
-    case 'start': return start(layout, opts)
+    case 'ls': return look(layout, rest, opts)
+    case 'get': return bringIn(layout, rest, opts)
+    case 'rm': return takeAway(layout, rest, opts)
+    case 'set': return change(layout, rest, opts)
+    case 'start': return start(layout, rest[0], opts)
     case 'stop': return halt(layout, rest[0], opts)
-    case 'signin': return signIn(layout, rest[0], opts)
-    case 'signout': return signOut(layout, rest[0], opts)
-    case 'adopt': return adopt(layout, rest[0], opts)
-    case 'rm': return remove(layout, rest[0], opts)
-    case 'config': return settings(layout, rest, opts)
-    case 'path': return pathCommand(layout, rest, opts)
-    case 'ui': return openUi(layout, opts)
-    case 'quit': return quit(layout, opts)
-    case 'status': return showStatus(layout, opts)
     case 'logs': return showLogs(layout, rest[0], opts)
-    case 'attach': return takeControl(layout, opts)
-    case 'detach': return releaseControl(layout, opts)
-    case 'memory': return showMemory(layout, opts)
-    case 'history': return showHistory(layout, opts)
+    case 'ui': return openUi(layout, opts)
+    case 'agent': return agentControl(layout, rest, opts)
     default: throw new BoxError('UNKNOWN_COMMAND', t('help.unknownCommand', { command }))
   }
+}
+
+/**
+ * The second word, refused rather than ignored.
+ *
+ * ⛔ Every family used to spell this refusal for itself, and the most-used one
+ * was the one that had forgotten to: `plugins instal <名>` fell through to the
+ * listing and **exited 0** with a plausible table. A rule written once per
+ * family is a rule the next family will be missing, so it is written once.
+ * @param {string} verb
+ * @param {string | undefined} what
+ * @returns {never}
+ */
+function noSuchObject(verb, what) {
+  throw new BoxError(
+    what === undefined ? 'MISSING_ARGUMENT' : 'UNKNOWN_COMMAND',
+    t('help.unknownCommand', { command: what === undefined ? verb : `${verb} ${what}` }),
+  )
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function look(layout, rest, opts) {
+  const [what] = rest
+  // ⭐ Nothing after `ls` is not a missing argument: "everything true about this
+  // data directory right now" is the answer an agent re-reads every turn, and
+  // making it type a word for it would be a toll on the most frequent question.
+  if (what === undefined) return showStatus(layout, opts)
+  if (what === 'machine') return showVersions(layout, opts)
+  if (what === 'plugin') return showPlugins(layout, opts)
+  if (what === 'sandbox') return showSandboxes(layout, opts)
+  if (what === 'workspace') return showWorkspaces(layout, opts)
+  if (what === 'history') return showHistory(layout, opts)
+  if (what === 'memory') return showMemory(layout, opts)
+  if (what === 'setting') return showSettings(layout, opts)
+  return noSuchObject('ls', what)
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function bringIn(layout, rest, opts) {
+  const [what, value] = rest
+  if (what === 'machine') return pull(layout, value, opts)
+  if (what === 'plugin') return installPlugin(layout, value, opts)
+  if (what === 'signin') return signIn(layout, opts)
+  if (what === 'chat') return adopt(layout, opts)
+  return noSuchObject('get', what)
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function takeAway(layout, rest, opts) {
+  const [what, value] = rest
+  if (what === 'machine') return drop(layout, value, opts)
+  if (what === 'plugin') return uninstallPlugin(layout, value, opts)
+  if (what === 'sandbox') return remove(layout, value, opts)
+  if (what === 'signin') return signOut(layout, opts)
+  if (what === 'setting') return resetConfig(layout, opts)
+  return noSuchObject('rm', what)
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function change(layout, rest, opts) {
+  const [what, value, state] = rest
+  if (what === undefined) return noSuchObject('set', undefined)
+  if (what === 'plugin') return setPlugin(layout, value, state, opts)
+  if (what === 'workspace') return useWorkspace(layout, value, opts)
+  if (what === 'path') return setPath(layout, value, opts)
+  // ⭐ Everything else under `set` is a stored setting, and they are looked up
+  // rather than listed here: a setting added to `SETTINGS` is one this verb can
+  // already change, which is the whole reason that table exists.
+  return changeSetting(layout, what, value, opts)
+}
+
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string[]} rest
+ * @param {Record<string, unknown>} opts
+ */
+function agentControl(layout, rest, opts) {
+  const [what] = rest
+  if (what === 'attach') return takeControl(layout, opts)
+  if (what === 'detach') return releaseControl(layout, opts)
+  return noSuchObject('agent', what)
 }
 
 /**
@@ -221,65 +347,69 @@ async function main(positional, opts) {
  * @returns {{command: string, args: Record<string, unknown>} | null}
  */
 function describeAction(command, rest, opts) {
+  const [what, value, state] = rest
   switch (command) {
-    case 'pull': case 'drop':
-      return { command, args: { version: rest[0] } }
-    case 'plugins':
-      // `plugins` on its own and `plugins backups` only look; the rest change
-      // something, and only the ones that change something are written down.
-      if (rest[0] === 'backups') {
-        return ['rm', 'prune'].includes(rest[1])
-          ? {
-            command: `plugins.backups.${rest[1]}`,
-            args: { target: rest[2], main: opts.main === true, sandbox: opts.sandbox, keep: opts.keep },
-          }
-          : null
-      }
-      // ⛔ Which cabinet belongs in here too. It used to say only `target`, so
-      // a command that failed before the cabinet was resolved was written down
-      // without it — and the rendered line came out as `--sandbox` with
-      // nothing after it, which is not a command anyone can re-run. The
-      // failures are exactly the records worth having: an agent that cannot
-      // see where it was stopped walks into the same wall next time.
-      if (['install', 'uninstall', 'restore'].includes(rest[0])) {
-        return {
-          command: `plugins.${rest[0]}`,
-          args: { target: rest[1], main: opts.main === true, sandbox: opts.sandbox, at: opts.at },
-        }
-      }
-      return ['add', 'rm'].includes(rest[0])
-        ? {
-          command: `plugins.${rest[0]}`,
-          args: { target: rest[1], id: opts.id, approved: opts.approved === true },
-        }
-        : null
-    case 'packages':
-      return ['rm', 'prune'].includes(rest[0])
-        ? { command: `packages.${rest[0]}`, args: { target: rest[1] } }
-        : null
-    case 'workspaces':
-      return rest[0] === 'use'
-        ? {
-          command: 'workspaces.use',
-          args: { target: rest[1], main: opts.main === true, sandbox: opts.sandbox },
-        }
-        : null
-    case 'start':
-      return { command, args: { version: opts.version, sandbox: opts.sandbox, main: opts.main === true } }
-    case 'stop': case 'rm': case 'signin': case 'signout':
-      return { command, args: { sandbox: rest[0], main: opts.main === true } }
-    case 'adopt':
+    // ⛔ Which cabinet belongs in these records too. They used to say only
+    // `target`, so a command that failed before the cabinet was resolved was
+    // written down without it — and the rendered line came out as `--to` with
+    // nothing after it, which is not a command anyone can re-run. The failures
+    // are exactly the records worth having: an agent that cannot see where it
+    // was stopped walks into the same wall next time.
+    case 'get':
+      if (what === 'machine') return { command: 'get.machine', args: { version: value } }
+      if (what === 'plugin') return { command: 'get.plugin', args: { target: value, id: opts.id, to: opts.to } }
+      if (what === 'signin') return { command: 'get.signin', args: { to: opts.to } }
       // Replaced by the resolved pair once the direction is known; this stands
       // in only for a run that fails before getting that far.
-      return { command, args: { fromSandbox: rest[0] ?? opts.from ?? null, toSandbox: opts.to ?? null } }
-    case 'config':
-      return rest[0] === undefined ? null : { command: `config.${rest[0]}`, args: { value: rest[1] } }
-    case 'path':
-      return ['add', 'rm'].includes(rest[0])
-        ? { command: `path.${rest[0]}`, args: { force: opts.force === true } }
-        : null
-    case 'quit':
-      return { command, args: {} }
+      if (what === 'chat') {
+        return { command: 'get.chat', args: { fromSandbox: opts.from ?? null, toSandbox: opts.to ?? null } }
+      }
+      return null
+    case 'rm':
+      if (what === 'machine') return { command: 'rm.machine', args: { version: value } }
+      if (what === 'plugin') return { command: 'rm.plugin', args: { target: value, from: opts.from } }
+      if (what === 'sandbox') return { command: 'rm.sandbox', args: { sandbox: value } }
+      if (what === 'signin') return { command: 'rm.signin', args: { from: opts.from } }
+      if (what === 'setting') return { command: 'rm.setting', args: {} }
+      return null
+    case 'set':
+      if (what === undefined) return null
+      if (what === 'plugin') {
+        return {
+          command: 'set.plugin',
+          // ⛔ `undefined` rather than `false` when nobody said which way: the
+          // rendered line reads it back, and a blank filled in with a default
+          // is the one thing a re-runnable line must never contain.
+          args: {
+            target: value,
+            off: state === 'on' || state === 'off' ? state === 'off' : undefined,
+            undo: opts.undo === true,
+            in: opts.in,
+            at: opts.at,
+          },
+        }
+      }
+      if (what === 'workspace') return { command: 'set.workspace', args: { target: value, in: opts.in } }
+      if (what === 'path') return { command: 'set.path', args: { state: value, force: opts.force === true } }
+      return { command: `set.${what}`, args: { value } }
+    // ⭐ The cabinet is the positional now, and `main` is a name like any other
+    // — so what gets written down is read off the same word a person typed.
+    case 'start':
+      return { command, args: { version: opts.version, sandbox: what, main: what === DAILY_CABINET } }
+    // ⛔ The three switches are recorded even though the resolved record will
+    // overwrite them: without one of them the line renders as a bare `stop`,
+    // which reads as "stopped a sandbox" and is the one thing it did not do.
+    case 'stop':
+      return {
+        command,
+        args: {
+          sandbox: what,
+          main: what === DAILY_CABINET,
+          all: opts.all === true,
+          window: opts.window === true,
+          download: opts.download === true,
+        },
+      }
     default:
       return null
   }
@@ -312,7 +442,7 @@ function recordResolved(args) {
 async function showStatus(layout, opts) {
   const config = readConfig(layout)
   const boxes = listSandboxes(layout)
-  const { live, missing } = partitionPlugins(config)
+  const { live, missing } = partitionRoster(derivedRoster(layout))
   const status = {
     agent: controlStatus(layout),
     // The machine axis: the dsh the user installed themselves, which is what
@@ -490,7 +620,7 @@ function logTarget(layout, name, opts) {
       never: t('logs.neverPackage'),
     }
   }
-  if (opts.main === true) {
+  if (name === DAILY_CABINET) {
     // Only the launch logs. This directory also holds `actions.log`, which is
     // appended to by every command and so is always the newest file in it.
     const dir = join(layout.root, 'logs')
@@ -522,7 +652,7 @@ function logTarget(layout, name, opts) {
  */
 function takeControl(layout, opts) {
   const held = attach(layout)
-  if (opts.json === true) return void emit({ action: 'attach', ...held })
+  if (opts.json === true) return void emit({ action: 'agent.attach', ...held })
   console.log(`\n  ${t('attach.done')}`)
   console.log(`  ${t('attach.session', { session: held.session })}\n`)
 }
@@ -536,7 +666,7 @@ function releaseControl(layout, opts) {
   // back "I finished" where it was actually stopped has been told the one thing
   // it most needs to know is not true.
   const released = detach(layout, opts.forced === true ? 'forced' : 'done')
-  if (opts.json === true) return void emit({ action: 'detach', released })
+  if (opts.json === true) return void emit({ action: 'agent.detach', released })
   if (released === null) console.log(`\n  ${t('detach.nobody')}\n`)
   else if (opts.forced === true) console.log(`\n  ${t('detach.forced')}\n`)
   else console.log(`\n  ${t('detach.done')}\n`)
@@ -630,6 +760,34 @@ function openBox(opts) {
  * @param {import('../src/paths.js').BoxLayout} layout
  * @param {Record<string, unknown>} opts
  */
+/**
+ * The folders this box has been pointed at, worked out from the sandboxes.
+ *
+ * Not a stored list, on purpose. Each sandbox already records the installation
+ * that last booted it, so this is a consequence of what has been run rather
+ * than a second thing to keep in step with it — which is also why
+ * `rm machine <folder>` is "forget" and not "unregister": there is no registry.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @returns {{dir: string, version: string | null, kind: string, sandboxes: string[]}[]}
+ */
+function namedMachines(layout) {
+  const found = new Map()
+  for (const info of listSandboxes(layout)) {
+    const engine = info.lastEngine
+    if (engine === null || engine === undefined) continue
+    if (engine.kind !== 'tree' && engine.kind !== 'app') continue
+    const seen = found.get(engine.dir)
+    if (seen === undefined) {
+      found.set(engine.dir, {
+        dir: engine.dir, version: engine.version ?? null, kind: engine.kind, sandboxes: [info.name],
+      })
+    } else {
+      seen.sandboxes.push(info.name)
+    }
+  }
+  return [...found.values()]
+}
+
 async function showVersions(layout, opts) {
   const downloaded = downloadedVersions(layout)
   let releases = null
@@ -640,13 +798,29 @@ async function showVersions(layout, opts) {
     registryError = error.message
   }
 
+  // The third kind of machine, worked out rather than kept: which folders the
+  // sandboxes were last started on. Listed here because the summary of this
+  // command promises all three, and a listing that quietly shows two of them is
+  // how somebody concludes a folder "is not registered" and goes looking for a
+  // command to register it.
+  const named = namedMachines(layout)
+
   if (opts.json === true) {
     return void emit({
       downloaded,
+      named,
       available: releases?.versions ?? [],
       tags: releases?.tags ?? {},
       registryError,
     })
+  }
+
+  console.log(`
+  ${t('versions.named')}`)
+  if (named.length === 0) console.log(`    ${t('versions.noneNamed')}`)
+  for (const entry of named) {
+    console.log(`    ${entry.dir}`)
+    console.log(`      ${entry.version ?? ''} ${t('versions.namedBy', { list: entry.sandboxes.join('、') })}`)
   }
 
   console.log(`\n  ${t('versions.downloaded')}`)
@@ -697,17 +871,25 @@ async function pull(layout, version, opts) {
     source: readConfig(layout).source,
   })
   appendLog(logFile, t('pull.ready', { version }))
-  if (quiet) return void emit({ action: 'pull', version, packages: report.checked, log: lines, logFile })
+  if (quiet) return void emit({ action: 'get.machine', version, packages: report.checked, log: lines, logFile })
   console.log(`\n  ${t('pull.ready', { version })}\n`)
 }
 
 /**
+ * Take one machine out.
+ *
+ * ⭐⭐ One rule with two outcomes, and what decides is **whose it is** — the
+ * same rule as taking out a plugin, so it is learned once instead of twice. A
+ * release is ours, because we downloaded it, and it really goes from the disk.
+ * A folder is theirs: only this tool's own record of it goes, and not one file
+ * of theirs is touched.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string} version
+ * @param {string} version - a release number, or a folder.
  * @param {Record<string, unknown>} opts
  */
 async function drop(layout, version, opts) {
   if (version === undefined) throw new BoxError('MISSING_ARGUMENT', t('drop.which'))
+  if (looksLikePath(version)) return forget(layout, version, opts)
   const logFile = newVersionLog(layout.root, version)
   const lines = []
   const quiet = opts.json === true
@@ -717,8 +899,37 @@ async function drop(layout, version, opts) {
     if (quiet) lines.push(line)
     else console.log(`  ${line}`)
   })
-  if (quiet) return void emit({ action: 'drop', version, log: lines, logFile })
+  if (quiet) return void emit({ action: 'rm.machine', version, log: lines, logFile })
   console.log(`  ${t('drop.redownload')}\n`)
+}
+
+/**
+ * Forget a folder this tool was pointed at, without touching it.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} dir
+ * @param {Record<string, unknown>} opts
+ */
+function forget(layout, dir, opts) {
+  const { forgotten, cleared, running } = forgetEngine(layout, dir)
+  // ⛔ Refused before anything was written, and it says which sandbox is in the
+  // way: clearing a pointer layer under a live dsh is the damage this record
+  // exists to prevent, done sooner.
+  if (running.length > 0) {
+    throw new BoxError('MACHINE_IN_USE', t('forget.running', { list: running.join('、') }), { running, path: dir })
+  }
+  // ⭐ Nothing to forget is said as its own answer rather than as success. A
+  // path typed with a typo would otherwise report "done" and leave the chip
+  // exactly where it was.
+  if (forgotten.length === 0) {
+    throw new BoxError('MACHINE_NOT_KNOWN', t('forget.unknown', { path: dir }), { path: dir })
+  }
+  if (opts.json === true) {
+    return void emit({ action: 'rm.machine', path: dir, forgotten, cleared, deleted: false })
+  }
+  console.log(`\n  ${t('forget.done', { path: dir, list: forgotten.join('、') })}`)
+  console.log(`  ${t('forget.keptOnDisk', { path: dir })}`)
+  if (cleared.length > 0) console.log(`  ${t('forget.cleared', { list: cleared.join('、') })}`)
+  console.log()
 }
 
 /**
@@ -752,66 +963,67 @@ function snapshotDir(layout, target) {
   return target.main ? backupDir(layout, target.home) : null
 }
 
-function cabinetTarget(layout, opts, writes = false) {
-  const main = opts.main === true
-  if (main && typeof opts.sandbox === 'string') {
-    throw new BoxError('BAD_FLAG', t('cabinet.bothFlags'))
+/**
+ * Which filing cabinet a command was aimed at.
+ *
+ * ⭐⭐ One value, read from whichever of `--in` / `--to` / `--from` this command
+ * asks with. It used to be a choice between two flags, and "both given at once"
+ * had to be refused — a refusal that cannot exist now, because a cabinet is a
+ * name and the daily one's name is {@link DAILY_CABINET}. What is left is the
+ * part that was always the point: this is the one place a cabinet gets chosen,
+ * so a command added next month inherits the gate below without anybody
+ * remembering it.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {Record<string, unknown>} opts
+ * @param {boolean} [writes] - whether the caller is about to change the cabinet.
+ * @param {'in' | 'to' | 'from'} [flag] - which flag names it, for this command.
+ */
+function cabinetTarget(layout, opts, writes = false, flag = 'in') {
+  const named = opts[flag]
+  if (typeof named !== 'string' || named === '') {
+    throw new BoxError('MISSING_ARGUMENT', t('cabinet.which'))
   }
-  if (main) {
-    // ⭐⭐ The gate lives here rather than at each command, and that is the
-    // whole point: this function is the one place a cabinet gets chosen, so a
-    // command added next month inherits the rule without anybody remembering
-    // it. The previous shape asked each caller to decide, and `plugins install
-    // --main` and `plugins uninstall --main` were both missed — measured, not
-    // supposed: installing into the real `~/.dsh` answered `ok:true` and wrote
-    // the file with nobody asked.
-    //
+  if (named === DAILY_CABINET) {
     // ⚠️ `writes` is the whole distinction. Looking is never gated: an agent
     // must be able to read a cabinet and report what it found, and a refusal to
     // *look* would push it straight back to `cat`, which is the one place this
-    // tool cannot show what happened.
-    if (writes && !approvedByWindow(layout, opts.approved === true)) {
+    // tool cannot show what happened. Each caller used to decide, and
+    // installing and uninstalling into the real `~/.dsh` were both missed —
+    // measured, not supposed: it answered `ok:true` with nobody asked.
+    if (writes && !approvedByWindow(layout)) {
       throw new BoxError('NEEDS_APPROVAL', t('cabinet.dailyNeedsApproval'), { main: true })
     }
     return { main: true, label: t('cabinet.daily'), home: userDshHome(), sandbox: null }
   }
-  if (typeof opts.sandbox !== 'string' || opts.sandbox === '') {
-    throw new BoxError('MISSING_ARGUMENT', t('cabinet.which'))
-  }
-  const paths = sandboxPaths(layout, opts.sandbox)
+  const paths = sandboxPaths(layout, named)
   return { main: false, label: paths.name, home: paths.home, sandbox: paths.name }
 }
 
 /**
+ * How to name this cabinet back to whoever asked, in the new shape.
+ *
+ * ⭐ Error messages quote the flags to type next, and a quoted flag that no
+ * longer exists is worse than no hint at all — it is a hint that fails.
+ * @param {{main: boolean, sandbox: string | null}} target
+ * @param {'in' | 'to' | 'from'} [flag]
+ * @returns {string}
+ */
+function cabinetFlag(target, flag = 'in') {
+  return `--${flag} ${target.sandbox ?? DAILY_CABINET}`
+}
+
+/**
+ * What plugins there are, or what one cabinet actually holds.
+ *
+ * ⭐ Two questions, and `--in` is which one is being asked: without it, "what
+ * can this tool name at all"; with it, "what does that filing cabinet actually
+ * have". Two layers, two answers, and conflating them is what made "is it
+ * installed?" unanswerable.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
  * @param {Record<string, unknown>} opts
  */
-function plugins(layout, rest, opts) {
-  const config = readConfig(layout)
-  const [action, value] = rest
-  if (action === 'install') return installPlugin(layout, value, opts)
-  if (action === 'uninstall') return uninstallPlugin(layout, value, opts)
-  if (action === 'disable' || action === 'enable') return switchPlugin(layout, value, action === 'disable', opts)
-  if (action === 'backups') return showBackups(layout, rest.slice(1), opts)
-  if (action === 'restore') return restoreCabinet(layout, opts)
-  if (action === 'add') {
-    if (value === undefined) throw new BoxError('MISSING_ARGUMENT', t('plugins.addWhich'))
-    const plugin = describePlugin(value, { id: typeof opts.id === 'string' ? opts.id : undefined })
-    // Registering is an upsert, so an entry can vanish without anyone seeing
-    // it happen. A person watching the list notices; a caller does not.
-    const replaced = config.plugins.some((p) => p.id === plugin.id)
-    updateConfig(layout, (current) => upsertPlugin(current, plugin))
-    recordResolved({ id: plugin.id, package: plugin.package, path: plugin.path, replaced })
-    if (opts.json === true) return void emit({ action: 'plugins.add', plugin, replaced })
-    console.log(`\n  ${t(replaced ? 'plugins.rememberedReplaced' : 'plugins.remembered', { package: plugin.package, id: plugin.id })}\n`)
-    return
-  }
-  if (action === 'rm') return removeEverywhere(layout, value, opts)
-  // Naming a workspace asks a different question: not "what does this tool know
-  // about" but "what does that filing cabinet actually have". Two layers, two
-  // answers, and conflating them is what made "is it installed?" unanswerable.
-  if (opts.main === true || typeof opts.sandbox === 'string') {
+function showPlugins(layout, opts) {
+  if (typeof opts.in === 'string') {
     const target = cabinetTarget(layout, opts)
     const mounted = cabinetPlugins(layout, target.home)
     // ⭐ Read from the protocol rather than from our own bookkeeping: whoever
@@ -854,7 +1066,7 @@ function plugins(layout, rest, opts) {
     return void console.log(`\n  ${t('plugins.patchAt', { file: mounted.patchFile })}\n`)
   }
 
-  const { live, missing } = partitionPlugins(config)
+  const { live, missing } = partitionRoster(derivedRoster(layout))
   // The version is read off each folder's own package.json at the moment of
   // asking, never stored: the registry row is a pointer, and what it points at
   // is where the truth about the version lives. `null` prints as nothing — a
@@ -871,112 +1083,6 @@ function plugins(layout, rest, opts) {
   console.log()
 }
 
-/**
- * Get rid of a plugin: out of every workspace, out of the registry, and — when
- * we were the ones who fetched it — off the disk.
- *
- * ⛔ **This used to be `plugins rm`, which only deleted a row from our own
- * registry.** The button above it said "stop remembering" and the row disappeared, so it
- * read as "this plugin is gone" while the workspaces it had been installed into
- * carried on loading it, and the downloaded copy stayed on disk. Getting rid of
- * one actually took three steps across two kinds of state, and nothing on
- * screen or in the help said so.
- *
- * ⭐ **What it does depends on where the files came from, and only on that**
- * (CEO 2026-08-22, the line being: whoever owns the files is responsible for
- * them). A folder of the user's own is unlinked and forgotten, never touched;
- * something we downloaded into our own tree is deleted outright, because
- * leaving it would be the litter nobody has a command for.
- *
- * ⚠️ The command stays one command. The two faces differ in wording, not in
- * capability — a second command would be a second thing to keep in step.
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string} id
- * @param {Record<string, unknown>} opts
- */
-function removeEverywhere(layout, id, opts) {
-  if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t('plugins.rmWhich'))
-  const config = readConfig(layout)
-  const known = config.plugins.find((entry) => entry.id === id)
-  const places = pluginPlaces(layout, id, known?.package)
-  if (known === undefined && places.length === 0) {
-    throw new BoxError('UNKNOWN_PLUGIN', t('plugins.rmUnknown', { id }), { id })
-  }
-  const ours = known !== undefined && isOurDownload(layout, known.path)
-  const daily = places.find((place) => place.main)
-
-  // ⚠️ A gate rather than a warning, because the person named a row in a list
-  // and the consequence reaches into a cabinet they did not name.
-  //
-  // ⭐⭐ What counts as approval is a person in the window, not the flag: see
-  // {@link approvedByWindow}. `ask-on-daily` no longer takes part in this
-  // decision at all — it now means only "the window need not ask me twice",
-  // which is a preference of somebody who is sitting there. It used to switch
-  // the gate off for every caller, so a person turning off their own prompt was
-  // quietly handing the same door to anything else running on the machine.
-  if (daily !== undefined && !approvedByWindow(layout, opts.approved === true)) {
-    throw new BoxError(
-      'NEEDS_APPROVAL',
-      t(ours ? 'plugins.rmApprovalDownloaded' : 'plugins.rmApprovalYours', {
-        package: known?.package ?? id,
-        daily: daily.label,
-        places: places.map((place) => place.label).join('、'),
-      }),
-      // ⛔ Identifiers, not labels. `place.label` for the daily cabinet is a
-      // translated phrase, so a caller reading `--json` used to get
-      // 「日常档案柜」 or "your everyday cabinet" depending on whose machine it
-      // ran on — the command line is the interface, and an interface whose
-      // values move with the display language is not one. `sandbox: null` is
-      // the daily cabinet, exactly as everywhere else here.
-      // ⭐ Found by running the acceptance suite on a machine with no `LANG`
-      // set: the assertion about this field was written against the Chinese
-      // text and had never left a Chinese locale.
-      {
-        id,
-        package: known?.package ?? null,
-        places: places.map((place) => ({ sandbox: place.sandbox, main: place.main })),
-        downloaded: ours,
-      },
-    )
-  }
-
-  const detached = []
-  for (const place of places) {
-    const result = unmountPlugin({ layout, home: place.home, id, backupDir: snapshotDir(layout, place) })
-    if (result.removed === null) continue
-    // The copy staged inside that cabinet goes with it. Leaving it would be
-    // exactly the litter this command exists to stop: files nothing loads, in
-    // somebody's home, with no command that can see them. A no-op wherever the
-    // cabinet held a junction rather than a copy.
-    unstageFromCabinet(place.home, DEFAULT_PROFILE, result.removed.package)
-    detached.push({ cabinet: place.label, backup: result.backup })
-  }
-  updateConfig(layout, (current) => removePlugin(current, id))
-  // Deleted last, and only after every link to it is gone: a package removed
-  // while something still names it leaves that workspace resolving to nothing,
-  // which dsh answers by refusing to load the whole plugin tree.
-  const deleted = ours && removePackage(layout, known.package)
-  // The farms hold hardlinks into the bytes just unlinked; without the store
-  // copy they are orphans no launch can refresh.
-  if (deleted) dropFromFarms(layout, known.package)
-
-  recordResolved({
-    id, package: known?.package ?? null, cabinets: detached.map((one) => one.cabinet), deleted,
-  })
-  if (opts.json === true) {
-    return void emit({
-      action: 'plugins.rm', id, package: known?.package ?? null, detached, deletedPackage: deleted,
-    })
-  }
-  console.log(`\n  ${t('plugins.rmHeader', { package: known?.package ?? id })}`)
-  if (detached.length === 0) console.log(`    ${t('plugins.rmNowhere')}`)
-  for (const one of detached) console.log(`    ${t('plugins.rmDetached', { cabinet: one.cabinet })}`)
-  console.log(`    ${t(known === undefined ? 'plugins.rmUnregisteredNever' : 'plugins.rmUnregistered')}`)
-  console.log(deleted
-    ? `    ${t('plugins.rmPackageDeleted')}`
-    : `    ${ours ? '' : t('plugins.rmFolderUntouched')}`)
-  console.log()
-}
 
 /**
  * Everywhere a plugin is currently installed, read from the workspaces
@@ -1005,12 +1111,26 @@ function pluginPlaces(layout, id, name) {
  * @param {Record<string, unknown>} opts
  */
 async function installPlugin(layout, source, opts) {
+  const from = typeof opts.from === 'string' && opts.from !== '' ? opts.from : null
+  // ⭐⭐ The positional is optional **only** when a cabinet is named to take
+  // from, and that is the whole of "copy a whole cabinet". CEO 2026-08-28:
+  // "给了 id 搬那一个,不给就搬整柜" — so the two are one command read two ways
+  // rather than two commands, and nothing in here has to know about directions.
   if (source === undefined) {
-    throw new BoxError('MISSING_ARGUMENT', t('plugins.installWhich'))
+    if (from === null) throw new BoxError('MISSING_ARGUMENT', t('plugins.installWhich'))
+    return copyCabinet(layout, from, opts)
   }
-  const target = cabinetTarget(layout, opts, true)
+  const target = cabinetTarget(layout, opts, true, 'to')
   const config = readConfig(layout)
-  const known = config.plugins.find((entry) => entry.id === source)
+  // ⭐⭐ Looked up in the derived roster, not in a stored registry — which is
+  // what makes "take what the daily cabinet has into a sandbox" work by name:
+  // whatever a cabinet holds is nameable, without anybody having remembered to
+  // register it first.
+  // ⭐ `--from` narrows that lookup to one cabinet. Two cabinets can hold two
+  // different folders under one id, and answering with whichever came first
+  // would copy the wrong one while reporting the right name.
+  const roster = from === null ? derivedRoster(layout) : rosterOf(layout, from)
+  const known = roster.find((entry) => entry.id === source)
   // Three kinds of thing can be named, and they are told apart by what they
   // are, not by a flag: a folder that exists, an id this tool has registered,
   // or — failing both — a package name to fetch. Guessing wrong is cheap and
@@ -1022,6 +1142,90 @@ async function installPlugin(layout, source, opts) {
     id: typeof opts.id === 'string' ? opts.id : known?.id,
     source,
   })
+}
+
+/**
+ * What one named cabinet holds, out of the roster everything else reads.
+ *
+ * ⛔ A cabinet that is not there is said so rather than answered with an empty
+ * list. "Nothing to copy" and "there is no such cabinet" are different facts,
+ * and a copy that quietly did nothing is the failure a caller does not notice.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} name - a sandbox name, or {@link DAILY_CABINET}.
+ * @returns {import('../src/roster.js').RosterEntry[]}
+ */
+function rosterOf(layout, name) {
+  const known = everyCabinet(layout).some((one) => (one.sandbox ?? DAILY_CABINET) === name)
+  if (!known) {
+    throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name }), { sandbox: name })
+  }
+  return derivedRoster(layout)
+    .filter((entry) => entry.cabinets.some((one) => (one.sandbox ?? DAILY_CABINET) === name))
+}
+
+/**
+ * Copy every plugin one cabinet holds into another.
+ *
+ * ⭐⭐ **The direction is an argument here, not a feature.** The old shape said
+ * where a plugin was going with `--main` / `--sandbox`, so the window grew a
+ * wire per direction and "the daily cabinet's setup into a sandbox" was a thing
+ * somebody had to build. With `--from` and `--to` both being names, the reverse
+ * needs no implementation at all — which is also why deleting the stored
+ * registry was not optional: the daily cabinet's plugins are nameable only
+ * because the list is worked out from what the cabinets hold.
+ *
+ * ⛔ One failure does not stop the rest. A cabinet holds plugins of several
+ * kinds — one whose folder has been moved, one whose name is already taken over
+ * there — and abandoning the copy at the first would leave the target half
+ * filled with no statement of where it stopped. Every one is attempted and the
+ * answer says which did what.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string} from
+ * @param {Record<string, unknown>} opts
+ */
+async function copyCabinet(layout, from, opts) {
+  const target = cabinetTarget(layout, opts, true, 'to')
+  if ((target.sandbox ?? DAILY_CABINET) === from) {
+    throw new BoxError('SAME_WORKSPACE', t('plugins.copySameCabinet', { name: from }), { cabinet: from })
+  }
+  const { live, missing } = partitionRoster(rosterOf(layout, from))
+  /** @type {object[]} */
+  const collect = []
+  /** @type {object[]} */
+  const refused = []
+  for (const entry of live) {
+    try {
+      installFromFolder(layout, entry.path, target, opts, { id: entry.id, source: entry.id, collect })
+    } catch (error) {
+      // ⭐ Kept as the code, not as prose: this list is what a caller decides
+      // what to do next from, and `PLUGIN_NAME_TAKEN` is a different next step
+      // from `UNREADABLE_PATCH`.
+      refused.push({ id: entry.id, package: entry.package, code: errorCode(error), message: error.message })
+    }
+  }
+  const copied = collect.filter((one) => one.added === true)
+  const already = collect.filter((one) => one.alreadyThere === true)
+  recordResolved({ from, main: target.main, sandbox: target.sandbox, brought: copied.length })
+  if (opts.json === true) {
+    return void emit({
+      action: 'get.plugin',
+      from,
+      cabinet: target.label,
+      home: target.home,
+      copied: copied.map((one) => ({ id: one.plugin.id, package: one.plugin.package })),
+      alreadyThere: already.map((one) => ({ id: one.plugin.id, package: one.plugin.package })),
+      // A row whose folder is gone is not a failure of the copy — it is a fact
+      // about the cabinet being copied, and one the caller may want to fix.
+      missing: missing.map((one) => ({ id: one.id, package: one.package })),
+      refused,
+    })
+  }
+  console.log(`\n  ${t('plugins.copyDone', { from, cabinet: target.label, count: copied.length })}`)
+  for (const one of copied) console.log(`    ${one.plugin.package}`)
+  if (already.length > 0) console.log(`  ${t('plugins.copyAlready', { count: already.length })}`)
+  for (const one of missing) console.log(`  ${t('plugins.copyMissing', { package: one.package })}`)
+  for (const one of refused) console.log(`  ${t('plugins.copyRefused', { package: one.package, why: one.message })}`)
+  console.log()
 }
 
 /**
@@ -1037,8 +1241,14 @@ async function installPlugin(layout, source, opts) {
  * delete the package) reads exactly that field — while `dir` is what dsh loads.
  * `logFile` is where the download that preceded this was journalled, when there
  * was one; it rides into the `--json` answer so a caller knows where to look.
+ * @param {object[]} [about.collect] - when given, the outcome is pushed here
+ * instead of being printed. ⛔ This exists for one caller and one reason:
+ * copying a whole cabinet installs many plugins, and `--json` promises **one**
+ * parseable line. Without it a twelve-plugin copy answers with twelve lines,
+ * each of which looks like a complete answer to the command that was typed.
  */
-function installFromFolder(layout, dir, target, opts, { id, source, store, logFile } = {}) {
+function installFromFolder(layout, dir, target, opts, { id, source, store, logFile, collect } = {}) {
+  const quiet = Array.isArray(collect)
   // Described afresh even when it is already registered: what was checked when
   // it was added was that folder as it was then, and "is this still a loadable
   // plugin" is only true at the moment it is asked.
@@ -1072,10 +1282,14 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
       { plugin: plugin.package, wanted: plugin.path, points: claim.points, slot: claim.slot },
     )
   }
-  const registered = { ...plugin, path: store ?? plugin.path }
-  updateConfig(layout, (current) => (current.plugins.some((entry) => entry.id === plugin.id)
-    ? current
-    : upsertPlugin(current, registered)))
+  // ⛔ Nothing is written down here any more. Installing used to also add a row
+  // to a registry in our own config; that registry is gone, and the reason it
+  // could go is visible right here — **every fact it held is a consequence of
+  // the write that happens below.** The cabinet's own file says the plugin is
+  // there, our store says we fetched it, and the roster is worked out from those
+  // two. A record kept alongside them could only ever agree or drift.
+  // ⚠️ `store` still matters, but as an argument rather than a stored field: it
+  // is where our copy lives when the cabinet got a staged copy instead.
   // ⛔⛔ Already ours in this cabinet. Without this branch the verdict fell
   // through to the link and the mount below, and `mountPlugin` appends — so
   // installing the same plugin twice wrote a **second identical row** into the
@@ -1087,35 +1301,35 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
       // only the link. ⭐ Said out loud rather than folded into "already there":
       // the premise of "nothing done" is that nothing was done.
       linkPlugins(target.home, DEFAULT_PROFILE, [plugin])
-      if (opts.json === true) {
-        return void emit({
-          action: 'plugins.install',
-          cabinet: target.label,
-          home: target.home,
-          plugin,
-          added: false,
-          alreadyThere: true,
-          relinked: true,
-          backup: null,
-          logFile: logFile ?? null,
-        })
-      }
-      console.log(`\n  ${t('plugins.relinked', { cabinet: target.label, package: plugin.package })}\n`)
-      return
-    }
-    if (opts.json === true) {
-      return void emit({
-        action: 'plugins.install',
+      const relinked = {
+        action: 'get.plugin',
         cabinet: target.label,
         home: target.home,
         plugin,
         added: false,
         alreadyThere: true,
-        relinked: false,
+        relinked: true,
         backup: null,
         logFile: logFile ?? null,
-      })
+      }
+      if (quiet) return void collect.push(relinked)
+      if (opts.json === true) return void emit(relinked)
+      console.log(`\n  ${t('plugins.relinked', { cabinet: target.label, package: plugin.package })}\n`)
+      return
     }
+    const already = {
+      action: 'get.plugin',
+      cabinet: target.label,
+      home: target.home,
+      plugin,
+      added: false,
+      alreadyThere: true,
+      relinked: false,
+      backup: null,
+      logFile: logFile ?? null,
+    }
+    if (quiet) return void collect.push(already)
+    if (opts.json === true) return void emit(already)
     console.log(`\n  ${t('plugins.alreadyOurs', { cabinet: target.label, package: plugin.package })}`)
     console.log(`  ${t('plugins.nothingDone')}\n`)
     return
@@ -1125,18 +1339,18 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
   // patch: there is nothing to do, and this is the one branch entitled to say so
   // — nothing has been touched at the point it is said.
   if (claim.verdict === 'same') {
-    if (opts.json === true) {
-      return void emit({
-        action: 'plugins.install',
-        cabinet: target.label,
-        home: target.home,
-        plugin,
-        added: false,
-        alreadyThere: true,
-        backup: null,
-        logFile: logFile ?? null,
-      })
+    const same = {
+      action: 'get.plugin',
+      cabinet: target.label,
+      home: target.home,
+      plugin,
+      added: false,
+      alreadyThere: true,
+      backup: null,
+      logFile: logFile ?? null,
     }
+    if (quiet) return void collect.push(same)
+    if (opts.json === true) return void emit(same)
     console.log(`\n  ${t('plugins.alreadyThere', { cabinet: target.label, package: plugin.package, points: claim.points })}`)
     console.log(`  ${t('plugins.nothingDone')}\n`)
     return
@@ -1163,22 +1377,22 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
     brought: brings.length,
   })
 
-  if (opts.json === true) {
-    return void emit({
-      action: 'plugins.install',
-      cabinet: target.label,
-      home: target.home,
-      plugin,
-      added: result.added,
-      backup: result.backup,
-      // Named, not counted: an aggregate is the one install where what arrived
-      // is not what was asked for, so the answer has to list it.
-      brought: brings.map((one) => ({ id: one.id, package: one.package })),
-      // Where the download before this was journalled — null for a local
-      // folder, which downloads nothing and writes no log.
-      logFile: logFile ?? null,
-    })
+  const done = {
+    action: 'get.plugin',
+    cabinet: target.label,
+    home: target.home,
+    plugin,
+    added: result.added,
+    backup: result.backup,
+    // Named, not counted: an aggregate is the one install where what arrived
+    // is not what was asked for, so the answer has to list it.
+    brought: brings.map((one) => ({ id: one.id, package: one.package })),
+    // Where the download before this was journalled — null for a local
+    // folder, which downloads nothing and writes no log.
+    logFile: logFile ?? null,
   }
+  if (quiet) return void collect.push(done)
+  if (opts.json === true) return void emit(done)
   // Reachable only if something else claimed this name between the check above
   // and this line. Said plainly rather than as "it was already there, skipped",
   // which is the sentence that used to hide a replaced package: by here the link
@@ -1186,7 +1400,7 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
   if (!result.added) {
     console.log(`\n  ${t('plugins.raceTaken', { package: plugin.package, cabinet: target.label })}`)
     console.log(`  ${t('plugins.raceCheck')}`)
-    console.log(`  plugins --${target.main ? 'main' : `sandbox ${target.label}`}\n`)
+    console.log(`  ls plugin --in ${target.sandbox ?? DAILY_CABINET}\n`)
     return
   }
   console.log(`\n  ${t('plugin.installed', { name: plugin.package, where: target.label })}`)
@@ -1196,7 +1410,7 @@ function installFromFolder(layout, dir, target, opts, { id, source, store, logFi
   }
   console.log(`  ${t('plugin.installedWhere', { file: result.patchFile })}`)
   if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
-  console.log(`  ${t('plugin.removeHint', { id: plugin.id, cabinet: target.main ? '--main' : `--sandbox ${target.label}` })}\n`)
+  console.log(`  ${t('plugin.removeHint', { id: plugin.id, cabinet: cabinetFlag(target, 'from') })}\n`)
 }
 
 /**
@@ -1575,6 +1789,27 @@ function runNpm(dir, args, say, born = () => {}) {
  * @param {boolean} off
  * @param {Record<string, unknown>} opts
  */
+/**
+ * The ways one cabinet's plugin rows get changed, behind one word.
+ *
+ * ⭐ `--undo` sits here rather than in a verb of its own because undoing is
+ * setting those rows back to their previous value — the same object, the same
+ * cabinet. Pressing it again goes one step further back; the depth is reached
+ * by asking again rather than by reading a table of timestamps.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string | undefined} id
+ * @param {string | undefined} state - `on` or `off`.
+ * @param {Record<string, unknown>} opts
+ */
+function setPlugin(layout, id, state, opts) {
+  if (opts.undo === true) return restoreCabinet(layout, opts)
+  if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t('plugins.disableWhich'))
+  if (state !== 'on' && state !== 'off') {
+    throw new BoxError('MISSING_ARGUMENT', t('settings.whichValue', { key: `plugin ${id}`, choices: 'on | off' }))
+  }
+  return switchPlugin(layout, id, state === 'off', opts)
+}
+
 function switchPlugin(layout, id, off, opts) {
   if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t(off ? 'plugins.disableWhich' : 'plugins.enableWhich'))
   const target = cabinetTarget(layout, opts, true)
@@ -1589,7 +1824,7 @@ function switchPlugin(layout, id, off, opts) {
   if (!known.includes(id)) {
     throw new BoxError(
       'UNKNOWN_ROW',
-      t('plugins.noSuchRow', { id, cabinet: target.label, flags: target.main ? '--main' : `--sandbox ${target.label}` }),
+      t('plugins.noSuchRow', { id, cabinet: target.label, flags: cabinetFlag(target) }),
       { row: id, cabinet: target.sandbox, main: target.main },
     )
   }
@@ -1631,7 +1866,7 @@ function switchPlugin(layout, id, off, opts) {
  */
 function uninstallPlugin(layout, id, opts) {
   if (id === undefined) throw new BoxError('MISSING_ARGUMENT', t('plugins.uninstallWhich'))
-  const target = cabinetTarget(layout, opts, true)
+  const target = cabinetTarget(layout, opts, true, 'from')
   const backups = snapshotDir(layout, target)
   const result = unmountPlugin({ layout, home: target.home, id, backupDir: backups })
   // ⭐ A bundle is the third place a cabinet can name a plugin, and taking one
@@ -1649,7 +1884,7 @@ function uninstallPlugin(layout, id, opts) {
       result.theirs
         ? t('plugins.notOurs', { id, cabinet: target.label })
         : t('plugins.notInstalled', {
-          id, cabinet: target.label, flags: target.main ? '--main' : `--sandbox ${target.label}`,
+          id, cabinet: target.label, flags: cabinetFlag(target, 'from'),
         }),
       { plugin: id, cabinet: target.label },
     )
@@ -1659,15 +1894,26 @@ function uninstallPlugin(layout, id, opts) {
   // leaves the family's subtree alone — only removing the aggregate itself
   // takes the whole thing. A no-op for sandboxes, whose downloads are junctions.
   const unstaged = unstageFromCabinet(target.home, DEFAULT_PROFILE, result.removed.package)
+  // ⭐ The last cabinet to let go takes the download with it. Nothing else in
+  // this tool has to remember that a store exists, and nobody has to come back
+  // later and tidy it — see {@link sweepUnusedDownloads}.
+  const swept = sweepUnusedDownloads(layout, [
+    result.removed.package, result.removed.via,
+    ...result.alsoRemoved.flatMap((one) => [one.package, one.via]),
+  ])
   recordResolved({
     id: result.removed.id, main: target.main, sandbox: target.sandbox, alsoRemoved: result.alsoRemoved.length, unstaged,
   })
   if (opts.json === true) {
     return void emit({
-      action: 'plugins.uninstall',
+      action: 'rm.plugin',
       cabinet: target.label,
       home: target.home,
       plugin: result.removed,
+      // What went off the disk as well, so a caller is never told less than
+      // happened. Empty whenever the package was the user's own folder, or
+      // another cabinet still points at it.
+      deletedPackages: swept,
       // ⭐ Naming an aggregate takes its whole family, so what left has to be
       // said rather than counted — an answer of `ok:true` after sixteen rows
       // silently went is the shape of every bug this tool has had.
@@ -1680,6 +1926,7 @@ function uninstallPlugin(layout, id, opts) {
     console.log(`  ${t('aggregate.alsoRemoved', { count: result.alsoRemoved.length })}`)
     for (const one of result.alsoRemoved) console.log(`    ${padWide(one.id, 30)} ${one.package}`)
   }
+  if (swept.length > 0) console.log(`  ${t('plugin.downloadSwept', { list: swept.join('、') })}`)
   if (result.backup !== null) console.log(`  ${t('backup.saved', { file: result.backup })}`)
   console.log()
 }
@@ -1707,7 +1954,7 @@ function dropBundle(layout, target, name, backups, opts) {
   recordResolved({ bundle: name, main: target.main, sandbox: target.sandbox })
   if (opts.json === true) {
     return void emit({
-      action: 'plugins.uninstall',
+      action: 'rm.plugin',
       cabinet: target.label,
       home: target.home,
       bundle: name,
@@ -1721,78 +1968,14 @@ function dropBundle(layout, target, name, backups, opts) {
   console.log()
 }
 
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {Record<string, unknown>} opts
- */
-function showBackups(layout, rest, opts) {
-  const target = cabinetTarget(layout, opts)
-  const dir = backupDir(layout, target.home)
-  const [action, at] = rest
-  if (action === 'rm') return void dropBackup(layout, target, dir, at, opts)
-  if (action === 'prune') return void pruneOldBackups(layout, target, dir, opts)
-  if (action !== undefined) {
-    throw new BoxError('UNKNOWN_ACTION', t('backups.unknownAction', { action }), { action })
-  }
 
-  const backups = listBackups(dir)
-  if (opts.json === true) {
-    return void emit({ cabinet: target.label, home: target.home, dir, keep: KEEP_BACKUPS, backups })
-  }
-  console.log(`\n  ${t('backups.header', { cabinet: target.label })}`)
-  if (backups.length === 0) {
-    console.log(`    ${t(target.main ? 'backups.noneMain' : 'backups.noneSandbox')}`)
-    return void console.log()
-  }
-  for (const entry of backups) console.log(`    ${entry.at}   ${entry.files.join('、')}   ${entry.dir}`)
-  const where = target.main ? '--main' : `--sandbox ${target.label}`
-  console.log(`\n  ${t('backups.limit', { keep: KEEP_BACKUPS })}`)
-  console.log(`  ${t('backups.restoreHint', { where })}`)
-  console.log(`  ${t('backups.rmHint', { where })}`)
-  console.log(`  ${t('backups.pruneHint', { where })}\n`)
-}
 
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {{main: boolean, label: string, sandbox: string | null}} target
- * @param {string} dir
- * @param {string | undefined} at
- * @param {Record<string, unknown>} opts
- */
-function dropBackup(layout, target, dir, at, opts) {
-  if (at === undefined) {
-    throw new BoxError('MISSING_ARGUMENT', t('backups.rmWhich'), {
-      backups: listBackups(dir).map((entry) => entry.at),
-    })
-  }
-  if (!removeBackup(dir, at)) {
-    throw new BoxError('NO_BACKUP', t('backups.noSuch', { at }), { at, backups: listBackups(dir).map((one) => one.at) })
-  }
-  recordResolved({ action: 'plugins.backups.rm', at, main: target.main, sandbox: target.sandbox })
-  if (opts.json === true) return void emit({ action: 'plugins.backups.rm', cabinet: target.label, removed: [at] })
-  console.log(`\n  ${t('backups.removed', { cabinet: target.label, at, count: listBackups(dir).length })}\n`)
-}
-
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {{main: boolean, label: string, sandbox: string | null}} target
- * @param {string} dir
- * @param {Record<string, unknown>} opts
- */
-function pruneOldBackups(layout, target, dir, opts) {
-  const keep = opts.keep === undefined ? KEEP_BACKUPS : Number(opts.keep)
-  if (!Number.isInteger(keep) || keep < 0) {
-    throw new BoxError('BAD_FLAG', t('flag.keepInteger', { value: String(opts.keep) }), { keep: opts.keep })
-  }
-  const removed = pruneBackups(dir, keep)
-  recordResolved({ action: 'plugins.backups.prune', keep, removed: removed.length, main: target.main })
-  if (opts.json === true) {
-    return void emit({ action: 'plugins.backups.prune', cabinet: target.label, keep, removed })
-  }
-  console.log(`\n  ${t('backups.pruned', { cabinet: target.label, keep, count: removed.length })}`)
-  for (const at of removed) console.log(`    ${at}`)
-  console.log()
-}
+// ⛔ `pruneOldBackups` lived here until 2026-08-28 and was deleted with nothing
+// put in its place: 刀 1 removed the `plugins backups` family, and rotation is
+// automatic (`mounts.js` keeps the last `KEEP_BACKUPS` on every write). What was
+// left behind was a function nothing called, still emitting an `action` naming a
+// command that no longer exists — the kind of leftover that answers a search for
+// "does this tool prune backups" with a yes.
 
 /**
  * @param {import('../src/paths.js').BoxLayout} layout
@@ -1805,12 +1988,22 @@ function restoreCabinet(layout, opts) {
     backupDir: backupDir(layout, target.home),
     at: typeof opts.at === 'string' ? opts.at : undefined,
   })
-  recordResolved({ at: result.from, main: target.main, sandbox: target.sandbox })
+  // ⛔ `undo` goes into the record because the line renders from the record, and
+  //    without it `set plugin` renders as the other thing it can do.
+  recordResolved({ undo: true, at: result.from, main: target.main, sandbox: target.sandbox })
   if (opts.json === true) {
-    return void emit({ action: 'plugins.restore', cabinet: target.label, ...result })
+    return void emit({ action: 'set.plugin', cabinet: target.label, ...result })
   }
   console.log(`\n  ${t('restore.done', { where: target.label, at: result.from })}`)
   for (const file of result.restored) console.log(`    ${file}`)
+  // ⭐⭐ How much further back this can go, said every time. It is what replaces
+  // the `plugins backups` listing: the depth is reached by pressing again, so
+  // nobody has to read a table of timestamps to find out that they can.
+  if (opts.at === undefined) {
+    console.log(`  ${result.remaining === 0
+      ? t('restore.noneLeft')
+      : t('restore.stepsLeft', { count: result.remaining })}`)
+  }
   if (result.backup !== null) console.log(`  ${t('restore.preRestoreBackup', { file: result.backup })}`)
   // Said out loud because the two halves can now disagree: the file no longer
   // names a plugin whose folder is still linked in, which loads nothing but does
@@ -1876,9 +2069,9 @@ function showHistory(layout, opts) {
  * The project folders a machine workspace has been pointed at.
  *
  * ⚠️ Two different things are called a workspace, and this command is about the
- * other one. `--main` / `--sandbox` name a **machine workspace** — a `DSH_HOME`,
- * holding conversations and settings. This lists and changes the **project
- * workspaces** registered inside one: the folders dsh actually works in.
+ * other one. `--in` names a **machine workspace** — a `DSH_HOME`, holding
+ * conversations and settings. This lists and changes the **project workspaces**
+ * registered inside one: the folders dsh actually works in.
  *
  * ⛔ Command line only, no control in the window (CEO 2026-08-22): a person
  * picks a project inside dsh itself, where the picker already is, and building a
@@ -1886,34 +2079,34 @@ function showHistory(layout, opts) {
  * because an agent cannot use that picker — and without it, an agent that starts
  * a sandbox is left at a screen it cannot get past.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
+ * @param {string} where - the project folder to put in front.
  * @param {Record<string, unknown>} opts
  */
-function workspaces(layout, rest, opts) {
-  const [action, where] = rest
-  // `use` rewrites dsh's own workspace table inside the cabinet; the bare form
-  // only reads it.
-  const target = cabinetTarget(layout, opts, action === 'use')
-
-  if (action === 'use') {
-    if (where === undefined) {
-      throw new BoxError('MISSING_ARGUMENT', t('workspaces.useWhich'))
-    }
-    const result = addProject({
-      home: target.home,
-      path: where,
-      title: typeof opts.title === 'string' ? opts.title : undefined,
-    })
-    recordResolved({ path: result.path, main: target.main, sandbox: target.sandbox, added: result.added })
-    if (opts.json === true) return void emit({ action: 'workspaces.use', cabinet: target.label, ...result })
-    console.log(`\n  ${t('workspaces.next', { cabinet: target.label, path: result.path })}`)
-    console.log(`    ${t(result.added ? 'workspaces.addedNew' : result.moved ? 'workspaces.movedFront' : 'workspaces.alreadyFront')}`)
-    return void console.log(`  ${t('workspaces.writtenTo', { file: result.file })}\n`)
+function useWorkspace(layout, where, opts) {
+  if (where === undefined) {
+    throw new BoxError('MISSING_ARGUMENT', t('workspaces.useWhich'))
   }
-  if (action !== undefined) {
-    throw new BoxError('UNKNOWN_ACTION', t('workspaces.unknownAction', { action }), { action })
-  }
+  // This rewrites dsh's own workspace table inside the cabinet, so it goes
+  // through the same door as every other write.
+  const target = cabinetTarget(layout, opts, true)
+  const result = addProject({
+    home: target.home,
+    path: where,
+    title: typeof opts.title === 'string' ? opts.title : undefined,
+  })
+  recordResolved({ path: result.path, main: target.main, sandbox: target.sandbox, added: result.added })
+  if (opts.json === true) return void emit({ action: 'set.workspace', cabinet: target.label, ...result })
+  console.log(`\n  ${t('workspaces.next', { cabinet: target.label, path: result.path })}`)
+  console.log(`    ${t(result.added ? 'workspaces.addedNew' : result.moved ? 'workspaces.movedFront' : 'workspaces.alreadyFront')}`)
+  console.log(`  ${t('workspaces.writtenTo', { file: result.file })}\n`)
+}
 
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {Record<string, unknown>} opts
+ */
+function showWorkspaces(layout, opts) {
+  const target = cabinetTarget(layout, opts)
   const listed = listProjects(target.home)
   if (opts.json === true) return void emit({ cabinet: target.label, home: target.home, ...listed })
   console.log(`\n  ${t('workspaces.header', { cabinet: target.label })}`)
@@ -1922,26 +2115,31 @@ function workspaces(layout, rest, opts) {
   for (const one of listed.projects) {
     console.log(`    ${one.current ? '→' : ' '} ${padWide(one.title, 22)} ${t('sessions.count', { count: one.sessions })}  ${one.path}`)
   }
-  console.log(`\n  ${t('workspaces.switchHint', { where: target.main ? '--main' : `--sandbox ${target.label}` })}`)
+  console.log(`\n  ${t('workspaces.switchHint', { where: cabinetFlag(target) })}`)
   console.log(`  ${t('workspaces.atFile', { file: listed.file })}\n`)
 }
 
 /**
- * What has been downloaded, who is using it, and how to get rid of it.
+ * Stopping a download that is running.
  *
- * ⛔ The listing leads with who uses each one because that is the question that
- * decides whether deleting is safe, and a list that made a person go and check
- * five workspaces by hand would send them back to the shell — which is the very
- * thing this command exists to stop.
+ * ⛔⛔ **All that is left of a family of four**, and the three that went are the
+ * clearest case in this whole slim of an *object* being deleted rather than a
+ * verb being merged. Listing the store, deleting from it, pruning it — every one
+ * of those existed because we keep a store, and every one of them made the
+ * caller learn that we keep a store. Nothing needed it except our own
+ * housekeeping, and the housekeeping now happens by itself the moment the last
+ * cabinet lets go (`sweepUnusedDownloads`).
+ *
+ * ⭐ Cancel survived because it is not about the store at all: it is about
+ * **work happening right now**. The rule it answers to is older than this slim —
+ * a thing this tool can start is a thing it must be able to stop, or the agent
+ * it was built for goes outside and does it with `taskkill`, where the human
+ * view cannot see it. That is also why it is now spelled `stop --download`: it
+ * is asked for by what it stops, not by which of our layers holds it.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
  * @param {Record<string, unknown>} opts
  */
-function packages(layout, rest, opts) {
-  const [action, name] = rest
-  const used = packageUsers(layout)
-  const all = listPackages(layout).map((one) => ({ ...one, usedBy: used.get(one.name) ?? [] }))
-
+function cancelDownload(layout, opts) {
   // ⛔⛔ **The way out of a download that will not end.** Until this existed the
   // only way to stop one was `taskkill` in a shell — and this tool's own rule is
   // that a thing it can start is a thing it must be able to stop and to look at,
@@ -1952,80 +2150,20 @@ function packages(layout, rest, opts) {
   // ⭐ Both recorded pids, and the tree under each. The one that hangs is not
   // the one holding the claim — it is npm's own grandchild — so signalling the
   // holder alone would report success and leave the tree being written.
-  if (action === 'cancel') {
-    const going = downloadInFlight(layout)
-    if (going === null) {
-      if (opts.json === true) return void emit({ action: 'packages.cancel', cancelled: null })
-      return void console.log(`\n  ${t('packages.nothingDownloading')}\n`)
-    }
-    for (const pid of going.pids) killPidTree(pid)
-    // ⛔ Cleared here rather than left for the pid check to age out: the claim is
-    // also what the window reads to draw a download in flight, and a person who
-    // just cancelled should not watch a ghost keep beating.
-    rmSync(installClaimFile(layout), { force: true })
-    appendLog(packageLog(layout.root, going.name), t('packages.cancelled', { name: going.name }))
-    recordResolved({ action: 'packages.cancel', name: going.name })
-    if (opts.json === true) return void emit({ action: 'packages.cancel', cancelled: going.name, pids: going.pids })
-    return void console.log(`\n  ${t('packages.cancelled', { name: going.name })}\n`)
+  const going = downloadInFlight(layout)
+  if (going === null) {
+    if (opts.json === true) return void emit({ action: 'stop', cancelled: null })
+    return void console.log(`\n  ${t('packages.nothingDownloading')}\n`)
   }
-
-  if (action === 'rm') {
-    if (name === undefined) {
-      throw new BoxError('MISSING_ARGUMENT', t('packages.rmWhich'), { packages: all.map((one) => one.name) })
-    }
-    const going = all.find((one) => one.name === name)
-    if (going === undefined) {
-      throw new BoxError('NO_SUCH_PACKAGE', t('packages.noSuch', { name }), { name, packages: all.map((one) => one.name) })
-    }
-    // Refused rather than forced, because the workspace on the other end has a
-    // link pointing here: deleting the folder would leave a name that resolves
-    // to nothing, and dsh answers that by refusing to load the whole plugin
-    // tree. The way out is named instead of hinted at.
-    if (going.usedBy.length > 0) {
-      throw new BoxError(
-        'PACKAGE_IN_USE',
-        t('packages.inUse', { name, usedBy: going.usedBy.join('、') }),
-        { name, usedBy: going.usedBy },
-      )
-    }
-    removePackage(layout, name)
-    dropFromFarms(layout, name)
-    recordResolved({ action: 'packages.rm', name })
-    if (opts.json === true) return void emit({ action: 'packages.rm', removed: [name] })
-    return void console.log(`\n  ${t('packages.removed', { name })}\n`)
-  }
-
-  if (action === 'prune') {
-    const going = all.filter((one) => one.usedBy.length === 0)
-    for (const one of going) {
-      removePackage(layout, one.name)
-      dropFromFarms(layout, one.name)
-    }
-    recordResolved({ action: 'packages.prune', removed: going.length })
-    if (opts.json === true) {
-      return void emit({ action: 'packages.prune', removed: going.map((one) => one.name) })
-    }
-    console.log(`\n  ${t('packages.pruned', { count: going.length })}`)
-    for (const one of going) console.log(`    ${one.name}`)
-    return void console.log()
-  }
-
-  if (action !== undefined) {
-    throw new BoxError('UNKNOWN_ACTION', t('packages.unknownAction', { action }), { action })
-  }
-
-  if (opts.json === true) return void emit({ dir: packageRoot(layout), packages: all })
-  console.log(`\n  ${t('packages.header')}`)
-  if (all.length === 0) console.log(`    ${t('packages.empty')}`)
-  for (const one of all) {
-    const who = one.usedBy.length === 0 ? t('packages.nobodyUses') : t('packages.usedBy', { list: one.usedBy.join('、') })
-    console.log(`    ${padWide(one.name, 32)} ${one.version.padEnd(12)} ${t('packages.filesCount', { count: String(one.files).padStart(5) })}  ${who}`)
-  }
-  console.log(`\n  ${t('packages.at', { dir: packageRoot(layout) })}`)
-  if (all.length > 0) {
-    console.log(`  ${t('packages.hints')}`)
-  }
-  console.log()
+  for (const pid of going.pids) killPidTree(pid)
+  // ⛔ Cleared here rather than left for the pid check to age out: the claim is
+  // also what the window reads to draw a download in flight, and a person who
+  // just cancelled should not watch a ghost keep beating.
+  rmSync(installClaimFile(layout), { force: true })
+  appendLog(packageLog(layout.root, going.name), t('packages.cancelled', { name: going.name }))
+  recordResolved({ download: true, name: going.name })
+  if (opts.json === true) return void emit({ action: 'stop', cancelled: going.name, pids: going.pids })
+  console.log(`\n  ${t('packages.cancelled', { name: going.name })}\n`)
 }
 
 /**
@@ -2049,23 +2187,43 @@ function packageUsers(layout) {
 }
 
 /**
- * Every filing cabinet this tool knows about, daily one first.
+ * Delete downloads that nothing points at any more.
  *
- * ⚠️ **Knows about** is the limit, and it is worth stating rather than
- * discovering: the sandboxes are ours because we made them, and the daily
- * workspace is the one `DSH_HOME` points at. A home somebody made by hand and
- * never opened from here is invisible, so anything answering "everywhere this
- * is installed" is answering "everywhere we can see".
+ * ⭐⭐ **This is what makes `packages prune` unnecessary rather than missing.**
+ * Leaving a download behind after the last cabinet let go of it was a deliberate
+ * choice once — putting the plugin back would be instant — but the price was a
+ * store that only ever grew, and a person who wanted it back could only find out
+ * by learning that we keep one. **An internal storage layer the caller has to
+ * know about is the same information leak as an extra command.**
+ *
+ * ⛔ The count is taken **after** the row is gone, never before: asked a moment
+ * too early it answers "one cabinet still uses this" about the very cabinet that
+ * just let go, and nothing is ever swept.
+ *
+ * ⛔ Only top-level entries in our own store are eligible, which is what
+ * {@link listPackages} answers. An aggregate's members live nested inside their
+ * family root, so they are not in that list and cannot be swept out from under
+ * the family — the family root itself is, and takes them with it.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @returns {{label: string, home: string, main: boolean, sandbox: string | null}[]}
+ * @param {(string | null | undefined)[]} candidates - package names that just
+ * lost a reference, `via` roots included.
+ * @returns {string[]} names actually deleted.
  */
-function everyCabinet(layout) {
-  return [
-    { label: t('cabinet.daily'), home: userDshHome(), main: true, sandbox: null },
-    ...listSandboxes(layout).map((box) => ({
-      label: box.name, home: box.home, main: false, sandbox: box.name,
-    })),
-  ].filter((workspace) => existsSync(workspace.home))
+function sweepUnusedDownloads(layout, candidates) {
+  const wanted = new Set(candidates.filter((name) => typeof name === 'string' && name !== ''))
+  if (wanted.size === 0) return []
+  const users = packageUsers(layout)
+  const stored = new Set(listPackages(layout).map((one) => one.name))
+  const swept = []
+  for (const name of wanted) {
+    if (!stored.has(name) || (users.get(name) ?? []).length > 0) continue
+    removePackage(layout, name)
+    // The farms hold hardlinks into the bytes just deleted; without the store
+    // copy they are orphans no launch can refresh.
+    dropFromFarms(layout, name)
+    swept.push(name)
+  }
+  return swept
 }
 
 /**
@@ -2137,26 +2295,21 @@ function isWide(code) {
  * @param {string} name
  * @param {Record<string, unknown>} opts
  */
-async function adopt(layout, name, opts) {
-  // Three ways to say the same thing, and the shortest one is what the window
-  // and every existing script use: `adopt <sandbox>` means "into my daily
-  // workspace". `--from`/`--to` say it in full, and are the only way to say the
-  // other direction. Giving both a name and `--from` is two answers to one
-  // question, so it is refused rather than silently resolved.
-  const explicit = opts.from !== undefined || opts.to !== undefined
-  if (name !== undefined && explicit) {
-    throw new BoxError('BAD_FLAG', t('adopt.bothForms'))
-  }
-  if (name === undefined && !explicit) {
+async function adopt(layout, opts) {
+  // ⭐ One spelling, both directions. It used to have a shorthand
+  // (`adopt <sandbox>` meaning "into my daily workspace") and a long form, and
+  // the shorthand could only say one of the two directions — so the direction
+  // was half a feature and half a flag. Now it is two values, and the daily
+  // cabinet is a name like any other.
+  if (opts.from === undefined && opts.to === undefined) {
     throw new BoxError('MISSING_ARGUMENT', t('adopt.which'))
   }
-  const side = (value, fallback) => {
-    if (value === undefined) return fallback
-    return value === 'main' ? null : String(value)
-  }
+  // `null` is how the core names the daily cabinet, which is the one thing this
+  // layer still has to translate.
+  const side = (value) => (value === undefined || value === DAILY_CABINET ? null : String(value))
   const result = await adoptSessions(layout, {
-    from: name === undefined ? side(opts.from, null) : name,
-    to: name === undefined ? side(opts.to, null) : null,
+    from: side(opts.from),
+    to: side(opts.to),
     force: opts.force === true,
   })
   recordResolved({
@@ -2166,10 +2319,29 @@ async function adopt(layout, name, opts) {
     skipped: result.skipped,
     force: opts.force === true,
   })
-  if (opts.json === true) return void emit({ action: 'adopt', ...result })
+  if (opts.json === true) return void emit({ action: 'get.chat', ...result })
   console.log(`\n  ${t('adopt.copied', { from: result.from, to: result.to, adopted: result.adopted, skipped: result.skipped })}`)
   console.log(`  ${t('adopt.originalsStay', { from: result.from })}`)
   console.log(`  ${t('adopt.visibleNextStart', { to: result.to })}\n`)
+}
+
+/**
+ * One line saying whether a named tree's packages agree on a release number.
+ *
+ * Three outcomes, not two. "Could not check" is its own sentence: announcing
+ * that versions are mixed when nothing was examined is the self-consistent
+ * wrong answer this project keeps paying for, and a source workspace reaches
+ * that state honestly.
+ * @param {import('../src/engine-path.js').PinInfo} pin
+ * @returns {string}
+ */
+function pinReport(pin) {
+  if (!pin.verified) return t('engine.pinUnchecked')
+  if (pin.pinned) return t('engine.pinOk', { packages: pin.packages })
+  return t('engine.pinMixed', {
+    packages: pin.packages,
+    list: pin.mixed.map((one) => `${one.name}@${one.found ?? '?'}`).join('、'),
+  })
 }
 
 /**
@@ -2182,26 +2354,27 @@ async function adopt(layout, name, opts) {
  * ⭐ Two independent choices, and nothing is carried over from last time.
  * Which installation to run is {@link resolveEngine}'s question — the user's
  * own dsh unless `--version` names one of ours. Which filing cabinet to open is
- * this function's — a sandbox, or `--main` for the real `~/.dsh`. Inheriting
- * either used to save a little typing and cost the property that matters more:
- * a written command that produces the same result whenever it is run. The same
- * line is what the badge renders and what a person copies out of a log, so a
- * command whose meaning depends on history is one neither can trust.
+ * this function's — a sandbox, or {@link DAILY_CABINET} for the real `~/.dsh`.
+ * Inheriting either used to save a little typing and cost the property that
+ * matters more: a written command that produces the same result whenever it is
+ * run. The same line is what the badge renders and what a person copies out of a
+ * log, so a command whose meaning depends on history is one neither can trust.
  * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string | undefined} name - which cabinet, by name.
  * @param {Record<string, unknown>} opts
  */
-async function start(layout, opts) {
+async function start(layout, name, opts) {
   const config = readConfig(layout)
   const last = config.last
 
-  const main = opts.main === true
+  const main = name === DAILY_CABINET
   const brandNew = opts.new === true
-  // One axis, one answer. These used to co-exist by having `--main` quietly
-  // win, which reads as "it took my sandbox name into the real home".
-  if (main && (typeof opts.sandbox === 'string' || brandNew)) {
+  // ⭐ A brand-new sandbox has no name yet, so naming one alongside `--new` is
+  // two answers to one question rather than a shorthand for either.
+  if (brandNew && typeof name === 'string') {
     throw new BoxError('BAD_FLAG', t('start.bothFlags'))
   }
-  if (!main && !brandNew && typeof opts.sandbox !== 'string') {
+  if (!brandNew && (name === undefined || name === '')) {
     throw new BoxError('MISSING_ARGUMENT', t('start.whichCabinet'))
   }
   const engine = resolveEngine(layout, { version: opts.version })
@@ -2212,10 +2385,22 @@ async function start(layout, opts) {
   // dsh while a plugin from the previous run was loaded — silently, because
   // nothing in the command said so. Saying nothing now means nothing extra.
   const wanted = new Set(asList(opts.plugin))
-  const { live, missing } = partitionPlugins(config)
+  const { live, missing } = partitionRoster(derivedRoster(layout))
   const gone = missing.filter((p) => wanted.has(p.id)).map((p) => p.id)
   const chosen = live.filter((p) => wanted.has(p.id))
-  const unknown = [...wanted].filter((id) => !live.some((p) => p.id === id) && !gone.includes(id))
+  let unknown = [...wanted].filter((id) => !live.some((p) => p.id === id) && !gone.includes(id))
+  // ⭐⭐ A folder is a name too, and after the registry went it is the **only**
+  // way to name a plugin that is not installed anywhere yet. Before, you said
+  // `plugins add <目录>` first and used the id it gave you; there is no such step
+  // now, so `--plugin` learns the same three-way reading `plugins install`
+  // already had — an id, or a folder that is one.
+  // ⛔ Tried only for names that failed as ids, and never the other way round: a
+  // folder named the same as an installed plugin must not quietly outrank it.
+  const fromFolders = unknown
+    .filter((name) => existsSync(join(name, 'package.json')))
+    .map((dir) => describePlugin(dir))
+  chosen.push(...fromFolders)
+  unknown = unknown.filter((name) => !existsSync(join(name, 'package.json')))
   if (unknown.length > 0) {
     throw new BoxError('UNKNOWN_PLUGIN', t('start.unknownPlugins', { list: unknown.join('、') }), { unknown })
   }
@@ -2249,14 +2434,21 @@ async function start(layout, opts) {
     // was started by the config window, which is the one thing an agent cannot
     // be without a person being there. Locking the user out of their own
     // computer remains off the table (see §9.2).
-    if (engine.kind === 'release' && !approvedByWindow(layout, opts.approved === true)) {
-      throw new BoxError('NEEDS_APPROVAL', t('start.mainNeedsApproval'), { main: true, version, machine: 'release' })
+    // ⛔ Every machine except the user's own. The rule was written when there
+    // were two kinds and said "release", which read as a list but was always a
+    // statement about the remaining square: opening the real home on the dsh
+    // this computer already has is what typing `dsh` does, and opening it on
+    // any *other* dsh carries both dangers that outlive the launch. A folder
+    // somebody named is another dsh. Saying `!== 'host'` rather than naming the
+    // kinds is what stops the next kind from being let through by default.
+    if (engine.kind !== 'host' && !approvedByWindow(layout)) {
+      throw new BoxError('NEEDS_APPROVAL', t('start.mainNeedsApproval'), { main: true, version, machine: engine.kind })
     }
     if (await mainDshRunning()) {
       throw new BoxError('MAIN_DSH_RUNNING', t('start.mainAlreadyRunning'))
     }
     say(`\n  ${t('start.notSandbox')}`)
-    if (engine.kind === 'release') {
+    if (engine.kind !== 'host') {
       say(`  ${t('start.releaseOnMain')}`)
       say(`    ${t('start.releaseOnMainDetails')}`)
     }
@@ -2265,7 +2457,7 @@ async function start(layout, opts) {
     // created: two of these fired at once used to agree on the same name.
     const { info, created, signInImported } = brandNew
       ? createNewSandbox(layout, { importSignIn })
-      : ensureSandbox(layout, String(opts.sandbox ?? ''), { importSignIn })
+      : ensureSandbox(layout, String(name ?? ''), { importSignIn })
     boxName = info.name
     hasCredentials = info.hasCredentials
     say(`\n  ${t(created ? 'sandbox.created' : 'sandbox.reused', { name: info.name })}${signInImported ? t('start.signInSuffix') : ''}`)
@@ -2276,7 +2468,7 @@ async function start(layout, opts) {
   // about the cabinet rather than a setting of this launch.
   const cabinetHome = main ? userDshHome() : sandboxPaths(layout, boxName).home
   if (opts['sign-out'] === true) {
-    if (main && !approvedByWindow(layout, opts.approved === true)) {
+    if (main && !approvedByWindow(layout)) {
       throw new BoxError('NEEDS_APPROVAL', t('signOut.mainNeedsApproval'), { main: true })
     }
     if (removeCredentials(cabinetHome)) {
@@ -2291,6 +2483,14 @@ async function start(layout, opts) {
     }
   }
   say(`  ${t('start.usingEngine', { engine: engineLabel(engine) })}`)
+  // ⭐ Said out loud, never acted on. On a release we downloaded, a tree whose
+  // packages disagree is a bug in our own download path and the download is
+  // failed outright. A tree somebody named is not ours to fail: a source
+  // workspace legitimately keeps its packages somewhere this check cannot count
+  // them, and refusing on that would refuse the exact case folders exist for.
+  // So the count is reported and the launch continues — what is owed here is
+  // the number, not a verdict.
+  if (engine.pin !== undefined) say(`  ${pinReport(engine.pin)}`)
 
   // ⭐ Plugins are registered in the workspace, not carried by the launch. So
   // this is not "install these" but "add these, remove those" — and saying
@@ -2306,7 +2506,7 @@ async function start(layout, opts) {
   // `--unplug` is a change**, and it lands in the file the person's own `dsh`
   // reads afterwards, so it goes through the same door as every other write.
   if (main && (chosen.length > 0 || asList(opts.unplug).length > 0)
-    && !approvedByWindow(layout, opts.approved === true)) {
+    && !approvedByWindow(layout)) {
     throw new BoxError('NEEDS_APPROVAL', t('cabinet.dailyNeedsApproval'), { main: true })
   }
   const backups = snapshotDir(layout, { main, home })
@@ -2369,10 +2569,12 @@ async function start(layout, opts) {
   recordResolved({
     sandbox: boxName,
     main,
-    // Only what was actually asked for is written down. `--version` names one
-    // of our downloads; using the machine the user already has is what happens
-    // when nothing names anything, so it renders as an absence, not as a value.
-    version: engine.kind === 'release' ? version : undefined,
+    // Only what was actually asked for is written down, because this record is
+    // what the rendered line has to reproduce. `--version` names one of our
+    // downloads or a folder; using the machine the user already has is what
+    // happens when nothing names anything, so that renders as an absence rather
+    // than as a value.
+    version: engine.kind === 'host' ? undefined : engine.kind === 'release' ? version : engine.dir,
     engine: engineRecord(engine),
     plugins: chosen.map((p) => p.id),
     unplugged: asList(opts.unplug),
@@ -2422,21 +2624,39 @@ async function start(layout, opts) {
 }
 
 /**
- * Stop one running sandbox.
+ * Stop something. Which something is the argument.
+ *
+ * ⭐⭐ Four things that used to be four verbs, and what separates them is not a
+ * name but **what gets stopped**: one sandbox, every sandbox, the config window,
+ * the download that is running. A caller who knows what they want stopped can
+ * now say it without first learning which of our layers holds it.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string} name
+ * @param {string | undefined} name
  * @param {Record<string, unknown>} opts
  */
 async function halt(layout, name, opts) {
-  // `--main` names the one launch that has no sandbox name. It is a flag
-  // rather than a reserved name so that a sandbox someone actually called
-  // after the daily cabinet cannot be confused with it.
-  if (opts.main === true) {
+  if (opts.window === true) return stopUi(layout, opts)
+  if (opts.download === true) return cancelDownload(layout, opts)
+  if (opts.all === true) return quit(layout, opts)
+  // ⛔ The daily cabinet's launch has no sandbox name, so it answers to
+  // {@link DAILY_CABINET} — which is safe to reserve because a sandbox is no
+  // longer allowed to be called that (src/paths.js).
+  if (name === DAILY_CABINET) {
     const held = mainRunningRecord(layout)
     if (held === null) {
       throw new BoxError('NOT_RUNNING', t('stop.mainNotRunning'), {
         note: t('stop.mainNote'),
       })
+    }
+    // ⛔⛔ Added 2026-08-28, and the gap it closes was precise: the decision was
+    // always "anything that **acts on** the daily cabinet is gated", and what
+    // got built was "anything that **writes to** it". Five writes were stopped
+    // and stopping the user's own dsh was not — the shortest command in the
+    // tool could take down the machine somebody is working in, and another
+    // agent's dsh with it. Stopping is not reversible in the way that matters:
+    // whatever was in that session is gone.
+    if (!approvedByWindow(layout)) {
+      throw new BoxError('NEEDS_APPROVAL', t('stop.mainNeedsApproval'), { main: true })
     }
     const killed = await stop(held.pid, held.pidBorn)
     clearMainRunning(layout, held.pid)
@@ -2467,24 +2687,23 @@ async function halt(layout, name, opts) {
  * that does not mean anything, and answering it with a shrug would leave
  * somebody believing they had done something.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string} name
  * @param {Record<string, unknown>} opts
  */
-function signIn(layout, name, opts) {
-  if (opts.main === true) throw new BoxError('MAIN_IS_THE_SOURCE', t('signIn.mainIsSource'))
-  const target = name ?? String(opts.sandbox ?? '')
+function signIn(layout, opts) {
+  const target = String(opts.to ?? '')
+  if (target === DAILY_CABINET) throw new BoxError('MAIN_IS_THE_SOURCE', t('signIn.mainIsSource'))
   if (target === '') throw new BoxError('MISSING_ARGUMENT', t('signIn.which'))
   const home = sandboxPaths(layout, target).home
   if (!existsSync(home)) throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name: target }), { sandbox: target })
   if (hasCredentials(home)) {
-    if (opts.json === true) return void emit({ action: 'signin', sandbox: target, imported: false })
+    if (opts.json === true) return void emit({ action: 'get.signin', sandbox: target, imported: false })
     return void console.log(`\n  ${t('signIn.already', { name: target })}\n`)
   }
   if (!importCredentials(home)) {
     throw new BoxError('NO_SIGN_IN_TO_COPY', t('signIn.nothingToCopy'), { sandbox: target })
   }
   recordResolved({ sandbox: target })
-  if (opts.json === true) return void emit({ action: 'signin', sandbox: target, imported: true })
+  if (opts.json === true) return void emit({ action: 'get.signin', sandbox: target, imported: true })
   console.log(`\n  ${t('signIn.done', { name: target })}\n`)
 }
 
@@ -2495,27 +2714,27 @@ function signIn(layout, name, opts) {
  * is the second thing behind the hard gate: it only runs when the config window
  * started this process. See {@link approvedByWindow}.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string} name
  * @param {Record<string, unknown>} opts
  */
-function signOut(layout, name, opts) {
-  const main = opts.main === true
-  const target = main ? null : (name ?? String(opts.sandbox ?? ''))
-  if (!main && target === '') throw new BoxError('MISSING_ARGUMENT', t('signOut.which'))
+function signOut(layout, opts) {
+  const named = String(opts.from ?? '')
+  if (named === '') throw new BoxError('MISSING_ARGUMENT', t('signOut.which'))
+  const main = named === DAILY_CABINET
+  const target = main ? null : named
   const home = main ? userDshHome() : sandboxPaths(layout, target).home
   if (!existsSync(home)) {
     throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name: target }), { sandbox: target })
   }
-  if (main && !approvedByWindow(layout, opts.approved === true)) {
+  if (main && !approvedByWindow(layout)) {
     throw new BoxError('NEEDS_APPROVAL', t('signOut.mainNeedsApproval'), { main: true })
   }
   const label = main ? t('cabinet.daily') : target
   if (!removeCredentials(home)) {
-    if (opts.json === true) return void emit({ action: 'signout', cabinet: label, removed: false })
+    if (opts.json === true) return void emit({ action: 'rm.signin', cabinet: label, removed: false })
     return void console.log(`\n  ${t('signOut.none', { name: label })}\n`)
   }
   recordResolved({ sandbox: target, main })
-  if (opts.json === true) return void emit({ action: 'signout', cabinet: label, removed: true })
+  if (opts.json === true) return void emit({ action: 'rm.signin', cabinet: label, removed: true })
   console.log(`\n  ${t('signOut.done', { name: label })}`)
   console.log(`  ${t('signOut.noWayBack')}\n`)
 }
@@ -2530,7 +2749,7 @@ function remove(layout, name, opts) {
   // The "does it exist" and "is it running" refusals are the core module's, so
   // that they apply to every entrance rather than to whichever one remembered.
   const gone = deleteSandbox(layout, name)
-  if (opts.json === true) return void emit({ action: 'rm', sandbox: gone.name })
+  if (opts.json === true) return void emit({ action: 'rm.sandbox', sandbox: gone.name })
   console.log(`\n  ${t('rm.removed', { name: gone.name })}\n`)
 }
 
@@ -2561,8 +2780,8 @@ function reachableByName() {
 }
 
 /**
- * Whether a person can reach this program by typing its name, and the two
- * commands that change the answer.
+ * Whether a person can reach this program by typing its name, and the command
+ * that changes the answer.
  *
  * ⭐ This exists because being on PATH and being usable from a terminal are two
  * different things, and only the second one is about the program itself. The
@@ -2571,47 +2790,50 @@ function reachableByName() {
  * package needs none of it: npm puts its own shim on PATH, which is why this
  * refuses politely when there is no exe behind it rather than inventing a
  * folder to register.
+ *
+ * ⛔ It is a real user command, not installer plumbing: the installer does call
+ * it, but the portable build has no installer and its user types it themselves.
+ * A command "nobody uses" that a line of documentation tells people to type is
+ * a caller no code search will ever find.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
+ * @param {string | undefined} state - `on` or `off`.
  * @param {Record<string, unknown>} opts
  */
-function pathCommand(layout, rest, opts) {
-  const [action] = rest
-  if (action === undefined) return showPath(layout, opts)
-  if (action !== 'add' && action !== 'rm') {
-    throw new BoxError('UNKNOWN_COMMAND', t('help.unknownCommand', { command: `path ${action}` }))
+function setPath(layout, state, opts) {
+  if (state !== 'on' && state !== 'off') {
+    throw new BoxError('MISSING_ARGUMENT', t('settings.whichValue', { key: 'path', choices: 'on | off' }))
   }
   if (process.platform !== 'win32') throw new BoxError('PATH_UNSUPPORTED', t('path.windowsOnly'))
   const dir = exeDir()
   if (dir === null) throw new BoxError('PATH_NO_EXE', t('path.noExe'))
-  return action === 'add' ? addToPath(layout, dir, opts) : removeFromPath(layout, dir, opts)
+  return state === 'on' ? addToPath(layout, dir, opts) : removeFromPath(layout, dir, opts)
 }
 
 /**
- * Say what is on PATH now, and change nothing.
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {Record<string, unknown>} opts
+ * What is true about PATH right now, as data.
+ *
+ * ⭐ Separated from the printing because it is one row of `ls setting` now, not
+ * a command of its own: PATH is a setting (`set path on|off`), so reading it
+ * belongs where every other setting is read. Two commands to answer "what is
+ * this machine like" meant nobody ever had the whole answer at once.
+ * @returns {{supported: boolean, dir: string | null, present: boolean, entries: number,
+ *   copies: {dir: string}[], dead: string[]}}
  */
-function showPath(layout, opts) {
+function pathFacts() {
   const dir = exeDir()
   if (process.platform !== 'win32') {
-    if (opts.json === true) {
-      return void emit({ action: 'path', supported: false, dir, present: false, copies: [], dead: [] })
-    }
-    return void console.log(`\n  ${t('path.windowsOnly')}\n`)
+    return { supported: false, dir, present: false, entries: 0, copies: [], dead: [] }
   }
   const entries = entriesOf(readUserPath().value)
   const copies = copiesOn(entries)
-  const dead = entries.filter((entry) => !existsSync(entry.trim()))
-  const present = dir !== null && entries.some((entry) => sameEntry(entry, dir))
-  if (opts.json === true) {
-    return void emit({ action: 'path', supported: true, dir, present, entries: entries.length, copies, dead })
+  return {
+    supported: true,
+    dir,
+    present: dir !== null && entries.some((entry) => sameEntry(entry, dir)),
+    entries: entries.length,
+    copies,
+    dead: entries.filter((entry) => !existsSync(entry.trim())),
   }
-  console.log(`\n  ${dir === null ? t('path.noExeShort') : t(present ? 'path.hereOn' : 'path.hereOff', { dir })}`)
-  console.log(`  ${t('path.copies', { count: copies.length })}`)
-  for (const copy of copies) console.log(`    ${copy.dir}`)
-  if (dead.length > 0) console.log(`  ${t('path.dead', { count: dead.length })}`)
-  console.log()
 }
 
 /**
@@ -2627,8 +2849,8 @@ function addToPath(layout, dir, opts) {
     // Saying "nothing to do" rather than adding a second copy: a command run
     // twice should leave one entry, and a PATH is the last place to learn that
     // lesson the other way.
-    recordResolved({ action: 'path.add', dir, changed: false })
-    if (opts.json === true) return void emit({ action: 'path.add', dir, changed: false })
+    recordResolved({ state: 'on', dir, changed: false })
+    if (opts.json === true) return void emit({ action: 'set.path', dir, changed: false })
     return void console.log(`\n  ${t('path.already', { dir })}\n`)
   }
   // ⛔ Refused rather than silently decided: with two copies registered, which
@@ -2644,9 +2866,9 @@ function addToPath(layout, dir, opts) {
   const next = opts.force === true ? [dir, ...entries].join(';') : [...entries, dir].join(';')
   writeUserPath(next, kind)
   const announced = announceEnvChange()
-  recordResolved({ action: 'path.add', dir, changed: true, backup: kept })
+  recordResolved({ state: 'on', dir, changed: true, backup: kept })
   if (opts.json === true) {
-    return void emit({ action: 'path.add', dir, changed: true, backup: kept, first: opts.force === true, announced })
+    return void emit({ action: 'set.path', dir, changed: true, backup: kept, first: opts.force === true, announced })
   }
   console.log(`\n  ${t('path.added', { dir })}`)
   console.log(`  ${t('path.reopen')}\n`)
@@ -2663,16 +2885,16 @@ function removeFromPath(layout, dir, opts) {
   const entries = entriesOf(value)
   const left = entries.filter((entry) => !sameEntry(entry, dir))
   if (left.length === entries.length) {
-    recordResolved({ action: 'path.rm', dir, changed: false })
-    if (opts.json === true) return void emit({ action: 'path.rm', dir, changed: false })
+    recordResolved({ state: 'off', dir, changed: false })
+    if (opts.json === true) return void emit({ action: 'set.path', dir, changed: false })
     return void console.log(`\n  ${t('path.notThere', { dir })}\n`)
   }
   const kept = keepPathBackup(layout, value)
   writeUserPath(left.join(';'), kind)
   const announced = announceEnvChange()
-  recordResolved({ action: 'path.rm', dir, changed: true, backup: kept })
+  recordResolved({ state: 'off', dir, changed: true, backup: kept })
   if (opts.json === true) {
-    return void emit({ action: 'path.rm', dir, changed: true, backup: kept, announced })
+    return void emit({ action: 'set.path', dir, changed: true, backup: kept, announced })
   }
   console.log(`\n  ${t('path.removed', { dir })}`)
   console.log(`  ${t('path.reopen')}\n`)
@@ -2697,38 +2919,50 @@ function keepPathBackup(layout, value) {
 }
 
 /**
- * Read or change a setting.
+ * Everything this data directory is set to, and whether this copy is on PATH.
  *
  * These used to be reachable only by clicking in the config window, which made
  * the window able to do something the command line could not — the exact shape
- * of drift this tool is built to rule out. Nothing here is new behaviour; it
- * is the same two settings, now with a door on this side as well.
+ * of drift this tool is built to rule out.
  * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
  * @param {Record<string, unknown>} opts
  */
-function settings(layout, rest, opts) {
-  const [key, value] = rest
-  // ⭐ Above `readConfig`, because this is the way out of a config `readConfig`
-  // refuses to read. A refusal with no named way past it is a tool that can be
-  // bricked by one stray character, which is how "never overwrite what you
-  // could not read" would turn from a safeguard into a trap.
-  if (key === 'reset') return resetConfig(layout, opts)
-
+function showSettings(layout, opts) {
   const config = readConfig(layout)
-  if (key === undefined) {
-    const current = Object.fromEntries(
-      Object.entries(SETTINGS).map(([name, setting]) => [name, setting.read(config)]),
-    )
-    if (opts.json === true) return void emit({ settings: current })
-    console.log(`\n  ${t('settings.header')}`)
-    for (const [name, setting] of Object.entries(SETTINGS)) {
-      console.log(`    ${name.padEnd(14)} ${String(setting.read(config)).padEnd(10)} ${setting.summary}`)
-      console.log(`    ${' '.repeat(14)} ${t('settings.choicesLine', { choices: setting.choices.join(' | ') })}`)
-    }
+  const current = Object.fromEntries(
+    Object.entries(SETTINGS).map(([name, setting]) => [name, setting.read(config)]),
+  )
+  const path = pathFacts()
+  if (opts.json === true) return void emit({ settings: current, path })
+  console.log(`\n  ${t('settings.header')}`)
+  for (const [name, setting] of Object.entries(SETTINGS)) {
+    console.log(`    ${name.padEnd(14)} ${String(setting.read(config)).padEnd(10)} ${setting.summary}`)
+    console.log(`    ${' '.repeat(14)} ${t('settings.choicesLine', { choices: setting.choices.join(' | ') })}`)
+  }
+  // ⭐ Below the stored settings rather than mixed in with them, because it is
+  // the one line here that is about this computer instead of this data
+  // directory — and saying so by where it sits costs no words.
+  if (!path.supported) {
+    console.log(`\n  ${t('path.windowsOnly')}`)
     return void console.log()
   }
+  console.log(`\n  ${path.dir === null
+    ? t('path.noExeShort')
+    : t(path.present ? 'path.hereOn' : 'path.hereOff', { dir: path.dir })}`)
+  console.log(`  ${t('path.copies', { count: path.copies.length })}`)
+  for (const copy of path.copies) console.log(`    ${copy.dir}`)
+  if (path.dead.length > 0) console.log(`  ${t('path.dead', { count: path.dead.length })}`)
+  console.log()
+}
 
+/**
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {string | undefined} key
+ * @param {string | undefined} value
+ * @param {Record<string, unknown>} opts
+ */
+function changeSetting(layout, key, value, opts) {
+  const config = readConfig(layout)
   const setting = SETTINGS[key]
   if (setting === undefined) {
     throw new BoxError('UNKNOWN_SETTING', t('settings.unknown', { key }), {
@@ -2766,8 +3000,8 @@ function resetConfig(layout, opts) {
   }
   const archived = `${layout.config}.broken-${new Date().toISOString().replace(/[:.]/g, '-')}`
   renameSync(layout.config, archived)
-  recordResolved({ action: 'config.reset', archived })
-  if (opts.json === true) return void emit({ action: 'config.reset', file: layout.config, archived })
+  recordResolved({ archived })
+  if (opts.json === true) return void emit({ action: 'rm.setting', file: layout.config, archived })
   console.log(`\n  ${t('config.archived', { file: archived })}`)
   console.log(`  ${t('config.freshStart')}\n`)
 }
@@ -2782,14 +3016,26 @@ function resetConfig(layout, opts) {
  * the sandboxes are separate dsh processes that were handed off on purpose.
  * So quitting can only be a thing that is *done*, and this is the doing of it.
  *
- * Sandboxes always. The main environment only when asked — it is the user's
- * own dsh, and someone quitting a sandbox manager does not necessarily mean
- * to close the thing they work in. `--main` is what the window's checkbox
- * calls, so the choice exists identically on both sides.
+ * ⭐⭐ "All" means all, including the daily cabinet (CEO 2026-08-28, reversing
+ * the earlier "sandboxes only"). The reason given was that the plain reading of
+ * the word is the right one: a person who types `--all` and is left with a dsh
+ * still running has been surprised by their own command. What used to protect
+ * the daily one was that it was excluded; what protects it now is the gate.
  *
- * ⛔ Only a main environment *this tool started* can be stopped, because only
- * that one has a recorded process. A dsh the user launched themselves is
- * visible (the port answers) but has no identity we could act on, and killing
+ * ⭐ And the gate is applied **partially**, which is the whole design here: the
+ * sandboxes are stopped first and unconditionally, then the daily one is asked
+ * about. The common path — an agent tidying up after itself — never meets a
+ * dialog, and the one dangerous step in it does. A refusal therefore arrives
+ * after real work has been done, so it has to say how much: `stopped` is in the
+ * error's own details, not only in the success case.
+ *
+ * ⛔ Only a daily dsh *this tool started* can be stopped at all, because only
+ * that one has a recorded pid. One the user launched themselves answers on its
+ * port and has no identity we could act on.
+ *
+ * ⛔ Only a main environment *this tool started* is even visible as a process,
+ * because only that one has a recorded pid. A dsh the user launched themselves
+ * answers on its port but has no identity we could act on, and killing
  * something identified only by a port number is how you kill the wrong thing.
  *
  * ⚠ Each process is stopped exactly the way `stop` stops one, which on
@@ -2810,26 +3056,42 @@ async function quit(layout, opts) {
   }
 
   const held = mainRunningRecord(layout)
+  const mainUp = await mainDshRunning()
+  /** @type {{pid: number} | null} */
   let main = null
-  if (opts.main === true && held !== null) {
+  if (held !== null) {
+    if (!approvedByWindow(layout)) {
+      recordResolved({ all: true, stopped: stopped.map((entry) => entry.sandbox) })
+      // Everything already done is named in the refusal. A caller told only
+      // "not allowed" would reasonably believe nothing happened and run it
+      // again, and the second run is the one that reads as a bug.
+      // ⛔ `stopped` and `stale` are the same shape here as in the success case
+      // below, deliberately. One field name carrying objects on one path and
+      // bare names on the other means a caller reading `.sandbox` off a string
+      // — and this is the path reached less often, so it is the one that would
+      // be found in the wild rather than in a test.
+      throw new BoxError('NEEDS_APPROVAL', t('quit.mainNeedsApproval', {
+        count: stopped.length,
+      }), { main: true, stopped, stale })
+    }
     const killed = await stop(held.pid, held.pidBorn)
     clearMainRunning(layout, held.pid)
     if (killed) main = { pid: held.pid }
-    else stale.push({ sandbox: null, pid: held.pid })
   }
-  const mainUp = await mainDshRunning()
-  recordResolved({ stopped: stopped.map((entry) => entry.sandbox), main: opts.main === true })
+  recordResolved({ all: true, stopped: stopped.map((entry) => entry.sandbox), main: main !== null })
 
   if (opts.json === true) {
     return void emit({
-      action: 'quit', stopped, stale, main, mainStartedHere: held !== null, mainDshOnDefaultPort: mainUp,
+      action: 'stop', stopped, stale, main, mainStartedHere: held !== null, mainDshOnDefaultPort: mainUp,
     })
   }
   if (stopped.length === 0) console.log(`\n  ${t('quit.nothingRunning')}`)
   else console.log(`\n  ${t('quit.stopped', { count: stopped.length, names: stopped.map((entry) => entry.sandbox).join('、') })}`)
   if (stale.length > 0) console.log(`  ${t('quit.staleRows', { count: stale.length })}`)
   if (main !== null) console.log(`  ${t('quit.mainStopped', { pid: main.pid })}`)
-  else if (held !== null) console.log(`  ${t('quit.mainLeft')}`)
+  // `held` with no `main` is the one case left: the row named a pid that now
+  // belongs to somebody else, so nothing was killed and the row was cleared.
+  else if (held !== null) console.log(`  ${t('quit.mainStale', { pid: held.pid })}`)
   else if (mainUp) console.log(`  ${t('quit.mainForeign')}`)
   console.log()
 }
@@ -2841,6 +3103,55 @@ async function quit(layout, opts) {
 async function openUi(layout, opts) {
   const { serve } = await import('../src/server.js')
   await serve(layout, { port: Number(opts.port) || 0, open: opts['no-open'] !== true })
+}
+
+/**
+ * End the window service holding this data directory's seat.
+ *
+ * ⛔⛔ The missing "undo". One data directory allows one window service, and the
+ * service lets go of its seat when it closes — which covers every way a window
+ * is *meant* to end. It does not cover the exe being killed: the Node service is
+ * a child, it outlives that on Windows, and it goes on holding the seat and the
+ * port with its parent gone. From then on `ui` is refused forever and there was
+ * nothing in this tool to say otherwise, so the only way out was to find the pid
+ * by hand and `taskkill` it — the tool's own boundary rule ("what the screen
+ * shows is everything") broken in the usual way, by an action that had a *do*
+ * and no *undo*.
+ *
+ * ⛔ Deliberately its own switch rather than something `--all` sweeps up.
+ * Folding windows into "stop everything" was proposed once and withdrawn on
+ * purpose: a window closing itself after asking for a stop is the direction that
+ * works, and a sweep that reached back into windows would let one person's
+ * command shut down a view somebody else is reading. Asking for it by name is
+ * the point.
+ *
+ * ⭐ A seat whose process is gone is not a window — it is litter left by a kill,
+ * and the honest answer is "there is nothing serving here" plus quietly clearing
+ * it, not pretending to stop something.
+ * @param {import('../src/paths.js').BoxLayout} layout
+ * @param {Record<string, unknown>} opts
+ */
+async function stopUi(layout, opts) {
+  const seat = uiSeatFile(layout)
+  const held = liveClaim(seat)
+  if (held === null) {
+    const littered = existsSync(seat)
+    if (littered) rmSync(seat, { force: true })
+    throw new BoxError('NO_WINDOW_SERVING', t('window.noneServing'), { cleared: littered })
+  }
+  // The same proof every other kill in this tool needs: a pid on its own names
+  // whatever holds that number now, which after a reboot is a stranger.
+  const killed = await stop(Number(held.pid), held.pidBorn)
+  // Whether or not the kill landed, the record is no longer true — `stop`
+  // returns false precisely when that pid is somebody else now.
+  rmSync(seat, { force: true })
+  recordResolved({ window: true, pid: held.pid, url: held.url ?? null })
+  if (opts.json === true) {
+    return void emit({ action: 'stop', pid: held.pid, url: held.url ?? null, killed })
+  }
+  console.log(`\n  ${killed
+    ? t('window.stopped', { pid: String(held.pid), url: String(held.url ?? '?') })
+    : t('window.gone', { pid: String(held.pid) })}\n`)
 }
 
 /**
@@ -2941,6 +3252,141 @@ function asList(value) {
   return typeof value === 'string' ? [value] : []
 }
 
+/**
+ * This run's own command line, as the window would have to type it.
+ *
+ * Two things are taken out and nothing is added. `--json` is how *this* caller
+ * wanted to be answered and says nothing about the action; `--box` is supplied
+ * by the window from the data directory it is already serving. Everything else
+ * goes across untouched, because the whole point is that the person is agreeing
+ * to **this** command and not to a reconstruction of it.
+ * @returns {string[]}
+ */
+function argvForApproval() {
+  const out = []
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i]
+    if (token === '--json') continue
+    if (token === '--box') {
+      i += 1
+      continue
+    }
+    if (token.startsWith('--box=')) continue
+    out.push(token)
+  }
+  return out
+}
+
+/**
+ * Ask a person on the panel, and let the panel run it if they agree.
+ *
+ * ⭐⭐ One funnel, at the very top, deliberately. Every refusal that says
+ * `NEEDS_APPROVAL` — the five writes, `start main --version`, and stopping the
+ * daily cabinet, which was added the same day — arrives here without its own
+ * code knowing this exists, and so will the next one somebody adds. The
+ * alternative is each gate learning to open a window, which is the shape this
+ * repository has been burned by before: a rule that has to be written once per
+ * site is a rule the next site will not have.
+ *
+ * ⛔ It runs **after** the action was refused, so whatever the command already
+ * did before reaching its gate has been done. That is intended for the one
+ * caller where it matters (`stop --all` stops the sandboxes, then asks about the
+ * daily one), and it is why the refusal carries what it got through.
+ *
+ * ⚠️ The approved run is the panel's child, not this process's work. This
+ * process only reports what the panel got back — which is also why there is
+ * nothing here that could pretend to be an approval.
+ * @param {import('../src/paths.js').BoxLayout} box
+ * @param {Error} error - the refusal that sent us here.
+ */
+async function throughThePanel(box, error) {
+  const line = argvForApproval()
+  const seconds = Math.round(APPROVAL_WINDOW_MS / 1000)
+  // Progress goes to stderr in both faces: `--json` promises one parseable line
+  // on stdout, and a caller waiting a minute with nothing on the screen is the
+  // other half of the same promise.
+  console.error(`\n  ${error.message}`)
+  console.error(`  ${t('approval.opening', { seconds })}`)
+  // ⛔⛔ Proved, not assumed (CEO 2026-08-28: "弹不出来就当场报错"). Spawning a
+  // window that never appears is not an error the spawn reports, so without
+  // this the caller would wait out the whole minute and then be told nobody
+  // answered — which is a different failure wearing the same sentence.
+  if (!await ensurePanel(box)) {
+    throw new BoxError('NO_PANEL', `${error.message}\n  ${t('approval.noPanel')}`, {
+      ...errorDetails(error), panel: false,
+    })
+  }
+  const asking = askApproval(box, {
+    argv: line,
+    what: `${PROGRAM} ${line.join(' ')}`,
+    // ⭐ The refusal's own sentence, carried across as it is. It already says
+    // what will be touched, where the backup goes and what has no way back —
+    // written once, for the gate, and the dialog is exactly where a person
+    // needs it. Rewording it for the panel would be a second copy that drifts.
+    why: error.message,
+    code: errorCode(error),
+    details: errorDetails(error),
+  })
+  console.error(`  ${t('approval.waiting')}`)
+  const outcome = await waitForApproval(box, asking.id)
+  if (outcome.decision === 'deny') {
+    throw new BoxError('APPROVAL_DENIED', t('approval.denied'), errorDetails(error))
+  }
+  if (outcome.decision === 'timeout') {
+    throw new BoxError('NEEDS_APPROVAL', t('approval.timedOut', { seconds }), {
+      ...errorDetails(error), asked: true,
+    })
+  }
+  if (outcome.decision === 'gone') {
+    throw new BoxError('NEEDS_APPROVAL', t('approval.gone'), { ...errorDetails(error), asked: true })
+  }
+  const result = outcome.result ?? {}
+  // The panel's run is the real one, so its failure is the answer — repeating it
+  // here rather than wrapping it keeps the `code` a caller reads unchanged.
+  if (result.ok !== true) {
+    throw new BoxError(
+      typeof result.code === 'string' ? result.code : 'APPROVED_RUN_FAILED',
+      typeof result.message === 'string' ? result.message : t('approval.denied'),
+      { approvedInWindow: true },
+    )
+  }
+  // The window already wrote its own line in the operation record; a second one
+  // from here would make one action look like two.
+  alreadyRecorded = true
+  if (wantsJson) return void console.log(JSON.stringify({ ...result, approvedInWindow: true }))
+  console.error(`  ${t('approval.granted')}\n`)
+}
+
+/**
+ * Whether a refusal is one a person could lift, in a run that may ask.
+ *
+ * ⛔ The environment test is what stops the loop: the panel's own run carries
+ * the mark, so if that run is refused too, it is refused for a reason a second
+ * dialog cannot fix.
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+function needsAPerson(error) {
+  return errorCode(error) === 'NEEDS_APPROVAL'
+    && layout !== null
+    && process.env[APPROVAL_ENV] !== '1'
+    && process.env[NO_PANEL_ENV] !== '1'
+}
+
+/**
+ * Say no straight away instead of opening a window and waiting for a person.
+ *
+ * ⭐ It exists for the case where there is nobody to ask and everyone knows it:
+ * a headless machine, a CI run, an agent on the Linux phone. Waiting out a
+ * minute for a dialog that cannot be displayed is not caution, it is a hang.
+ *
+ * ⛔⛔ It can only ever **refuse faster**. There is deliberately no setting
+ * anywhere that can make an unapproved action run — that is the whole of the
+ * 2026-08-28 decision, and a switch that reduces what the tool will do does not
+ * touch it. Read that direction carefully before adding anything beside it.
+ */
+const NO_PANEL_ENV = 'DSH_BOX_NO_PANEL'
+
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // ⛔ Everything above is a declaration; this is the only thing that runs, and it
@@ -2958,7 +3404,12 @@ try {
   // real — a `config lang` setting read there wins over this seed.
   setLang(systemLang())
   const { positional, flags } = parseArgs(argv)
-  await main(positional, flags)
+  try {
+    await main(positional, flags)
+  } catch (error) {
+    if (!needsAPerson(error)) throw error
+    await throughThePanel(layout, error)
+  }
   if (pending !== null && !alreadyRecorded && layout !== null) {
     record(layout, { command: pending.command, args: pending.args, ok: true })
   }

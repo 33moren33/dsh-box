@@ -34,6 +34,16 @@
 
 ---
 
+**0.4.0：命令收成十个动词，`--version` 也收文件夹。**
+
+45 条命令收成十个：`ls`、`get`、`rm`、`start`、`stop`、`set`、`logs`、`ui`、`agent`、`help`，对象做成参数。⛔ 旧名一个都不留。
+
+同时多认两种 dsh：**你自己从源码构建的**，和**某个应用自带的**。`--version` 里带斜杠就按文件夹读，不带就还是版本号——一根轴，一个旗标。钉版核对照实报一句，但不拦着：那棵树不是我们装的。
+
+⛔ **0.3.5 的窗口在 Windows 上一次都打不开**，这一版修了。
+
+---
+
 **0.3.3：npm 上的插件，装得上，也起得来了。**
 
 npm 上的第三方插件多数不随包带官方依赖——它们指望在运行的那台 dsh 身上现拿零件。以前从 dsh-box 装这类包，dsh 会因为找不到零件拒载整棵插件树。这一版从根上解决：**下载一次，每个 dsh 版本各配一套对版的零件货架**（硬链接，不占多余磁盘），沙箱换哪个版本启动都自动对版；**装进日常档案柜则是整份拷进去**——之后你自己敲 `dsh` 一样加载，把 dsh-box 删掉也毫发无损。
@@ -53,12 +63,12 @@ npx dsh-box ui        # 界面开在浏览器里，不用安装
 **⭐ 0.3.5 起，那个 exe 自己也是命令行**：双击是窗口，带参数就是命令行。
 
 ```bash
-dsh-box.exe status --json     # 安装版 / 便携包，带参数即命令行
-dsh-box.exe path add          # 把它所在的目录加进你自己的 PATH
+dsh-box.exe ls --json         # 安装版 / 便携包，带参数即命令行
+dsh-box.exe set path on       # 把它所在的目录加进你自己的 PATH
 dsh-box                       # 进了 PATH 之后，任何目录直接敲
 ```
 
-⛔ **0.3.4 及更早的 exe 没有这张脸**：带参数会挂住不返回，文件名也还是 `dsh-box-shell.exe`。0.3.5 起统一叫 `dsh-box.exe`。安装版装完会自动替你敲一次 `path add`；便携包自己敲一次。**npm 全局装的那份用不着**——npm 已经把垫片放在它的全局目录里了。
+⛔ **0.3.4 及更早的 exe 没有这张脸**：带参数会挂住不返回，文件名也还是 `dsh-box-shell.exe`。0.3.5 起统一叫 `dsh-box.exe`。安装版装完会自动替你敲一次 `set path on`；便携包自己敲一次。**npm 全局装的那份用不着**——npm 已经把垫片放在它的全局目录里了。
 
 配置窗打开后是三步：**选一台 dsh → 选一个档案柜 → 起**。不选版本就用你自己装的那台 dsh；选了下载的版本，第一次会下（约 200–260MB），之后复用。
 
@@ -70,12 +80,12 @@ dsh-box                       # 进了 PATH 之后，任何目录直接敲
 不想用界面就直接给命令，每一步都能单独跑：
 
 ```bash
-npx dsh-box versions                                  # npm 上有哪些版本，本地已下载哪些
-npx dsh-box pull 0.1.1-rc.2                           # 下载一个官方版本
-npx dsh-box plugins add ./my-plugin                   # 记住一个本地插件目录
-npx dsh-box plugins install dsh-memory-pyramid --sandbox 试验台   # 从 npm 装一个插件进沙箱
-npx dsh-box start --new --plugin my-plugin            # 开一台新沙箱，把插件装进去
-npx dsh-box status --json                             # 任何命令加 --json，给脚本和 Agent 用
+npx dsh-box ls machine                                # 能用哪些 dsh：本机装的、已下载的、你指过的文件夹
+npx dsh-box get machine 0.1.1-rc.2                    # 下载一个官方版本
+npx dsh-box get plugin dsh-memory-pyramid --to 试验台   # 从 npm 装一个插件进沙箱
+npx dsh-box start --new --plugin ./my-plugin          # 开一台新沙箱，把本地插件装进去
+npx dsh-box start --new --version D:\dsh-build        # 用你自己构建的那份 dsh 起
+npx dsh-box ls --json                                 # 任何命令加 --json，给脚本和 Agent 用
 ```
 
 从源码跑就是 `node bin/cli.js ui`。
@@ -87,10 +97,10 @@ npx dsh-box status --json                             # 任何命令加 --json�
 真正新的是**接管**这件事：
 
 ```bash
-npx dsh-box attach          # 我来开车
-npx dsh-box detach          # 交还
-npx dsh-box memory          # 上次接管期间做了什么（含被拒绝的）
-npx dsh-box history         # 这个数据目录里做过的所有事
+npx dsh-box agent attach    # 我来开车
+npx dsh-box agent detach    # 交还
+npx dsh-box ls memory       # 上次接管期间做了什么（含被拒绝的）
+npx dsh-box ls history      # 这个数据目录里做过的所有事
 ```
 
 `attach` 之后，配置窗顶上出现一条蓝带，页面里每个即将被动到的控件挂上编号，下面就地展开一份**命令轨迹**——每一步都渲染成你可以照着重跑的那行命令。做完了、被拒了、拒的理由是什么，都在上面。
@@ -103,7 +113,7 @@ npx dsh-box history         # 这个数据目录里做过的所有事
 
 | 词 | 是什么 |
 |---|---|
-| **档案柜** | 一个 `DSH_HOME`。装对话、配置、登录。`--sandbox <名>` 与 `--main` 说的都是它 |
+| **档案柜** | 一个 `DSH_HOME`。装对话、配置、登录。`start <名>` 里那个名字说的就是它，日常那台叫 `main` |
 | **工作区** | dsh 干活的那个**项目文件夹**。这是 dsh 官方的叫法 |
 
 ## 一次启动 ＝ 两根轴
@@ -112,12 +122,12 @@ npx dsh-box history         # 这个数据目录里做过的所有事
 start  =  用哪台 dsh（机器）  ×  开哪个档案柜（DSH_HOME）
 ```
 
-- **机器**：不写就是**你自己装的那台 dsh**；`--version <版本号>` 改用 dsh-box 下载的那份。
-- **档案柜**：`--sandbox <名>` 某台沙箱 ／ `--new` 开一台新的 ／ `--main` 你日常的 `~/.dsh`。
+- **机器**：不写就是**你自己装的那台 dsh**；`--version <版本号>` 改用 dsh-box 下载的那份；`--version <文件夹>` 改用你指的那一份——自己从源码构建的，或某个自带 dsh 的应用。带斜杠就按文件夹读，版本号里不会有斜杠。
+- **档案柜**：写沙箱名开那一台 ／ `--new` 开一台新的 ／ 写 `main` 开你日常的 `~/.dsh`。
 
 **什么都不沿用上次。** 版本、沙箱、工作区三处继承全部去掉了：同一条命令永远得到同一个结果，这比少敲几个字重要。
 
-**只有一道闸门**：用下载的版本去开你真实的 `~/.dsh`。这一格当场拒绝，要人在配置窗里亲手点过头。其余一律不弹窗——可撤销的动作弹窗，只会训练人点掉真正重要的那一个。
+**闸门只拦一件事**：拿**不是你自己装的那台 dsh**（下载的，或你指的文件夹）去开你真实的 `~/.dsh`。这一格当场拒绝，并把配置窗自己弹出来等人点；人点了之后，由那扇窗把这条命令跑掉。⛔ 没有旗标能绕开它。其余一律不弹窗——可撤销的动作弹窗，只会训练人点掉真正重要的那一个。
 
 ## 插件是档案柜的属性
 
@@ -128,24 +138,21 @@ start  =  用哪台 dsh（机器）  ×  开哪个档案柜（DSH_HOME）
 - 本地文件夹和 npm 上的包都能装。本地的是链过去的，改完源码下次启动就生效。
 - npm 的包只下载一次，所有沙箱、所有 dsh 版本共用；每次启动自动对准这次用的那个版本的官方零件。
 - 装进日常档案柜是整份拷进去的——之后不经过 dsh-box、自己敲 `dsh` 也加载，删掉 dsh-box 它还在。
-- 每次改动前先备份，`plugins restore` 整份还原；卸载要**逐字节**回到原样，不是肉眼对，是 hash 对。
+- 每次改动前先备份，`set plugin --undo` 退回上一步；卸载要**逐字节**回到原样，不是肉眼对，是 hash 对。
 
 ## 命令
 
 ```
-versions / pull <版本号> / drop <版本号>          下载与管理 dsh 版本
-sandboxes / start / stop / rm <沙箱名>            沙箱的起停与删除
-adopt --from <名|main> --to <名|main>             把对话从一个档案柜复制到另一个
-plugins [--sandbox <名> | --main]                 登记表，或某个档案柜实际装着什么
-plugins add / rm                                  记住一个插件目录 / 彻底弄走一个插件
-plugins install / uninstall                       装进某个档案柜 / 从某个档案柜拿掉
-plugins backups / backups rm / prune / restore    插件配置的备份与还原
-packages / packages rm / packages prune           dsh-box 替你下载的插件包
-workspaces / workspaces use <目录>                这个档案柜下次打开哪个项目文件夹
-attach / detach / memory / history                接管、交还、回看
-config / config source / config lang              设置：安装源、语言
-path / path add / path rm                         这一份在不在 PATH 上；加进去、撤下来
-status / logs <沙箱名> / ui / quit                全景、日志、配置窗、总退出
+ls    [对象]                    看。不给对象就是此刻的全景
+get   <对象> [--from/--to]      拿进来：machine（下版本）· plugin · signin · chat
+rm    <对象>                    拿走：machine · plugin · sandbox · signin · setting
+start <档案柜> | --new          起一台。可带 --version · --plugin · --unplug
+stop  <档案柜> | --all | --window | --download
+set   <键> <值>                 plugin · workspace · source · lang · path · 两个提醒
+logs  <档案柜> | --version <版本号> | --package <包名>
+ui                              打开配置窗（关它是 stop --window）
+agent attach | detach           接管与交还
+help                            细则分三层，越问越细
 ```
 
 细则看 `help <命令>`（例如 `help start`）。**机器可读的一份是 `--help --json`**，给出的就是驱动这个命令行的那张表。
@@ -155,7 +162,7 @@ status / logs <沙箱名> / ui / quit                全景、日志、配置窗
 中英文都内置，随时切。语言是**这个数据目录的设置**，不是页面的偏好：
 
 ```bash
-npx dsh-box config lang en
+npx dsh-box set lang en
 ```
 
 命令行与配置窗一起变。窗口右上角那个开关背后跑的就是这条命令——所以窗口仍然没有多出任何能力。没设过就跟这台电脑的系统语言走。
@@ -206,7 +213,7 @@ Node 自己的缺陷，不是本工具的（[#61067](https://github.com/nodejs/n
 
 **沙箱用的是你真实的登录。** 导入默认打开，省得每个沙箱都重配一遍 API Key；沙箱里的对话是真实请求，真实计费。
 
-**沙箱里的对话能拿回来。** `adopt` 把对话从一个档案柜复制进另一个，按 session 幂等，重复执行不会多出来。
+**沙箱里的对话能拿回来。** `get chat --from <档案柜> --to <档案柜>` 把对话从一个档案柜复制进另一个，按 session 幂等，重复执行不会多出来。
 
 ## 网络
 

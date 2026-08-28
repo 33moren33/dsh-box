@@ -29,6 +29,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { processStartedAt } from '../src/process-identity.js'
 import { stop } from '../src/launch.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -37,6 +38,11 @@ if (BOX === undefined) {
   console.error('用法: node tools/check-stale-pid.mjs <data 目录>')
   process.exit(2)
 }
+// ⛔⛔ 空的日常档案柜替身。不设它,这套验收读的就是**跑测试那个人真实的 ~/.dsh**,
+//    于是「通过」的理由里混进了他机器上碰巧装了什么。理由全文＝ tools/fake-daily.mjs。
+// ⛔ 摆在参数检查之后:BOX 还没确认存在时 dirname(undefined) 会先崩,
+//    而那时报的是一句跟用法无关的类型错误。
+useFakeDaily(dirname(BOX))
 
 let failures = 0
 const check = (what, passed, detail = '') => {
@@ -47,7 +53,11 @@ const check = (what, passed, detail = '') => {
 /** 跑一条命令,拿它那一行 JSON。 */
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', BOX, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时当场拒绝,不弹面板等一分钟。
+    //   错误码仍是 NEEDS_APPROVAL,断言的语义一个字没变 —— 变的只是不会挂住。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', BOX, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -128,7 +138,7 @@ check('⛔⛔ 那个无关进程还活着(这条一旦不通过,就是真的杀�
 
 // —— 二、读的那一侧也不许显示它。杀得对,但界面上照画一台「正在运行」,
 //    人还是会去按那个按钮。
-const stillThere = await cli('sandboxes')
+const stillThere = await cli('ls', 'sandbox')
 const ghost = (stillThere.sandboxes ?? []).find((entry) => entry.name === '冒名')
 check('⛔⛔ 界面这一侧也不认它 —— 不显示成正在运行',
   ghost === undefined || ghost.running === null,
@@ -160,7 +170,7 @@ ours.kill()
 const nameless = bystander()
 await sleep(300)
 writeLedger('旧格式', nameless.pid, undefined)
-const oldRow = await cli('sandboxes')
+const oldRow = await cli('ls', 'sandbox')
 const older = (oldRow.sandboxes ?? []).find((entry) => entry.name === '旧格式')
 check('⛔ 行里没有身份凭据 —— 一律当没在跑,不去猜',
   older !== undefined && older.running === null,

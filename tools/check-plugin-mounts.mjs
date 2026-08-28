@@ -21,11 +21,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { claimPath } from '../src/sandbox.js'
-import { boxLayout, cabinetLedgerFile, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
+import { APPROVAL_ENV, claimPath } from '../src/sandbox.js'
+import { backupDir, boxLayout, cabinetLedgerFile, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
+import { KEEP_BACKUPS } from '../src/mounts.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -47,19 +48,30 @@ const check = (what, passed, detail = '') => {
 }
 
 // ⛔ A throwaway stand-in for the daily workspace. `userDshHome()` takes
-//    `DSH_HOME` from the environment, so `--main` can be exercised without ever
-//    naming the real `~/.dsh` — which matters here because backups are now a
-//    daily-workspace-only thing, so the only way to test them is through
-//    `--main`.
+//    `DSH_HOME` from the environment, so the cabinet named `main` can be
+//    exercised without ever naming the real `~/.dsh` — which matters here
+//    because backups are now a daily-workspace-only thing, so the only way to
+//    test them is through `main`.
 const fakeDaily = join(root, 'fake-daily-home')
 mkdirSync(join(fakeDaily, 'profiles', 'web'), { recursive: true })
 
-/** Run the real command line and return its one JSON line. */
-function cli(...argv) {
+/**
+ * Run the real command line and return its one JSON line.
+ *
+ * ⛔⛔ `DSH_BOX_NO_PANEL` on every single run, without exception. Since
+ * 2026-08-28 a command that hits the gate **opens a panel and blocks for a
+ * minute** waiting for a person (src/approval.js) — so a suite that does not
+ * say otherwise does not fail, it hangs, once per gated assertion. This switch
+ * can only ever make the tool refuse *sooner*: the code stays `NEEDS_APPROVAL`,
+ * so nothing an assertion says about a refusal changes meaning.
+ * @param {string[]} argv
+ * @param {Record<string, string>} [extraEnv]
+ */
+function run(argv, extraEnv = {}) {
   return new Promise((resolve_) => {
     const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
       windowsHide: true,
-      env: { ...process.env, DSH_HOME: fakeDaily },
+      env: { ...process.env, DSH_HOME: fakeDaily, DSH_BOX_NO_PANEL: '1', ...extraEnv },
     })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
@@ -74,6 +86,26 @@ function cli(...argv) {
     })
   })
 }
+
+/** An ordinary run: an agent's own command line, with nobody having agreed. */
+const cli = (...argv) => run(argv)
+
+/**
+ * A run the config window started **because a person clicked yes**.
+ *
+ * ⭐⭐ Consent stopped being a word you can type on 2026-08-28 (CEO:「不留这个
+ * 参数的后门」). `approvedByWindow` now wants two things at once, and this plays
+ * exactly both of them — nothing more, so the fixture cannot be greener than
+ * the product: **whose child this run is** (the caller holds the ui seat, and
+ * the seat's pid is this process, so the child's ppid matches) ⭐ **and why the
+ * window started it** (`DSH_BOX_APPROVAL`, set only on the code path that
+ * follows a person answering a request — which is why merely POSTing a command
+ * to the window is a child of it and still not approval).
+ * ⛔ The caller must be holding the seat. The env alone is half the test, and
+ * asserting with half of it is how a guard goes green for the wrong reason.
+ * @param {...string} argv
+ */
+const asWindow = (...argv) => run(argv, { [APPROVAL_ENV]: '1' })
 
 /**
  * A folder shaped like a dsh plugin: the three checks all pass on it.
@@ -106,8 +138,8 @@ mkdirSync(join(sandboxHome, 'profiles', 'web'), { recursive: true })
 const handWritten = "# 我自己写的,带注释\n- insert:\n    - id: mine\n      name: 'my-plugin'\n"
 writeFileSync(patch, handWritten)
 const roundTrip = makePlugin('gamma-plugin')
-await cli('plugins', 'install', roundTrip, '--sandbox', 'w1')
-await cli('plugins', 'uninstall', 'gamma-plugin', '--sandbox', 'w1')
+await cli('get', 'plugin', roundTrip, '--to', 'w1')
+await cli('rm', 'plugin', 'gamma-plugin', '--from', 'w1')
 check('⛔ 手写的配置装了又卸,逐字节回到原样', readFileSync(patch, 'utf8') === handWritten,
   JSON.stringify(readFileSync(patch, 'utf8').slice(-24)))
 removeTree(join(layout.sandboxes, 'w1'))
@@ -132,17 +164,17 @@ const ledgerOf = (home) => {
   const file = cabinetLedgerFile(layout, home)
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { profiles: {} }
 }
-await cli('plugins', 'install', makePlugin('delta-plugin'), '--sandbox', 'w1')
+await cli('get', 'plugin', makePlugin('delta-plugin'), '--to', 'w1')
 check('⛔⛔ 装进 dsh 自己写的默认配置后,文件里不再留着那个 [](留着 dsh 就整份拒绝解析)',
   !patchLines().includes('[]'), JSON.stringify(patchLines()))
 check('⭐ 账里记着这份空清单是我们收走的,所以卸的时候知道要还回去',
   ledgerOf(sandboxHome).profiles.web?.absorbedEmptyList === true,
   JSON.stringify(ledgerOf(sandboxHome).profiles.web ?? null))
-await cli('plugins', 'install', makePlugin('epsilon-plugin'), '--sandbox', 'w1')
+await cli('get', 'plugin', makePlugin('epsilon-plugin'), '--to', 'w1')
 check('⛔ 装第二个的时候没把它漏回去', !patchLines().includes('[]'))
-await cli('plugins', 'uninstall', 'delta-plugin', '--sandbox', 'w1')
+await cli('rm', 'plugin', 'delta-plugin', '--from', 'w1')
 check('⛔ 只卸掉一个的时候不还,因为还有我们的行在', !patchLines().includes('[]'))
-await cli('plugins', 'uninstall', 'epsilon-plugin', '--sandbox', 'w1')
+await cli('rm', 'plugin', 'epsilon-plugin', '--from', 'w1')
 check('⛔⛔ 全卸掉之后逐字节回到 dsh 写的原样,不多不少一个 []',
   readPatch() === dshDefault, JSON.stringify(readPatch().slice(-16)))
 // ⭐⭐ 这一条是刀 4 的整个理由:文件里从头到尾没有一个字是 dsh-box 写给自己看的,
@@ -151,7 +183,7 @@ check('⭐⭐ 全程没往别人的文件里写过任何 dsh-box 标记', !readP
 removeTree(join(layout.sandboxes, 'w1'))
 
 // 1. A fresh workspace has nothing, and says so rather than failing.
-const empty = await cli('plugins', '--sandbox', 'w1')
+const empty = await cli('ls', 'plugin', '--in', 'w1')
 check('没装过东西的工作区报「一个都没有」而不是出错',
   empty.ok === true && empty.ours.length === 0 && empty.theirs.length === 0,
   empty.code ?? `ours=${empty.ours?.length} theirs=${empty.theirs?.length}`)
@@ -159,7 +191,7 @@ check('没装过东西的工作区报「一个都没有」而不是出错',
 // 2. Installing writes into the workspace's own file — the one dsh reads by
 //    itself, which is what makes `dsh` typed by hand load it too.
 const first = makePlugin('alpha-plugin')
-const installed = await cli('plugins', 'install', first, '--sandbox', 'w1')
+const installed = await cli('get', 'plugin', first, '--to', 'w1')
 check('装进去了', installed.ok === true, installed.code ?? 'ok')
 check('写的是工作区自己的 profile 配置,不是我们的数据目录',
   readPatch().includes('"alpha-plugin"'), patch.replace(root, '…'))
@@ -167,34 +199,40 @@ check('包被链接进 profile 的 node_modules,名字解析得到',
   existsSync(join(sandboxHome, 'profiles', 'web', 'node_modules', 'alpha-plugin')))
 
 // 3. It is reported as ours, which is what makes it removable.
-const listed = await cli('plugins', '--sandbox', 'w1')
+const listed = await cli('ls', 'plugin', '--in', 'w1')
 check('列出来算「dsh-box 装的」', listed.ours.length === 1 && listed.ours[0].package === 'alpha-plugin',
   JSON.stringify(listed.ours))
 
 // 4. Something the workspace had before we arrived. Written outside our block,
 //    the way anything not us would write it.
 writeFileSync(patch, `# 这一段是这个工作区本来就有的\n- insert:\n    - id: "theirs"\n      name: "their-plugin"\n${readPatch()}`)
-const mixed = await cli('plugins', '--sandbox', 'w1')
+const mixed = await cli('ls', 'plugin', '--in', 'w1')
 check('本来就有的那条被认出来,归在另一栏',
   mixed.theirs.includes('their-plugin') && mixed.ours.length === 1,
   `ours=${mixed.ours.length} theirs=${mixed.theirs.join('、')}`)
 
 // 5. ⛔ The one that matters: removal takes out exactly what we wrote.
-const removed = await cli('plugins', 'uninstall', 'alpha-plugin', '--sandbox', 'w1')
+const removed = await cli('rm', 'plugin', 'alpha-plugin', '--from', 'w1')
 check('卸得掉我们装的那条', removed.ok === true, removed.code ?? 'ok')
 check('⛔ 别人写进去的那条一个字没动', readPatch().includes('their-plugin'))
 check('我们那条真的没了', !readPatch().includes('alpha-plugin'))
 check('链接也跟着撤了', !existsSync(join(sandboxHome, 'profiles', 'web', 'node_modules', 'alpha-plugin')))
 
 // 6. And we refuse to remove theirs, rather than doing it quietly.
-const refused = await cli('plugins', 'uninstall', 'their-plugin', '--sandbox', 'w1')
+const refused = await cli('rm', 'plugin', 'their-plugin', '--from', 'w1')
 check('不许卸别人写进去的,而且说得出为什么',
   refused.ok === false && refused.code === 'NOT_OURS', refused.code)
 
 // 7. The backup is the answer for when precise removal cannot find anything.
 //    ⭐ Only the daily workspace keeps them (CEO 2026-08-22): a sandbox is a
 //    clean start you throw away, so a snapshot of one protects nothing.
-check('⭐ 沙箱一份备份都不留', (await cli('plugins', 'backups', '--sandbox', 'w1')).backups.length === 0)
+// ⛔ 从磁盘上数,不再问命令 —— 列备份那条命令随刀 1 删了(不给选哪一份,
+//    所以不需要列)。⭐ 这几条断言本来问的就是磁盘状态,少了一层转述反而更直接。
+const backupsOf = (home) => {
+  const dir = backupDir(layout, home)
+  return existsSync(dir) ? readdirSync(dir) : []
+}
+check('⭐ 沙箱一份备份都不留', backupsOf(join(layout.sandboxes, 'w1', 'home')).length === 0)
 
 const dailyPatch = join(fakeDaily, 'profiles', 'web', 'cordis.patch.yml')
 const readDaily = () => (existsSync(dailyPatch) ? readFileSync(dailyPatch, 'utf8') : '')
@@ -205,33 +243,56 @@ writeFileSync(dailyPatch, "# 假装这是日常档案柜\n- insert:\n    - id: t
 // picture: this is what the window does when somebody clicks.
 // ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
-await cli('plugins', 'install', makePlugin('daily-plugin'), '--main', '--approved')
-const backups = await cli('plugins', 'backups', '--main')
-check('日常档案柜改过配置就有备份可还原', backups.backups.length > 0, `${backups.backups.length} 份`)
-const restored = await cli('plugins', 'restore', '--main', '--approved')
+await asWindow('get', 'plugin', makePlugin('daily-plugin'), '--to', 'main')
+check('日常档案柜改过配置就有备份可还原', backupsOf(fakeDaily).length > 0, `${backupsOf(fakeDaily).length} 份`)
+const restored = await asWindow('set', 'plugin', '--undo', '--in', 'main')
 check('还原回得去', restored.ok === true, restored.code ?? restored.from)
 check('还原之后回到装之前', !readDaily().includes('daily-plugin'))
 check('还原也不会弄丢别人那条', readDaily().includes('their-plugin'))
+
+// 7b. ⭐⭐ 撤销要能**连按**,一步一步往回走(CEO 2026-08-28)。
+//     ⛔ 这一组里第二次那条断言就是「必然会输的对照组」:旧实现在还原之前会先把
+//     现在这份压进备份堆,于是第二次按拿到的正是第一次按之前的状态 —— 在两个状态
+//     之间来回跳,而每一次单独看都像成功了。**只测一次撤销,永远发现不了它。**
+await asWindow('get', 'plugin', makePlugin('step-one'), '--to', 'main')
+await asWindow('get', 'plugin', makePlugin('step-two'), '--to', 'main')
+check('两步都装上了', readDaily().includes('step-one') && readDaily().includes('step-two'))
+
+const back1 = await asWindow('set', 'plugin', '--undo', '--in', 'main')
+check('⭐ 退一步:第二个没了,第一个还在',
+  !readDaily().includes('step-two') && readDaily().includes('step-one'),
+  `two=${readDaily().includes('step-two')} one=${readDaily().includes('step-one')}`)
+
+const back2 = await asWindow('set', 'plugin', '--undo', '--in', 'main')
+check('⭐⭐ 再按一次真的**再退一步**,而不是跳回刚才那个状态',
+  !readDaily().includes('step-one') && !readDaily().includes('step-two'),
+  `one=${readDaily().includes('step-one')} two=${readDaily().includes('step-two')}`)
+check('⛔ 退过头也不会把别人那条弄丢', readDaily().includes('their-plugin'))
+check('⭐ 每退一步,「还能再退几步」都要变小(它是替代备份列表的那句话)',
+  typeof back1.remaining === 'number' && back2.remaining < back1.remaining,
+  `${back1.remaining} → ${back2.remaining}`)
+// ⛔ 退到头要说得出来,而不是报错或者假装又退了一步。
+let guard = 0
+let last = back2
+while (last.ok === true && guard < 10) { last = await asWindow('set', 'plugin', '--undo', '--in', 'main'); guard += 1 }
+check('⭐ 一直按到底,最后诚实地说没有更早的了',
+  last.ok === false && last.code === 'NO_BACKUP', last.code ?? 'ok')
 
 // ⛔ 半自动清理半只涨不减是这个工具里没写在任何地方的一条规矩。日志每沙箱留
 //    二十份,备份从前不设上限也没有任何命令删得掉——于是 agent 只能伸手去 rm,
 //    而窗口对那个动作一无所知。
 for (let round = 0; round < 8; round += 1) {
-  await cli('plugins', 'install', makePlugin(`churn-${round}`), '--main', '--approved')
+  await asWindow('get', 'plugin', makePlugin(`churn-${round}`), '--to', 'main')
 }
-const capped = await cli('plugins', 'backups', '--main')
 check('⭐ 备份不会只涨不减,到上限就丢最老的',
-  capped.backups.length === capped.keep, `${capped.backups.length} 份,上限 ${capped.keep}`)
-const oldest = capped.backups.at(-1).at
-const dropped = await cli('plugins', 'backups', 'rm', oldest, '--main')
-check('⭐ 删得掉某一份,不必自己去 rm', dropped.ok === true, dropped.code ?? oldest)
-check('删完真的少了一份', (await cli('plugins', 'backups', '--main')).backups.length === capped.keep - 1)
-const pruned = await cli('plugins', 'backups', 'prune', '--keep', '0', '--main')
-check('⭐ 也清得干净', pruned.ok === true && (await cli('plugins', 'backups', '--main')).backups.length === 0,
-  `清掉 ${pruned.removed?.length} 份`)
-// ⛔ Give the seat back. Everything below asserts that a flag alone is not
-// approval, and that only holds while nobody is sitting there — leaving it held
-// would turn those checks green for the opposite reason.
+  backupsOf(fakeDaily).length === KEEP_BACKUPS, `${backupsOf(fakeDaily).length} 份,上限 ${KEEP_BACKUPS}`)
+// ⛔⛔ 这里原来还有三条:删掉某一份 / 按上限清一次 / 清得干净。它们随刀 1 一起删了,
+//    而理由不是「不重要」,是**这个问题被定义掉了**:一旦可以选哪一份,人就得先看懂
+//    那张时间戳表 —— 而人真正想要的从来只是「回到我改坏之前」,那件事现在靠连按
+//    plugins restore 完成(守卫在本册 7b 节)。轮转本来就是自动的,所以没有东西会涨。
+// ⛔ Give the seat back. Everything below asserts that the gate holds when
+// nobody has agreed, and that only means anything while the seat is empty —
+// leaving it held would turn those checks green for the opposite reason.
 rmSync(uiSeatFile(layout), { force: true })
 
 // 8. The bundle list is read and never written. ⛔ It was written, briefly, and
@@ -258,8 +319,8 @@ check('官方基座单列,不混进插件名单',
   && !withBundles.theirs.includes('@deepseek-ai/dsh-base'),
   withBundles.platform.join('、'))
 const untouched = readFileSync(profilePackage, 'utf8')
-await cli('plugins', 'install', makePlugin('beta-plugin'), '--sandbox', 'w1')
-await cli('plugins', 'uninstall', 'beta-plugin', '--sandbox', 'w1')
+await cli('get', 'plugin', makePlugin('beta-plugin'), '--to', 'w1')
+await cli('rm', 'plugin', 'beta-plugin', '--from', 'w1')
 check('⛔ 装了又卸一轮,profile 的 package.json 一个字节没动',
   readFileSync(profilePackage, 'utf8') === untouched)
 
@@ -267,14 +328,14 @@ check('⛔ 装了又卸一轮,profile 的 package.json 一个字节没动',
 //    command line does not need that restriction.
 mkdirSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-1'), { recursive: true })
 writeFileSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-1', 'session.jsonl'), '{}\n')
-const copied = await cli('adopt', '--from', 'w2', '--to', 'w1')
+const copied = await cli('get', 'chat', '--from', 'w2', '--to', 'w1')
 check('沙箱之间也复制得动', copied.ok === true && copied.adopted === 1, copied.code ?? `${copied.adopted} 条`)
 check('原件留在来源那边,是复制不是搬走',
   existsSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-1')))
-const again = await cli('adopt', '--from', 'w2', '--to', 'w1')
+const again = await cli('get', 'chat', '--from', 'w2', '--to', 'w1')
 check('重复跑是安全的,已有的跳过', again.ok === true && again.skipped === 1 && again.adopted === 0,
   `复制 ${again.adopted} 跳过 ${again.skipped}`)
-const sameBoth = await cli('adopt', '--from', 'w2', '--to', 'w2')
+const sameBoth = await cli('get', 'chat', '--from', 'w2', '--to', 'w2')
 check('从哪儿到哪儿是同一个工作区会被拦下', sameBoth.code === 'SAME_WORKSPACE', sameBoth.code)
 
 // 10. ⛔⛔ The one that used to be unrecoverable: another package already holds
@@ -293,7 +354,7 @@ symlinkSync(theirSource, w3Slot, 'junction')
 const theirPatch = readFileSync(w3Patch, 'utf8')
 
 const ourCopy = makePlugin('victim-plugin', 'our-copy')
-const collided = await cli('plugins', 'install', ourCopy, '--sandbox', 'w3')
+const collided = await cli('get', 'plugin', ourCopy, '--to', 'w3')
 check('⛔ 包名被别人占着时拒绝,而且说得出为什么',
   collided.ok === false && collided.code === 'PLUGIN_NAME_TAKEN', collided.code)
 check('⛔⛔ 拒绝时一个字节都没动过——链接还指着人家的源码',
@@ -304,7 +365,7 @@ check('⛔ 拒绝时配置文件也没动', readFileSync(w3Patch, 'utf8') === th
 // The other half of the same decision: pointing at the very folder already
 // linked there is not a collision, it is nothing to do — and saying "already
 // installed" is only honest because this branch runs before anything is written.
-const sameFolder = await cli('plugins', 'install', theirSource, '--sandbox', 'w3')
+const sameFolder = await cli('get', 'plugin', theirSource, '--to', 'w3')
 check('指向同一份东西时当作已完成,不当成冲突',
   sameFolder.ok === true && sameFolder.alreadyThere === true, sameFolder.code ?? 'ok')
 check('「已完成」那条路也确实什么都没写', readFileSync(w3Patch, 'utf8') === theirPatch)
@@ -318,12 +379,12 @@ check('「已完成」那条路也确实什么都没写', readFileSync(w3Patch, 
 const w5Patch = join(layout.sandboxes, 'w5', 'home', 'profiles', 'web', 'cordis.patch.yml')
 const w5Slot = join(layout.sandboxes, 'w5', 'home', 'profiles', 'web', 'node_modules', 'twice-plugin')
 const twice = makePlugin('twice-plugin')
-await cli('plugins', 'install', twice, '--sandbox', 'w5')
+await cli('get', 'plugin', twice, '--to', 'w5')
 const afterFirst = readFileSync(w5Patch, 'utf8')
 const rows = (text) => (text.match(/name:\s*"?twice-plugin"?/g) ?? []).length
 check('装第一遍:patch 里有它,一行', rows(afterFirst) === 1, `${rows(afterFirst)} 行`)
 
-const twiceAgain = await cli('plugins', 'install', twice, '--sandbox', 'w5')
+const twiceAgain = await cli('get', 'plugin', twice, '--to', 'w5')
 check('⛔⛔ 装第二遍:说「已经装着」,而不是默默再装一次',
   twiceAgain.ok === true && twiceAgain.alreadyThere === true && twiceAgain.relinked === false,
   twiceAgain.code ?? JSON.stringify(twiceAgain.relinked))
@@ -333,7 +394,7 @@ check('⛔⛔ patch 逐字节没变 —— 没有第二行', readFileSync(w5Patc
 // 10c. 另一半:行还在、链接断了。⭐ 这一条防的是"一刀切跳过"——那样断链永远修不回来,
 //      而且工具会一边说「已经装好了」一边让 dsh 加载不到它。
 removeTree(w5Slot)
-const repaired = await cli('plugins', 'install', twice, '--sandbox', 'w5')
+const repaired = await cli('get', 'plugin', twice, '--to', 'w5')
 check('⭐ 行还在但链接断了:重新指好,并且说出来了',
   repaired.ok === true && repaired.alreadyThere === true && repaired.relinked === true,
   repaired.code ?? JSON.stringify(repaired.relinked))
@@ -351,7 +412,7 @@ const w4Home = join(layout.sandboxes, 'w4', 'home')
 const w4Patch = join(w4Home, 'profiles', 'web', 'cordis.patch.yml')
 mkdirSync(join(w4Home, 'profiles', 'web'), { recursive: true })
 writeFileSync(w4Patch, '# >>> dsh-box: maintained automatically, rewritten whenever plugins change\n(没有收尾那一行)\n')
-const unreadable = await cli('plugins', 'install', makePlugin('delta-plugin'), '--sandbox', 'w4')
+const unreadable = await cli('get', 'plugin', makePlugin('delta-plugin'), '--to', 'w4')
 check('⛔ 配置读不懂就不装,而不是装完再抱怨',
   unreadable.ok === false && unreadable.code === 'UNREADABLE_PATCH', unreadable.code)
 check('⛔ 读不懂时链接也没建',
@@ -370,56 +431,47 @@ mkdirSync(downloaded, { recursive: true })
 const fakeDownload = makePlugin('fetched-plugin', join('data', 'packages', 'node_modules', 'fetched-plugin'))
 makePlugin('unused-plugin', join('data', 'packages', 'node_modules', 'unused-plugin'))
 
-const shelf = await cli('packages')
-check('⭐ 下载过的包列得出来了', (shelf.packages ?? []).length === 2,
-  (shelf.packages ?? []).map((one) => one.name).join('、'))
-check('没人用的就说没人用',
-  (shelf.packages ?? []).every((one) => one.usedBy.length === 0))
+// ⛔⛔ 从磁盘上看,不再问命令。列包体 / 删包体 / 清没人用的三条随刀 1 删了 ——
+//    ⭐ 它们伺候的是「我们内部有个包体仓」这件事,而调用方本来不该知道它存在。
+//    这一节因此从「命令说得对不对」变成「磁盘上发生了什么」,而后者才是断言真正
+//    关心的东西:少了一层转述,也就少了一个可以骗过自己的地方。
+const onDisk = (name) => existsSync(join(downloaded, name, 'package.json'))
+check('⭐ 两个包都在下载仓里', onDisk('fetched-plugin') && onDisk('unused-plugin'))
 
-await cli('plugins', 'install', fakeDownload, '--sandbox', 'w5')
-const inUse = await cli('packages')
-check('⭐ 装进工作区之后,列表直接说出是谁在用',
-  inUse.packages.find((one) => one.name === 'fetched-plugin')?.usedBy.includes('w5'),
-  JSON.stringify(inUse.packages.map((one) => `${one.name}:${one.usedBy.join(',') || '无'}`)))
+await cli('get', 'plugin', fakeDownload, '--to', 'w5')
+check('装进工作区之后它还在(有人用着,不该被清)', onDisk('fetched-plugin'))
+// ⛔ 没有任何档案柜引用的那个,也不会被顺手清掉 —— 自清只在「有人松手」那一刻发生,
+//    不是每条命令都去扫一遍。⭐ 这条是必然会输的对照组的反面:它保证自清没有变成
+//    「见到没人用的就删」,那种实现会在下载完成、还没来得及装的那几秒里删掉刚下的包。
+check('⛔ 从没被装过的那个也还在(自清只在松手那一刻发生)', onDisk('unused-plugin'))
 
-const busy = await cli('packages', 'rm', 'fetched-plugin')
-check('⛔ 还有工作区在用就不许删,而且说得出是哪几个',
-  busy.ok === false && busy.code === 'PACKAGE_IN_USE', busy.code)
-check('⛔ 被拒绝时那个包还在', existsSync(join(downloaded, 'fetched-plugin', 'package.json')))
-
-const swept = await cli('packages', 'prune')
-check('⭐ prune 只清没人用的,在用的一个不碰',
-  swept.removed?.length === 1 && swept.removed[0] === 'unused-plugin', JSON.stringify(swept.removed))
-check('在用的那个还在', existsSync(join(downloaded, 'fetched-plugin', 'package.json')))
-
-await cli('plugins', 'uninstall', 'fetched-plugin', '--sandbox', 'w5')
-const freed = await cli('packages', 'rm', 'fetched-plugin')
-check('⭐ 从工作区卸掉之后就删得动了', freed.ok === true, freed.code ?? 'ok')
+// ⭐⭐ 最后一个工作区松手,下载的那份就跟着走 —— 不必谁回头来收拾。
+//     ⛔ 这条断言以前测的是反面(「卸掉之后就**删得动**了」),而那正是把「我们内部
+//     有个包体仓」变成调用方的功课:先卸,再记得回来删。真正该发生的是它自己没了,
+//     packages 那一族命令因此整个不需要存在。
+const letGo = await cli('rm', 'plugin', 'fetched-plugin', '--from', 'w5')
+check('⭐⭐ 最后一个工作区卸掉它,下载的那份自己就没了',
+  letGo.deletedPackages?.includes('fetched-plugin') === true, JSON.stringify(letGo.deletedPackages))
 check('包真的没了', !existsSync(join(downloaded, 'fetched-plugin')))
+// ⛔ 说过删了就要真删干净。一个留下的空壳会让下一次「装回来」以为已经下载过而跳过
+//    下载,然后 dsh 指着一个没有内容的包名启动 —— 那是它拒绝加载整棵插件树的样子。
+check('⛔ 连它那层 @scope/空壳都没留下', !existsSync(join(downloaded, 'fetched-plugin')))
 
-// 13. ⛔⛔ 「弄走一个插件」以前只做了三件事里的一件。
-//     那个按钮叫「不再记」,按下去登记表里那行就没了,读起来像「这个插件弄走了」
-//     ——而装过它的工作区照旧加载它,下载的那份包也还在磁盘上。真要清干净得跨
-//     两种状态走三步,界面上和 help 里都没有任何地方说明这一点。
-//     ⭐ 现在做什么只取决于文件是谁的:自己的文件夹只去链接与登记,下载的连包一起删。
-const myFolder = makePlugin('mine-plugin')
-await cli('plugins', 'add', myFolder)
-await cli('plugins', 'install', 'mine-plugin', '--sandbox', 'w6')
-await cli('plugins', 'install', 'mine-plugin', '--sandbox', 'w7')
-const goneMine = await cli('plugins', 'rm', 'mine-plugin')
-check('⭐ 一条命令从每个装过它的工作区都卸掉了',
-  goneMine.ok === true && goneMine.detached.length === 2,
-  (goneMine.detached ?? []).map((one) => one.workspace).join('、'))
-check('登记表里也没了',
-  !((await cli('plugins')).plugins ?? []).some((one) => one.id === 'mine-plugin'))
-check('⛔⛔ 我自己的文件夹一个字节没动 —— 那是我的东西',
-  existsSync(join(myFolder, 'package.json')) && goneMine.deletedPackage === false)
+// 13. ⛔⛔ 这里原来测的是 plugins rm ——「一条命令把这个插件从每个档案柜弄走」。
+//     那条命令随刀 1 删了(登记表没了,「从登记表移除」也就没了),而**「一次从所有
+//     档案柜弄走」是不是真需求、要不要做成 rm plugin <id> --everywhere,CEO 还没拍板**
+//     (契约 check-command-map 的 open 栏里列着)。
+//     ⭐ 所以这一节不是被删,是**在等一个裁决**:裁决落下来之前留着一个测不存在
+//     命令的验收,只会在每次跑测试时假装这件事还有人管。
+//     ⚠️ 它守过的那条原则没有作废,而且已经在别处守着:做什么只取决于文件是谁的 ——
+//     自己的文件夹只去链接,下载的连包一起删(本册第 12 节 deletedPackages 那几条)。
 
 const asDownload = makePlugin('grabbed-plugin', join('data', 'packages', 'node_modules', 'grabbed-plugin'))
-await cli('plugins', 'install', asDownload, '--sandbox', 'w6')
-const goneDl = await cli('plugins', 'rm', 'grabbed-plugin')
+await cli('get', 'plugin', asDownload, '--to', 'w6')
+const goneDl = await cli('rm', 'plugin', 'grabbed-plugin', '--from', 'w6')
 check('⭐ 下载的那种,连包体一起删',
-  goneDl.ok === true && goneDl.deletedPackage === true, `deletedPackage=${goneDl.deletedPackage}`)
+  goneDl.ok === true && (goneDl.deletedPackages ?? []).includes('grabbed-plugin'),
+  JSON.stringify(goneDl.deletedPackages))
 check('包真的从磁盘上没了',
   !existsSync(join(box, 'packages', 'node_modules', 'grabbed-plugin')))
 
@@ -427,12 +479,15 @@ check('包真的从磁盘上没了',
 const reaching = makePlugin('reaching-plugin')
 // ⚠ Putting it there is itself a change to the daily cabinet, so the seat is
 // held for that one step and given straight back — the checks below need it
-// empty, since what they assert is that a flag alone is not approval.
+// empty, since what they assert is that the gate holds with nobody having agreed.
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10131' })
-await cli('plugins', 'install', reaching, '--main', '--approved')
+await asWindow('get', 'plugin', reaching, '--to', 'main')
 rmSync(uiSeatFile(layout), { force: true })
-await cli('plugins', 'install', 'reaching-plugin', '--sandbox', 'w6')
-const halted = await cli('plugins', 'rm', 'reaching-plugin')
+// ⭐ Named by id rather than by folder, and that only works because the roster
+//    is **derived** now (src/roster.js): whatever the daily cabinet holds is
+//    nameable, so "take what main has into a sandbox" needs nothing registered.
+await cli('get', 'plugin', 'reaching-plugin', '--to', 'w6')
+const halted = await cli('rm', 'plugin', 'reaching-plugin', '--from', 'main')
 check('⛔ 会动到日常档案柜时先拦下来',
   halted.ok === false && halted.code === 'NEEDS_APPROVAL', halted.code)
 check('⛔ 拦下来时是真的什么都没做',
@@ -442,22 +497,35 @@ check('⛔ 拦下来时是真的什么都没做',
 // locale — and worse, an agent reading `--json` got a different value depending
 // on whose machine it ran on. Both were fixed together: the field now names
 // cabinets the way everything else here does (`sandbox: null` is the daily one).
-check('而且说得出会动哪几处',
-  (halted.places ?? []).some((place) => place.main === true)
-  && (halted.places ?? []).some((place) => place.sandbox === 'w6'),
-  JSON.stringify(halted.places ?? []))
+// ⛔ 原来断言的是 places ——「这一下会动到哪几个档案柜」,那是 plugins rm 才需要
+//    回答的问题:它一条命令伸向所有柜子。rm plugin 只动被点名的那一个,所以它要
+//    答的是**「哪一个」**,而不是「哪几个」。⭐ 断言跟着命令的语义走,不跟着字段名走。
+check('⛔ 拒绝时说得出动的是日常档案柜(而不是只丢一句人读的话)',
+  halted.main === true, JSON.stringify(halted))
 
-const flagAlone = await cli('plugins', 'rm', 'reaching-plugin', '--approved')
-check('⛔⛔ 光带旗标不算数——不是配置窗起的就不是点头',
-  flagAlone.ok === false && flagAlone.code === 'NEEDS_APPROVAL', flagAlone.code)
+// ⛔⛔ 这一条的语义在 2026-08-28 翻了个面,而它守的性质**没变**。
+//    从前 `--approved` 是个存在的旗标,守卫问的是「光带它算不算数」(答:不算,
+//    还得是配置窗起的);现在 CEO 定了「不留这个参数的后门」—— 同意不再是一个
+//    **打得出来的词**,判据整个搬去了环境变量 ＋ 父进程(src/sandbox.js 的
+//    approvedByWindow)。⭐ 所以现在唯一能守住那条性质的问法是:这个旗标**根本
+//    不该被认得**。答 UNKNOWN_FLAG 才对 —— 要是哪天它又被谁加回去,哪怕加成
+//    「不充分」的那种,这一条也会当场红。
+const flagGone = await cli('rm', 'plugin', 'reaching-plugin', '--from', 'main', '--approved')
+check('⛔⛔ --approved 这个旗标已经不存在了——同意不是一个打得出来的词',
+  flagGone.ok === false && flagGone.code === 'UNKNOWN_FLAG', flagGone.code)
 
-// ⭐ Play the window: hold its seat, then run the command line as a child of
-// this process. That parentage is the whole of the evidence a person was there.
+// ⭐ Play the window, both halves of it: hold its seat so the run is a child of
+// the process on that seat, and carry `DSH_BOX_APPROVAL` — which the window
+// sets only after a person has answered a request. Neither half alone is
+// approval, and this is exactly what the server does on the click path.
 // ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10130' })
-const approved = await cli('plugins', 'rm', 'reaching-plugin', '--approved')
-check('人在配置窗里点过头,照做', approved.ok === true && approved.detached.length === 2,
-  (approved.detached ?? []).map((one) => one.workspace).join('、'))
+const approved = await asWindow('rm', 'plugin', 'reaching-plugin', '--from', 'main')
+// ⛔ 断言从 detached(「从哪几个柜子拿掉了」)改成 plugin ——
+//    前者是 plugins rm 的答案形状,rm plugin 只动被点名的那一个柜子。
+check('人在配置窗里点过头,照做',
+  approved.ok === true && approved.plugin?.id === 'reaching-plugin',
+  approved.code ?? JSON.stringify(approved.plugin ?? null))
 rmSync(uiSeatFile(layout), { force: true })
 check('日常档案柜里真的没了', !readFileSync(dailyPatch, 'utf8').includes('reaching-plugin'))
 check('⛔ 别人本来就有的那条照旧没动', readFileSync(dailyPatch, 'utf8').includes('their-plugin'))
@@ -465,13 +533,13 @@ check('⛔ 别人本来就有的那条照旧没动', readFileSync(dailyPatch, 'u
 // ⛔⛔ 这个开关的意思变了。它曾经把闸门对**所有调用者**关掉,于是一个人为了
 // 自己少点一次而勾的框,顺带把同一扇门交给了机器上跑着的任何东西。现在它只
 // 说一件事:窗口不必再问我。命令行这一侧照拦不误。
-await cli('config', 'ask-on-daily', 'off')
+await cli('set', 'ask-on-daily', 'off')
 // ⚠ Same as above: getting it in there needs the seat; taking it out is what
 // this checks, and that has to happen with the seat empty.
 claimPath(uiSeatFile(layout), { url: 'http://127.0.0.1:10132' })
-await cli('plugins', 'install', makePlugin('quiet-plugin'), '--main', '--approved')
+await asWindow('get', 'plugin', makePlugin('quiet-plugin'), '--to', 'main')
 rmSync(uiSeatFile(layout), { force: true })
-const quiet = await cli('plugins', 'rm', 'quiet-plugin')
+const quiet = await cli('rm', 'plugin', 'quiet-plugin', '--from', 'main')
 check('⛔⛔ 关掉「再问一次」之后,命令行照样拦——那是窗口的偏好,不是给外面的通行证',
   quiet.ok === false && quiet.code === 'NEEDS_APPROVAL', quiet.code ?? 'ok')
 

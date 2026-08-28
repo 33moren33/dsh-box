@@ -25,7 +25,8 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
+import { entryScript, looksLikePath, resolvePathEngine } from './engine-path.js'
 import { BoxError } from './errors.js'
 import { t } from './messages.js'
 import { versionDir, versionEntry } from './paths.js'
@@ -149,24 +150,6 @@ function hasShim(dir, windows) {
 }
 
 /**
- * The script this installation says to run.
- *
- * Read from the manifest rather than assumed to be `lib/bin.js`, because the
- * whole reason for preferring the user's own installation is that it may be a
- * build they modified — and a modified build is exactly the one that might move
- * its entry point.
- * @param {string} dir
- * @param {{bin?: string | Record<string, string>}} pkg
- * @returns {string | null}
- */
-function entryScript(dir, pkg) {
-  const bin = pkg.bin
-  const relative = typeof bin === 'string' ? bin : typeof bin === 'object' && bin !== null ? bin.dsh : undefined
-  if (typeof relative !== 'string' || relative === '') return null
-  return isAbsolute(relative) ? relative : resolve(dir, relative)
-}
-
-/**
  * Whether every package of this installation carries one release number.
  *
  * The same check the download path gates on, run here for free. Where the
@@ -197,35 +180,54 @@ function pinning(dir, root, version) {
 
 /**
  * @typedef {object} Engine
- * @property {'host' | 'release'} kind - whose installation this is.
+ * @property {'host' | 'release' | 'tree' | 'app'} kind - where this
+ * installation came from. The first two we find ourselves; the last two are
+ * folders somebody named (`engine-path.js`).
  * @property {string | null} version
  * @property {string} dir - the installation root.
  * @property {string} entry - the script to run.
+ * @property {string} exec - the interpreter to run it with. Ours for every
+ * kind but one: a dsh packed into an application archive is readable only by
+ * the interpreter shipped beside it.
+ * @property {Record<string, string>} execEnv - what that interpreter needs in
+ * its environment to behave as a plain Node.
+ * @property {import('./engine-path.js').PinInfo} [pin] - present only for a
+ * tree somebody named, where the pin check reports instead of gating.
  */
 
 /**
  * Which dsh installation to launch.
  *
- * Two values, one axis. No version named means the machine the user already
- * has; naming one means "use a release this tool downloaded instead", which is
- * the only thing `--version` says now. Nothing is inherited from a previous
- * launch: a command that answers differently depending on what was run last is
- * a command whose written form cannot be trusted, and both entrances render
- * these back as explicit lines.
+ * One axis, and now four answers on it. No version named means the machine the
+ * user already has. A release number means one this tool downloaded. **A folder
+ * means that folder** — a source build, or an application carrying its own dsh.
+ *
+ * ⭐ A folder rides the same flag rather than getting its own. "Which dsh" is
+ * one question, and a second flag would create a case where both are answered;
+ * a path separator tells them apart with no rule to write, because a release
+ * number cannot contain one.
+ *
+ * Nothing is inherited from a previous launch: a command that answers
+ * differently depending on what was run last is a command whose written form
+ * cannot be trusted, and both entrances render these back as explicit lines.
  * @param {import('./paths.js').BoxLayout} layout
  * @param {object} [options]
- * @param {string} [options.version] - a downloaded release, or nothing.
+ * @param {string} [options.version] - a downloaded release, a folder, or nothing.
  * @param {NodeJS.ProcessEnv} [options.env]
  * @returns {Engine}
  */
 export function resolveEngine(layout, { version, env } = {}) {
   if (typeof version === 'string' && version.trim() !== '') {
     const wanted = version.trim()
+    if (looksLikePath(wanted)) return resolvePathEngine(wanted)
     const entry = versionEntry(layout, wanted)
     if (!existsSync(entry)) {
       throw new BoxError('VERSION_NOT_DOWNLOADED', t('host.versionNotDownloaded', { version: wanted }), { version: wanted })
     }
-    return { kind: 'release', version: wanted, dir: versionDir(layout, wanted), entry }
+    return {
+      kind: 'release', version: wanted, dir: versionDir(layout, wanted), entry,
+      exec: process.execPath, execEnv: {},
+    }
   }
   const host = detectHostDsh({ env })
   if (!host.found) {
@@ -235,7 +237,10 @@ export function resolveEngine(layout, { version, env } = {}) {
       { looked: host.looked },
     )
   }
-  return { kind: 'host', version: host.version, dir: host.dir, entry: host.entry }
+  return {
+    kind: 'host', version: host.version, dir: host.dir, entry: host.entry,
+    exec: process.execPath, execEnv: {},
+  }
 }
 
 /**
@@ -265,13 +270,27 @@ export function sameEngine(a, b) {
   return a.kind === b.kind && a.version === b.version && a.dir === b.dir
 }
 
+/** What each kind of installation is called when a person is reading. */
+const ENGINE_LABELS = {
+  host: 'engine.host',
+  release: 'engine.release',
+  tree: 'engine.tree',
+  app: 'engine.app',
+}
+
 /**
  * One line naming an installation, for a person.
- * @param {{kind?: string, version?: string | null} | null} engine
+ *
+ * ⭐ A named folder says where it is, not just what version it is. That is the
+ * whole difference between it and the other two: there can be several of them,
+ * they can carry the same number, and the number alone would not tell anyone
+ * which one this launch used.
+ * @param {{kind?: string, version?: string | null, dir?: string} | null} engine
  * @returns {string}
  */
 export function engineLabel(engine) {
   if (engine === null || engine === undefined) return t('engine.unknown')
   const version = engine.version ?? t('engine.versionUnreadable')
-  return t(engine.kind === 'host' ? 'engine.host' : 'engine.release', { version })
+  const key = ENGINE_LABELS[engine.kind ?? ''] ?? 'engine.release'
+  return t(key, { version, path: engine.dir ?? '' })
 }

@@ -17,7 +17,7 @@
 import {
   copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { BoxError } from './errors.js'
 import { engineRecord, sameEngine } from './host.js'
 import { t } from './messages.js'
@@ -309,13 +309,21 @@ export function liveClaim(file) {
 /**
  * Whether this run may act on the daily cabinet, because a person said so.
  *
- * ⭐⭐ The flag alone is not evidence. Anything running as the user can pass
- * `--approved`, so as a promise it was only ever a plea — the message used to
- * literally ask agents not to use it. What makes it evidence is **where the
- * process came from**: the config window performs every action by starting the
- * command line as a child of itself, so a run whose parent is the window on the
- * seat is a run a person clicked for. An agent's own command line has its own
- * shell as a parent and cannot become the window without being it.
+ * ⭐⭐ Two things together, and neither alone. **Where the process came from**:
+ * the config window performs every action by starting the command line as a
+ * child of itself, so a run whose parent is the window on the seat is a run the
+ * window asked for; an agent's own command line has its own shell as a parent
+ * and cannot become the window without being it. And **why the window started
+ * it**: only the code path that follows a person answering a request sets
+ * `DSH_BOX_APPROVAL`, so a command merely posted to `/api/command` is a child
+ * of the window and still not approved.
+ *
+ * ⛔⛔ There used to be an `--approved` flag here, and it is gone on purpose
+ * (CEO 2026-08-28: "不留这个参数的后门"). A word in an argument list is
+ * something any caller can write, so it could never be evidence — and while the
+ * parentage test meant it was not *sufficient*, having it there at all told
+ * readers that consent was a thing you could type. Consent is now a decision
+ * recorded against one specific request; see `src/approval.js`.
  *
  * ⛔ This guards the tool's own path, not the machine. An agent can still
  * delete the same file with `rm`, exactly as a model with shell access can edit
@@ -327,14 +335,23 @@ export function liveClaim(file) {
  * approve either, because from here they are indistinguishable from an agent.
  * They open the window instead.
  * @param {import('./paths.js').BoxLayout} layout
- * @param {boolean} approved - whether `--approved` was passed at all.
  * @returns {boolean}
  */
-export function approvedByWindow(layout, approved) {
-  if (approved !== true) return false
+export function approvedByWindow(layout) {
+  if (process.env[APPROVAL_ENV] !== '1') return false
   const seat = liveClaim(uiSeatFile(layout))
   return seat !== null && seat.pid === process.ppid
 }
+
+/**
+ * The mark the window puts on a run it started because a person said yes.
+ *
+ * ⛔ Not a secret and not trying to be. It cannot be forged from outside because
+ * only the window sets the environment of its own children, and being one of
+ * those children is the other half of the test. Written here, beside the check,
+ * so the two can never be spelled differently in two files.
+ */
+export const APPROVAL_ENV = 'DSH_BOX_APPROVAL'
 
 /**
  * Add to a claim already held, once there is more to say about it.
@@ -690,6 +707,65 @@ export function noteBoot(layout, name, engine) {
     lastEngine: engineRecord(engine),
     lastUsed: instantNow(),
   }, null, 2)}\n`)
+}
+
+/**
+ * Take a named folder back out of what this tool remembers.
+ *
+ * ⭐ The same rule as taking out a plugin, and that is the whole point: what
+ * happens depends on whether the thing is ours. A release we downloaded is
+ * really deleted, because we put it there. A folder somebody pointed at is not
+ * ours to delete — so only our own record of it goes, and their folder is
+ * untouched. One rule, learned once.
+ *
+ * ⛔⛔ The pointer layer goes with the record, and this is not tidiness. That
+ * record is what {@link switchesEngine} reads to decide whether the next launch
+ * must clear the layer of links a cabinet holds into whichever installation
+ * booted it — and with **no** record at all that question answers "did not
+ * switch". So forgetting without clearing would leave the cabinet resolving
+ * packages out of a tree nobody chose, silently, on the next launch with a
+ * different machine. Cleared here instead, which costs nothing: boot rebuilds
+ * the whole directory anyway.
+ *
+ * ⛔ A sandbox currently running on it is refused rather than quietly skipped —
+ * clearing the pointer layer under a live dsh is the same damage, done sooner.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} dir - the folder, as it was named.
+ * @returns {{forgotten: string[], cleared: string[], running: string[]}} which
+ * sandboxes had a record of it, which had a pointer layer to clear, and which
+ * are running on it right now.
+ */
+export function forgetEngine(layout, dir) {
+  // ⚠️ Compared the way the filesystem compares: a path typed with a different
+  // capitalisation is the same folder on Windows, and refusing to recognise it
+  // would leave a chip nothing can remove.
+  const same = (other) => {
+    if (typeof other !== 'string') return false
+    return process.platform === 'win32'
+      ? resolve(other).toLowerCase() === resolve(dir).toLowerCase()
+      : resolve(other) === resolve(dir)
+  }
+  const holders = listSandboxes(layout).filter((info) => {
+    const last = lastEngine(readState(sandboxPaths(layout, info.name).state))
+    return last !== null && same(last.dir)
+  })
+  // ⛔ Looked at in full before anything is written. Refusing halfway would
+  // leave some sandboxes forgotten and some not, and the caller would be told
+  // only about the refusal — which is the shape of failure that gets retried
+  // on a machine that has already half changed.
+  const running = holders.filter((info) => info.running !== null).map((info) => info.name)
+  if (running.length > 0) return { forgotten: [], cleared: [], running }
+
+  const forgotten = []
+  const cleared = []
+  for (const info of holders) {
+    const paths = sandboxPaths(layout, info.name)
+    const { lastEngine: _gone, lastVersion: _also, ...rest } = readState(paths.state)
+    writeFileSync(paths.state, `${JSON.stringify(rest, null, 2)}\n`)
+    forgotten.push(info.name)
+    if (clearModuleFallback(paths.home)) cleared.push(info.name)
+  }
+  return { forgotten, cleared, running }
 }
 
 /**

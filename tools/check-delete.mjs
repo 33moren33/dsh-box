@@ -24,8 +24,11 @@
  *
  * ⚠️ It reaches much further than sandbox names. Every path this tool deletes
  * sits under the data directory, so a user whose home is `C:\Users\张三\…` would
- * find that dropping a release, pruning packages and clearing backups all
+ * find that `rm release`、卸插件时按引用计数自清的那棵包树、以及快照轮转 all
  * quietly did nothing — while saying they had.
+ * ⚠️ 08-28 起后两件不再是人敲得出的命令(`packages prune`、`plugins backups prune`
+ * 都在刀 1 删掉了),但它们**照样会跑**,只是改成自动发生 —— 删得掉不删得掉这件事
+ * 一点没变轻,反而没人再盯着看了。
  *
  * ⭐ The control groups below are the built-in calls, on the same trees. **When
  * they start passing on every platform we support, Node has been fixed for
@@ -83,6 +86,35 @@ function inOwnProcess(source) {
   }
 }
 
+/**
+ * Where each built-in stopped being broken. The table in this file's header is
+ * these same two numbers, measured with a real `node.exe` of each version.
+ */
+const FIXED_IN = { rmSync: '24.13.1', cpSync: '24.15.0' }
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} -1, 0 or 1, over three numeric parts.
+ */
+function compareVersions(a, b) {
+  const left = a.split('.').map(Number)
+  const right = b.split('.').map(Number)
+  for (let i = 0; i < 3; i += 1) {
+    const one = left[i] ?? 0
+    const two = right[i] ?? 0
+    if (one !== two) return one < two ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * Whether the Node running these tests is past the fix for one of them.
+ * @param {'rmSync' | 'cpSync'} which
+ * @returns {boolean}
+ */
+const runsFixed = (which) => compareVersions(process.versions.node, FIXED_IN[which]) >= 0
+
 console.log('\n中文名字的东西,删得掉、拷得动\n')
 
 removeTree(root)
@@ -109,11 +141,20 @@ const control = build('对照-中文')
 const builtInDelete = inOwnProcess(`import { rmSync, existsSync } from 'node:fs'
 rmSync(${JSON.stringify(control)}, { recursive: true, force: true }) // dsh-box:allow-builtin-recursive 这就是对照组本身
 console.log(existsSync(${JSON.stringify(control)}) ? 'still-there' : 'gone')`)
-if (process.platform === 'win32') {
+// 一个对照组只能在缺陷真的存在的地方被要求失败,而有两件不同的事会让它够不着:
+// 平台(这是 Windows 的缺陷),以及**跑测试这台 Node 的版本**。上游把两个 bug 都
+// 修了,所以在新 Node 上自带的那个真的删得掉——再要求它失败,就是把「人家修好了」
+// 变成一片红。
+// 但对照组正是「这道检查测不测得到东西」的唯一证明,所以它跑不了的时候要**说出来**,
+// 不能悄悄跳过。在那期间守住这套变通的,是文件末尾那条出口断言。
+if (process.platform !== 'win32') {
+  console.log(`  跳过  ⚠ 删除对照组只在 Windows 上成立(这台是 ${process.platform},自带的那个是好的:${builtInDelete})`)
+} else if (runsFixed('rmSync')) {
+  console.log(`  说明  ⚠ 跑测试这台 Node 是 ${process.versions.node},已过 ${FIXED_IN.rmSync} 的修复,`
+    + `所以对照组在这儿证明不了「这道检查测得到东西」(自带的那个:${builtInDelete})`)
+} else {
   check('⚠ 对照组(Node 自带的 rmSync)确实办不到——证明这道检查测得到东西',
     builtInDelete !== 'gone', builtInDelete)
-} else {
-  console.log(`  跳过  ⚠ 删除对照组只在 Windows 上成立(这台是 ${process.platform},自带的那个是好的:${builtInDelete})`)
 }
 removeTree(control)
 
@@ -166,11 +207,14 @@ const cnTarget = join(root, '中文目标')
 const builtInCopy = inOwnProcess(`import { cpSync, existsSync } from 'node:fs'
 cpSync(${JSON.stringify(source)}, ${JSON.stringify(join(root, '自带的目标'))}, { recursive: true }) // dsh-box:allow-builtin-recursive 这就是对照组本身
 console.log(existsSync(${JSON.stringify(join(root, '自带的目标', 'running.json'))}) ? 'copied' : 'nothing')`)
-if (process.platform === 'win32') {
+if (process.platform !== 'win32') {
+  console.log(`  跳过  ⚠ 拷贝对照组只在 Windows 上成立(这台是 ${process.platform},自带的那个是好的:${builtInCopy})`)
+} else if (runsFixed('cpSync')) {
+  console.log(`  说明  ⚠ 跑测试这台 Node 是 ${process.versions.node},已过 ${FIXED_IN.cpSync} 的修复,`
+    + `所以这条对照组同样证明不了什么(自带的那个:${builtInCopy})`)
+} else {
   check('⚠ 对照组(Node 自带的 cpSync)确实办不到——删除那条好了不代表这条也好',
     builtInCopy !== 'copied', builtInCopy)
-} else {
-  console.log(`  跳过  ⚠ 拷贝对照组只在 Windows 上成立(这台是 ${process.platform},自带的那个是好的:${builtInCopy})`)
 }
 
 // 6. Ours, same source, non-ASCII destination.
@@ -193,6 +237,19 @@ const oneFile = join(root, '中文源', 'running.json')
 const deepTarget = join(root, '深一点', '再深一点', 'running.json')
 copyTree(oneFile, deepTarget)
 check('单个文件拷到还不存在的深目录里,目录自己会长出来', existsSync(deepTarget))
+
+// -- exit -------------------------------------------------------------------
+//
+// 这套变通什么时候整个删掉,是被**检查**的,不是被记住的。判据不是「跑测试这台
+// 机器好了」——那只是一台机器——而是「我们声明支持的最低 Node 也已经修好」。
+// 只看删除那一行会得出相反结论:它在 24.13.1 就修了,而拷贝那条要到 24.15.0,
+// 且 22 LTS 到 22.21.1 仍然坏着,而 22 正在我们声明支持的范围里。
+const declared = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).engines.node
+const supportedFloor = declared.replace(/[^0-9.]/g, '')
+check('⭐⭐ 变通还不能撤:我们支持的最低 Node 仍在坏的那一档',
+  compareVersions(supportedFloor, FIXED_IN.cpSync) < 0,
+  `engines.node=${declared};两条分别修于 ${FIXED_IN.rmSync} 与 ${FIXED_IN.cpSync}。`
+  + '这条一旦变红,就是可以删掉 removeTree/copyTree 与 check-no-recursive-fs 的那天')
 
 removeTree(root)
 console.log(failures === 0 ? '\n全部通过\n' : `\n${failures} 项不通过\n`)

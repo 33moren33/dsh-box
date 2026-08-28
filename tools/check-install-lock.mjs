@@ -2,7 +2,7 @@
  * Only one npm may write the package tree, and the window can see whose.
  *
  * ⛔ **This exists because two of them were measured breaking each other.** A
- * second `plugins install` fired while the first was still resolving died with
+ * second `get plugin` fired while the first was still resolving died with
  * `EBUSY … rename 'node_modules/cloudflared'` — a dependency *neither* command
  * had been asked for, which is why the exclusion covers the whole tree rather
  * than one package name. The same run also showed the two writing interleaved
@@ -48,6 +48,7 @@ import { missingFromRegistry } from '../src/registry.js'
 import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
 import { claimPath, ensureSandbox, releasePath } from '../src/sandbox.js'
 import { processStartedAt } from '../src/process-identity.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -58,6 +59,10 @@ if (root === undefined) {
 }
 
 removeTree(root)
+// ⛔⛔ 空的日常档案柜替身。下面每一条 spawn 出去的命令行都会去问 `userDshHome()`,
+//    而它们一条 env 都没自己给 —— 不设它,读的就是跑测试那个人真实的 ~/.dsh。
+//    理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -70,15 +75,17 @@ const check = (what, passed, detail = '') => {
 }
 
 /**
- * Run `plugins install` and give back what it said, without letting it near the
+ * Run `get plugin` and give back what it said, without letting it near the
  * network: every path here is refused at the gate or fails resolving a name
  * that does not exist, and both answers arrive as JSON.
  * @param {string} name
  */
 function install(name) {
   const result = spawnSync(process.execPath,
-    [CLI, 'plugins', 'install', name, '--sandbox', 'lockbox', '--box', box, '--json'],
-    { windowsHide: true, encoding: 'utf8', timeout: 60_000 })
+    [CLI, 'get', 'plugin', name, '--to', 'lockbox', '--box', box, '--json'],
+    // ⛔ DSH_BOX_NO_PANEL:撞上闸门时当场拒绝,不弹面板等一分钟。这里每一条都不该
+    //   走到闸门,而「不该走到」和「走到了会挂住」是两件事。
+    { windowsHide: true, encoding: 'utf8', timeout: 60_000, env: { ...process.env, DSH_BOX_NO_PANEL: '1' } })
   const line = (result.stdout ?? '').trim().split('\n').filter((row) => row.startsWith('{')).pop()
   try {
     return JSON.parse(line ?? '{}')
@@ -184,8 +191,8 @@ check('⭐ 两个 pid 都被认出来要停',
   (downloadInFlight(layout)?.pids ?? []).length === 2,
   String((downloadInFlight(layout)?.pids ?? []).join(',')))
 
-const cancelled = spawnSync(process.execPath, [CLI, 'packages', 'cancel', '--box', box, '--json'],
-  { windowsHide: true, encoding: 'utf8', timeout: 60_000 })
+const cancelled = spawnSync(process.execPath, [CLI, 'stop', '--download', '--box', box, '--json'],
+  { windowsHide: true, encoding: 'utf8', timeout: 60_000, env: { ...process.env, DSH_BOX_NO_PANEL: '1' } })
 const answer = JSON.parse((cancelled.stdout ?? '').trim().split('\n').filter((r) => r.startsWith('{')).pop() ?? '{}')
 check('⛔⛔ 命令行停得掉,不必开 shell', answer.ok === true && answer.cancelled === 'stuck-package',
   answer.code ?? String(answer.cancelled))
@@ -195,8 +202,8 @@ check('⛔⛔ 两个进程真的都死了 —— 只杀持有者等于没停',
 check('⛔⛔ npm 那个也死了(真正在写树的是它)',
   npmish.exitCode !== null || npmish.killed, `npm killed=${npmish.killed} exit=${npmish.exitCode}`)
 check('⭐ 占位当场清掉,窗口不会继续画一个鬼影', !existsSync(claim))
-const nothing = spawnSync(process.execPath, [CLI, 'packages', 'cancel', '--box', box, '--json'],
-  { windowsHide: true, encoding: 'utf8', timeout: 60_000 })
+const nothing = spawnSync(process.execPath, [CLI, 'stop', '--download', '--box', box, '--json'],
+  { windowsHide: true, encoding: 'utf8', timeout: 60_000, env: { ...process.env, DSH_BOX_NO_PANEL: '1' } })
 const idle = JSON.parse((nothing.stdout ?? '').trim().split('\n').filter((r) => r.startsWith('{')).pop() ?? '{}')
 check('⭐ 没有下载时说没什么可停的,不假装做了事', idle.ok === true && idle.cancelled === null,
   String(idle.cancelled))

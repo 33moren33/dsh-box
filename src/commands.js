@@ -26,6 +26,7 @@
 /** What the tool is called on the command line, for rendered lines. */
 import { langOptions, t } from './messages.js'
 import { KEEP_BACKUPS } from './mounts.js'
+import { DAILY_CABINET } from './paths.js'
 
 export const PROGRAM = 'dsh-box'
 
@@ -57,177 +58,69 @@ export const HISTORY_LINES = 30
 /**
  * Every command, keyed by the name it is recorded under.
  *
- * `plugins add` and `plugins rm` are separate entries while `plugins` on its
- * own is a third: they are three different actions wearing one word, and two
- * of them change state while the other does not.
+ * ⭐⭐ Ten verbs and nothing else, and the second word names an **object** rather
+ * than a second verb: `rm machine` / `rm sandbox` / `rm plugin` are one thing
+ * done to three, which is what an agent can guess without reading us first. The
+ * key keeps the dot because a record has to be one word; nobody types it.
+ *
+ * ⭐ Which filing cabinet is a **value** now (`--in` / `--to` / `--from`, with
+ * the daily one called {@link DAILY_CABINET}), never a pair of flags to choose
+ * between. The old `--main` / `--sandbox <名>` axis made "which cabinet" a
+ * question with two spellings, so every caller had to carry both and every
+ * direction added to a command was another flag rather than another value.
+ * `start` / `stop` / `logs` take the name as a plain positional for the same
+ * reason: they act on one cabinet and have nothing to say about a second.
+ *
+ * ⛔ No old name is kept as an alias. Two spellings for one action is the drift
+ * this table was built to make impossible, and the whole point of paying the
+ * rename once is not to pay it forever.
  * @type {Record<string, CommandShape>}
  */
 export const COMMANDS = {
-  versions: {
+  // ── ls:看。裸敲就是全景,后面跟一个对象就是那一族的名单。
+  ls: {
     mutates: false,
   },
-  pull: {
-    mutates: true,
-    line: (args) => ['pull', args.version],
-  },
-  drop: {
-    mutates: true,
-    line: (args) => ['drop', args.version],
-  },
-  plugins: {
+  'ls.machine': {
     mutates: false,
-    booleans: ['main'],
-    values: ['sandbox'],
   },
-  'plugins.add': {
-    mutates: true,
-    values: ['id'],
-    // The directory is what was pointed at; the id is what it became. Both are
-    // written out because an id derived from a package name is not obvious
-    // from the path, and re-running with only the path could land elsewhere.
-    line: (args) => ['plugins', 'add', args.path ?? args.target, '--id', args.id],
+  'ls.plugin': {
+    mutates: false,
+    values: ['in'],
   },
-  'plugins.rm': {
-    mutates: true,
-    booleans: ['approved'],
-    line: (args) => ['plugins', 'rm', args.id ?? args.target],
+  'ls.sandbox': {
+    mutates: false,
   },
-  'plugins.install': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox', 'id'],
-    line: (args) => [
-      'plugins', 'install', args.source ?? args.id ?? args.target,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
+  'ls.workspace': {
+    mutates: false,
+    values: ['in'],
   },
-  'plugins.uninstall': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox'],
-    line: (args) => [
-      'plugins', 'uninstall', args.id ?? args.target,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  // Two entries rather than one with a flag: they are opposite actions, and a
-  // recorded history reads as what happened rather than as what was passed.
-  'plugins.disable': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox'],
-    line: (args) => [
-      'plugins', 'disable', args.id ?? args.target,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  'plugins.enable': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox'],
-    line: (args) => [
-      'plugins', 'enable', args.id ?? args.target,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  history: {
+  'ls.history': {
     mutates: false,
     booleans: ['shape'],
     values: ['lines'],
   },
-  workspaces: {
-    mutates: false,
-    booleans: ['main'],
-    values: ['sandbox'],
-  },
-  'workspaces.use': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox', 'title'],
-    line: (args) => [
-      'workspaces', 'use', args.target ?? args.path,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  packages: {
+  'ls.memory': {
     mutates: false,
   },
-  'packages.rm': {
-    mutates: true,
-    line: (args) => ['packages', 'rm', args.target ?? args.name],
-  },
-  'packages.prune': {
-    mutates: true,
-    line: () => ['packages', 'prune'],
-  },
-  // Ends a download that is running. `mutates` because it stops work and clears
-  // the claim, so the window's glass covers it while an agent is driving.
-  'packages.cancel': {
-    mutates: true,
-    line: () => ['packages', 'cancel'],
-  },
-  'plugins.backups': {
-    mutates: false,
-    booleans: ['main'],
-    values: ['sandbox'],
-  },
-  'plugins.backups.rm': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox'],
-    line: (args) => [
-      'plugins', 'backups', 'rm', args.target ?? args.at,
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  'plugins.backups.prune': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox', 'keep'],
-    line: (args) => [
-      'plugins', 'backups', 'prune',
-      ...(args.keep === undefined ? [] : ['--keep', String(args.keep)]),
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-    ],
-  },
-  'plugins.restore': {
-    mutates: true,
-    booleans: ['main'],
-    values: ['sandbox', 'at'],
-    line: (args) => [
-      'plugins', 'restore',
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-      ...(args.at === undefined || args.at === null ? [] : ['--at', args.at]),
-    ],
-  },
-  sandboxes: {
+  // ⭐ 一格里装着旧的 `config` 与旧的 `path` 两份输出。合得起来是因为 PATH 从此
+  //    只是一个设置(`set path on|off`)—— 读一个设置不该另开一条命令,而分成两条
+  //    的代价是「这台机器现在是什么样」要问两次才凑得齐。
+  'ls.setting': {
     mutates: false,
   },
-  start: {
+
+  // ── get:拿进来。`--to` 说进哪个柜子,方向从此是个值而不是一个功能。
+  'get.machine': {
     mutates: true,
-    booleans: ['new', 'main', 'no-sign-in', 'sign-in', 'sign-out', 'follow', 'approved'],
-    values: ['version', 'sandbox', 'plugin', 'unplug'],
-    // Every blank filled in: no `--new` (which names a different sandbox each
-    // time it runs) and no reliance on the working directory.
-    //
-    // `--version` is written only when one was asked for. Its absence is not a
-    // blank left unfilled — it is the answer "the machine this computer has",
-    // which stays the same answer whenever the line is re-run.
-    //
-    // ⛔ `--approved` is deliberately never rendered. It is the one thing here
-    // that is not a fact about the launch but a person's consent to it, and a
-    // line that carries consent along would let one click authorise every
-    // re-run. So the rendered line for that launch is refused until somebody
-    // agrees again — which is the correct behaviour, not a gap.
+    line: (args) => ['get', 'machine', args.version],
+  },
+  'get.plugin': {
+    mutates: true,
+    values: ['to', 'from', 'id'],
     line: (args) => [
-      'start',
-      ...(args.version === undefined || args.version === null ? [] : ['--version', args.version]),
-      ...(args.main === true ? ['--main'] : ['--sandbox', args.sandbox]),
-      ...(args.plugins ?? []).flatMap((id) => ['--plugin', id]),
-      ...(args.unplugged ?? []).flatMap((id) => ['--unplug', id]),
-      ...(args.importSignIn === false ? ['--no-sign-in'] : []),
-      ...(args.signIn === true ? ['--sign-in'] : []),
-      ...(args.signOut === true ? ['--sign-out'] : []),
+      'get', 'plugin', args.source ?? args.id ?? args.target,
+      '--to', cabinetOf(args),
     ],
   },
   // ⭐ Sign-in is a property of a cabinet, like a plugin is — not a choice made
@@ -235,23 +128,12 @@ export const COMMANDS = {
   // for changing it whenever, and a flag on `start` for changing it on the way
   // in. `--no-sign-in` stays what it always was and says nothing about either:
   // it is about the moment a sandbox is *created*.
-  signin: {
+  'get.signin': {
     mutates: true,
-    values: ['sandbox'],
-    line: (args) => ['signin', args.sandbox],
+    values: ['to'],
+    line: (args) => ['get', 'signin', '--to', cabinetOf(args)],
   },
-  signout: {
-    mutates: true,
-    booleans: ['main', 'approved'],
-    values: ['sandbox'],
-    line: (args) => ['signout', ...(args.main === true ? ['--main'] : [args.sandbox])],
-  },
-  stop: {
-    mutates: true,
-    booleans: ['main'],
-    line: (args) => (args.main === true ? ['stop', '--main'] : ['stop', args.sandbox]),
-  },
-  adopt: {
+  'get.chat': {
     mutates: true,
     booleans: ['force'],
     values: ['from', 'to'],
@@ -259,91 +141,186 @@ export const COMMANDS = {
     // it went, and a line that has to be re-read to know what it did is not
     // the line this renders for.
     line: (args) => [
-      'adopt',
-      '--from', args.fromSandbox ?? 'main',
-      '--to', args.toSandbox ?? 'main',
+      'get', 'chat',
+      '--from', args.fromSandbox ?? DAILY_CABINET,
+      '--to', args.toSandbox ?? DAILY_CABINET,
       ...(args.force === true ? ['--force'] : []),
     ],
   },
-  rm: {
+
+  // ── rm:拿走。
+  'rm.machine': {
     mutates: true,
-    line: (args) => ['rm', args.sandbox],
+    line: (args) => ['rm', 'machine', args.version],
   },
-  config: {
-    mutates: false,
+  'rm.plugin': {
+    mutates: true,
+    values: ['from'],
+    line: (args) => [
+      'rm', 'plugin', args.id ?? args.bundle ?? args.target,
+      '--from', cabinetOf(args),
+    ],
   },
-  'config.source': {
+  'rm.sandbox': {
+    mutates: true,
+    line: (args) => ['rm', 'sandbox', args.sandbox],
+  },
+  'rm.signin': {
+    mutates: true,
+    values: ['from'],
+    line: (args) => ['rm', 'signin', '--from', cabinetOf(args)],
+  },
+  'rm.setting': {
+    mutates: true,
+    line: () => ['rm', 'setting'],
+  },
+
+  // ── start / stop
+  start: {
+    mutates: true,
+    booleans: ['new', 'no-sign-in', 'sign-in', 'sign-out', 'follow'],
+    values: ['version', 'plugin', 'unplug'],
+    // Every blank filled in: no `--new` (which names a different sandbox each
+    // time it runs) and no reliance on the working directory.
+    //
+    // `--version` is written only when one was asked for. Its absence is not a
+    // blank left unfilled — it is the answer "the machine this computer has",
+    // which stays the same answer whenever the line is re-run.
+    //
+    // ⛔ Consent is deliberately not renderable, and since 2026-08-28 it is not
+    // expressible at all: there is no `--approved` to leave out. A rendered line
+    // re-run later is refused again and asks again, which is the correct
+    // behaviour — one click authorising every future re-run was the thing to
+    // avoid, and now the interface has nowhere to write it.
+    line: (args) => [
+      'start', cabinetOf(args),
+      ...(args.version === undefined || args.version === null ? [] : ['--version', args.version]),
+      ...(args.plugins ?? []).flatMap((id) => ['--plugin', id]),
+      ...(args.unplugged ?? []).flatMap((id) => ['--unplug', id]),
+      ...(args.importSignIn === false ? ['--no-sign-in'] : []),
+      ...(args.signIn === true ? ['--sign-in'] : []),
+      ...(args.signOut === true ? ['--sign-out'] : []),
+    ],
+  },
+  // ⭐⭐ 四种「停」收进一条,靠的是它们停的**东西**不同,不是名字不同:一台沙箱
+  //    / `--all` 每一台 / `--window` 那扇配置窗 / `--download` 正在下的那个包。
+  //    从前是四个动词(stop、quit、ui stop、packages cancel),而调用方要先学会
+  //    我们内部有四层东西才知道该敲哪一个 —— 现在只需要知道自己想停的是什么。
+  // ⭐⭐ `--all` 含日常柜(CEO 2026-08-28 改判,原来是「只管沙箱」)。理由是字面意思
+  //    最直:敲了「全部」还剩一台在跑,是被自己的命令绕了。⛔ 换来的保护不是「排除
+  //    在外」而是闸门,而且是**部分拦**——沙箱照停,走到日常柜那一台才要人点头。
+  stop: {
+    mutates: true,
+    booleans: ['all', 'window', 'download'],
+    line: (args) => [
+      'stop',
+      ...(args.all === true ? ['--all'] : []),
+      ...(args.window === true ? ['--window'] : []),
+      ...(args.download === true ? ['--download'] : []),
+      ...(args.all === true || args.window === true || args.download === true ? [] : [cabinetOf(args)]),
+    ],
+  },
+
+  // ── set:改状态。
+  // ⭐ 开关一个插件不是「拿走」:那一行可能根本不是我们写进去的,拿走它就越界了。
+  //    `--undo` 归在同一格,因为撤销就是把这一柜的插件配置设回上一个值 ——
+  //    连按 n 次退 n 步,深度靠再按一次得到,不靠读一张时间戳表。
+  'set.plugin': {
+    mutates: true,
+    booleans: ['undo'],
+    values: ['in', 'at'],
+    line: (args) => (args.undo === true
+      ? [
+        'set', 'plugin', '--undo', '--in', cabinetOf(args),
+        ...(args.at === undefined || args.at === null ? [] : ['--at', args.at]),
+      ]
+      // ⛔ `on` is not the answer to "which way was it set" when nobody said —
+      //    a line that fills that blank in for itself is runnable and wrong,
+      //    which is worse than a line that is visibly incomplete.
+      : [
+        'set', 'plugin', args.id ?? args.target,
+        args.off === undefined ? undefined : (args.off === true ? 'off' : 'on'),
+        '--in', cabinetOf(args),
+      ]),
+  },
+  'set.workspace': {
+    mutates: true,
+    values: ['in', 'title'],
+    line: (args) => ['set', 'workspace', args.path ?? args.target, '--in', cabinetOf(args)],
+  },
+  'set.source': {
     mutates: true,
     // `value` is what the record carries before the command has resolved
     // anything; `source` is what it carries afterwards. Reading only the
-    // second one left a refused `config source` rendering without its value.
-    line: (args) => ['config', 'source', args.source ?? args.value],
+    // second one left a refused `set source` rendering without its value.
+    line: (args) => ['set', 'source', args.source ?? args.value],
   },
-  'config.lang': {
+  'set.lang': {
     mutates: true,
-    line: (args) => ['config', 'lang', args.value],
+    line: (args) => ['set', 'lang', args.value],
   },
-  'config.ask-on-quit': {
+  'set.ask-on-quit': {
     mutates: true,
-    line: (args) => ['config', 'ask-on-quit', args.value],
+    line: (args) => ['set', 'ask-on-quit', args.value],
   },
   // ⚠️ Was missing until 2026-08-22: the setting worked, but with no entry here
   // it was absent from `--help` and its journal line rendered as nothing. A
   // command table that the help is generated from only covers what is in it.
-  'config.ask-on-daily': {
+  'set.ask-on-daily': {
     mutates: true,
-    line: (args) => ['config', 'ask-on-daily', args.value],
+    line: (args) => ['set', 'ask-on-daily', args.value],
   },
-  'config.reset': {
-    mutates: true,
-    line: () => ['config', 'reset'],
-  },
-  // ⭐ Three entries for one word, same as `plugins`: looking is not changing.
-  // And `add` has a counterpart that undoes it and a reading that shows it,
-  // because a tool that can only do a thing sends its user out to `regedit` to
-  // check on it — which is where actions stop being visible to the window.
-  path: {
-    mutates: false,
-  },
-  'path.add': {
+  // ⛔ 改的是这台电脑不是这个数据目录,但它确实是个开关,而且便携包的用户要自己
+  //    敲一次 —— 文档里写着「你自己敲一次」的那一句,是代码里永远找不到的调用方。
+  //    所以它是真·用户命令,归 set,不藏进安装器。
+  'set.path': {
     mutates: true,
     booleans: ['force'],
-    line: (args) => ['path', 'add', ...(args.force === true ? ['--force'] : [])],
+    // ⛔ Same rule as `set plugin`: an unanswered on/off renders as nothing.
+    line: (args) => [
+      'set', 'path', args.state === 'on' || args.state === 'off' ? args.state : undefined,
+      ...(args.force === true ? ['--force'] : []),
+    ],
   },
-  'path.rm': {
-    mutates: true,
-    line: () => ['path', 'rm'],
+
+  // ── 剩下三个动词
+  logs: {
+    mutates: false,
+    booleans: ['shape', 'errors', 'all'],
+    // `package` names a plugin download's log the way `version` names a
+    // release's: by the thing asked about, so the asker needs no job id.
+    values: ['lines', 'version', 'package'],
   },
   ui: {
     mutates: false,
     booleans: ['no-open'],
     values: ['port'],
   },
-  quit: {
-    mutates: true,
-    booleans: ['main'],
-    line: (args) => ['quit', ...(args.main === true ? ['--main'] : [])],
-  },
-  status: {
+  'agent.attach': {
     mutates: false,
   },
-  logs: {
-    mutates: false,
-    booleans: ['shape', 'errors', 'all', 'main'],
-    // `package` names a plugin download's log the way `version` names a
-    // release's: by the thing asked about, so the asker needs no job id.
-    values: ['lines', 'version', 'package'],
-  },
-  attach: {
-    mutates: false,
-  },
-  detach: {
+  'agent.detach': {
     mutates: false,
     booleans: ['forced'],
   },
-  memory: {
-    mutates: false,
-  },
+}
+
+/**
+ * Which cabinet a record is about, as the one value the new shape writes.
+ *
+ * ⛔ A record still carries `main` and `sandbox` side by side, because that is
+ * what the command actually resolved — but a rendered line has room for one
+ * value, and the daily cabinet's value is its name. Reading the record here
+ * rather than teaching every command to store a third field keeps the fact in
+ * one place; `in` / `to` / `from` are read too, so a run that failed before it
+ * resolved anything still renders the cabinet it was aimed at.
+ * @param {Record<string, unknown>} args
+ * @returns {string | undefined}
+ */
+function cabinetOf(args) {
+  if (args.main === true) return DAILY_CABINET
+  const named = args.sandbox ?? args.in ?? args.to ?? args.from
+  return named === null || named === undefined ? undefined : String(named)
 }
 
 /**
@@ -357,7 +334,7 @@ export const COMMANDS = {
  * with no words is a check failure rather than a blank line on somebody's
  * screen (`tools/check-messages.mjs`).
  * @param {string} name
- * @param {'usage' | 'summary' | 'notes'} part
+ * @param {'usage' | 'summary' | 'notes' | 'after'} part
  * @param {string} [fallback]
  * @returns {string}
  */
@@ -428,6 +405,14 @@ export function describeCommand(name) {
     name,
     usage: say(name, 'usage', name),
     summary: say(name, 'summary'),
+    // ⭐⭐ The one sentence a caller who has never read anything about this
+    // program still needs: **what state am I in when this returns.** Did it
+    // return at all, what did it leave behind, what is the next thing to type.
+    // `summary` answers "what does this do" and `notes` answers "what do people
+    // get wrong"; neither answers this, and its absence cost a real user 2
+    // minutes 36 seconds of waiting on a command that had already finished.
+    // ⛔ Not a place to restate the handbook. One sentence, about the state.
+    after: say(name, 'after'),
     mutates: shape.mutates === true,
     booleans: shape.booleans ?? [],
     values: shape.values ?? [],
@@ -455,7 +440,7 @@ export function mutates(name) {
  * Built from the resolved arguments rather than stored as text, so it cannot
  * disagree with the record it came from — it is a view of that record, not a
  * second copy of it.
- * @param {string} name - the recorded command name, e.g. `plugins.add`.
+ * @param {string} name - the recorded command name, e.g. `get.plugin`.
  * @param {Record<string, unknown>} args - the resolved arguments.
  * @returns {string | null} the command line, or null when the command is not
  * one that gets recorded.
@@ -465,7 +450,7 @@ export function commandLine(name, args = {}) {
   if (shape?.line === undefined) return null
   // ⛔ A flag and its value are one thing, and dropping blanks one token at a
   // time cannot know that: the value went and the flag stayed, so a record
-  // missing its cabinet rendered as `… --sandbox` with nothing after it —
+  // missing its cabinet rendered as `… --in` with nothing after it —
   // worse than incomplete, because it looks runnable and is not. Which flags
   // carry a value is already declared right here in `values`, so the pair can
   // be dropped as a pair.

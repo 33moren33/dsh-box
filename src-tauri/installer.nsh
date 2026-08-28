@@ -51,7 +51,7 @@
   ${If} $LANGUAGE == 2052
     StrCpy $R9 "zh"
   ${EndIf}
-  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" config lang $R9 --json'
+  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" set lang $R9 --json'
   Pop $R9
   Pop $R9
 
@@ -59,7 +59,7 @@
   ; works. Refusals are on purpose left alone: the command declines when another
   ; copy is already registered, and an installer quietly reordering somebody's
   ; PATH to win that contest would be the wrong way to settle it.
-  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" path add --json'
+  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" set path on --json'
   Pop $R9
   Pop $R9
 
@@ -69,7 +69,7 @@
 !macro NSIS_HOOK_PREUNINSTALL
   Push $R9
   ; Before the files go, while there is still a program able to undo this.
-  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" path rm --json'
+  nsExec::ExecToStack '"$INSTDIR\${MAINBINARYNAME}.exe" set path off --json'
   Pop $R9
   Pop $R9
   Pop $R9

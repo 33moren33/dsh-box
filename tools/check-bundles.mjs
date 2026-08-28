@@ -28,9 +28,10 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, cabinetLedgerFile, ensureBox, removeTree } from '../src/paths.js'
+import { boxLayout, cabinetLedgerFile, ensureBox, removeTree, uiSeatFile } from '../src/paths.js'
 import { scanPatch } from '../src/patch-file.js'
 import { claimPath } from '../src/sandbox.js'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -41,6 +42,10 @@ if (root === undefined) {
 }
 
 removeTree(root)
+// ⛔⛔ 空的日常档案柜替身。⭐ 第 9 段会自己把 DSH_HOME 指到 `daily` 那份夹具上,
+//    但**别的每一条**(建沙箱、装插件)都还会去问 `userDshHome()` —— 不设它,那些
+//    读的就是跑测试那个人真实的 ~/.dsh。理由全文＝ tools/fake-daily.mjs。
+useFakeDaily(root)
 const box = join(root, 'data')
 ensureBox(box)
 const layout = boxLayout(box)
@@ -53,7 +58,11 @@ const check = (what, passed, detail = '') => {
 
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时当场拒绝,不弹面板等一分钟。
+    //   错误码仍是 NEEDS_APPROVAL,断言的语义一个字没变 —— 变的只是不会挂住。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', box, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -104,7 +113,7 @@ console.log('\nbundles 那一路:关得掉,也删得掉\n')
 // 1. ⭐ A bundle is a layer, not a row. A listing that prints the package name
 //    and stops prints one word where two plugins are — and the ids inside are
 //    what `disable` takes, so not opening them makes the switch unusable.
-const listed = await cli('plugins', '--sandbox', 'w1')
+const listed = await cli('ls', 'plugin', '--in', 'w1')
 const opened = listed.inventory.bundles.find((one) => one.name === '@vendor/suite')
 check('⭐⭐ bundle 被打开了,里面那两行看得见',
   (opened?.rows ?? []).length === 2, JSON.stringify((opened?.rows ?? []).map((one) => one.id)))
@@ -113,7 +122,7 @@ check('⛔ 官方基座那些不打开(干净 profile 展开就有 129 条,全�
 
 // 2. ⭐⭐ Switching off something we never installed. This is the whole reason
 //    the knife exists.
-const off = await cli('plugins', 'disable', 'suite-extra', '--sandbox', 'w1')
+const off = await cli('set', 'plugin', 'suite-extra', 'off', '--in', 'w1')
 check('⭐⭐ 关得掉一个我们从来没装过的插件', off.ok === true && off.changed === true, off.code ?? 'ok')
 const overrides = scanPatch(readPatch()).items.filter((item) => item.kind === 'override')
 check('写的是一条 disabled: true 的覆盖行',
@@ -122,36 +131,36 @@ check('写的是一条 disabled: true 的覆盖行',
 check('⛔ 别人本来那行一个字节没动', readPatch().includes("name: 'their-plugin'"))
 check('⛔ 也没往 bundle 自己的文件里写字',
   readFileSync(join(suite, 'cordis.patch.yml'), 'utf8').split('disabled').length === 1)
-const afterOff = await cli('plugins', '--sandbox', 'w1')
+const afterOff = await cli('ls', 'plugin', '--in', 'w1')
 check('列表里那一行显示成关着的',
   afterOff.inventory.bundles.find((one) => one.name === '@vendor/suite')
     ?.rows.find((one) => one.id === 'suite-extra')?.disabled === true)
 
 // 3. Idempotent, and reversible only by us.
-const again = await cli('plugins', 'disable', 'suite-extra', '--sandbox', 'w1')
+const again = await cli('set', 'plugin', 'suite-extra', 'off', '--in', 'w1')
 check('再关一次不报错也不重复写', again.ok === true && again.already === true && again.changed === false)
-const on = await cli('plugins', 'enable', 'suite-extra', '--sandbox', 'w1')
+const on = await cli('set', 'plugin', 'suite-extra', 'on', '--in', 'w1')
 check('放得回来', on.ok === true && on.changed === true, on.code ?? 'ok')
 check('⛔⛔ 放回来之后逐字节回到原样', readPatch() === original, JSON.stringify(readPatch().slice(-20)))
 
 // 4. ⛔ Somebody else's `disabled` is their decision.
 writeFileSync(patch, `${original}- id: suite-core\n  disabled: true\n`)
-const notOurs = await cli('plugins', 'enable', 'suite-core', '--sandbox', 'w1')
+const notOurs = await cli('set', 'plugin', 'suite-core', 'on', '--in', 'w1')
 check('⛔ 别人关掉的,我们不替他打开', notOurs.ok === false && notOurs.code === 'NOT_OURS', notOurs.code)
 writeFileSync(patch, original)
 
 // 5. ⛔ An id nothing has. The format lets you write a rule against a
 //    nonexistent id and it silently does nothing — upstream warns and skips —
 //    so answering `ok:true` to a typo is the failure to avoid.
-const typo = await cli('plugins', 'disable', 'suite-extar', '--sandbox', 'w1')
+const typo = await cli('set', 'plugin', 'suite-extar', 'off', '--in', 'w1')
 check('⛔ 对着一个不存在的 id 关,当场拒绝而不是假装做了',
   typo.ok === false && typo.code === 'UNKNOWN_ROW', typo.code)
 check('⛔ 拒绝时文件没动', readPatch() === original)
 
 // 6. ⭐⭐ The real removal, and the whole point of it: **both places**.
 const beforeManifest = readFileSync(manifest, 'utf8')
-const out = await cli('plugins', 'uninstall', '@vendor/suite', '--sandbox', 'w1')
-check('⭐ uninstall 认得出这是 bundle,走另一条路', out.ok === true && out.bundle === '@vendor/suite', out.code ?? 'ok')
+const out = await cli('rm', 'plugin', '@vendor/suite', '--from', 'w1')
+check('⭐ rm plugin 认得出这是 bundle,走另一条路', out.ok === true && out.bundle === '@vendor/suite', out.code ?? 'ok')
 check('bundles 数组里没了', !readManifest().dsh.profile.bundles.includes('@vendor/suite'),
   JSON.stringify(readManifest().dsh.profile.bundles))
 check('⛔⛔ dependencies 里也没了 —— 只摘一处等于没摘',
@@ -190,7 +199,7 @@ check('⛔⛔ 必然会输的对照组:只摘 bundles 不摘 dependencies,那条
 
 // 8. Restore puts the profile's own package.json back, not just the patch.
 writeFileSync(patch, original)
-const back = await cli('plugins', 'restore', '--sandbox', 'w1')
+const back = await cli('set', 'plugin', '--undo', '--in', 'w1')
 check('⛔ 沙箱不留备份,所以还原也无从谈起', back.ok === false && back.code === 'NO_BACKUP', back.code)
 
 // 9. The whole thing again on a cabinet with backups, so restore is exercised
@@ -200,13 +209,17 @@ mkdirSync(join(daily, 'profiles', 'web'), { recursive: true })
 writeFileSync(join(daily, 'profiles', 'web', 'package.json'), beforeManifest)
 mkdirSync(join(daily, 'profiles', 'web', 'node_modules', '@vendor'), { recursive: true })
 writeFileSync(join(daily, 'profiles', 'web', 'cordis.patch.yml'), original)
-const seat = join(layout.root, 'ui.json')
+const seat = uiSeatFile(layout)
 // ⛔ 座位走产品自己的写入口,夹具不手抄它的字段。
 claimPath(seat, { url: 'http://127.0.0.1:10140' })
+// ⭐⭐ 08-28 换了机制:同意不再是一个打得出来的词(`--approved` 整个删掉了),
+//    判据变成**父进程正是座位上那个窗** ＋ 环境里带着 DSH_BOX_APPROVAL=1
+//    (src/sandbox.js 的 approvedByWindow)。这个测试进程两件都做得到而且是诚实的:
+//    座位是它自己占的,子进程是它自己起的 —— 扮演的正是「窗口起了这条命令」。
 const dropped = await new Promise((done) => {
   const child = spawn(process.execPath, [
-    CLI, 'plugins', 'uninstall', '@vendor/suite', '--main', '--approved', '--box', box, '--json',
-  ], { windowsHide: true, env: { ...process.env, DSH_HOME: daily } })
+    CLI, 'rm', 'plugin', '@vendor/suite', '--from', 'main', '--box', box, '--json',
+  ], { windowsHide: true, env: { ...process.env, DSH_HOME: daily, DSH_BOX_APPROVAL: '1' } })
   let out_ = ''
   child.stdout.on('data', (chunk) => { out_ += chunk })
   child.stderr.resume()

@@ -107,5 +107,26 @@ const speechless = Object.keys(COMMANDS).filter((name) => {
 check('每条命令都有 usage 与 summary(表里已经不存文本,少一条就是屏幕上一片空白)',
   speechless.length === 0, speechless.join('、'))
 
+// 7. ⭐⭐ 每条命令都答得出「做完之后我处在什么状态」。
+//    不是文档洁癖,是产品要求:`--help` 是路过的 agent 的唯一入口,只写在 md 里
+//    的用法对它等于不存在。判例是一个真实使用者盯着一条早已完成的 `start` 等了
+//    2 分 36 秒 —— 「立即返回」当时只写在 AGENTS.md 里,help 一个字没有。
+//    ⛔ 它查不出这句话说得对不对,只保证没有一条命令在这个问题上沉默。与本仓别处
+//    同一个手法:把判断放进唯一的漏斗,新命令白白继承这道题。
+//
+//    ⭐⭐ 只对**会改状态**的命令强制。只读的那些,`mutates:false` 已经把这个问题
+//    答完了 —— 再补一句「只看了一眼」是零信息,而这张表 agent 会整个读进去。
+//    判例:第一版我给 44 条全写了,其中 8 条正是这种填充,CEO 当场问「这样是不是
+//    要读的东西反而多了」。**只读命令仍然可以有 after**(`ui` 不返回、`logs` 会
+//    截断,都值得说),只是不强制 —— 强制会把「没什么可说」逼成一句废话。
+const silentAfter = Object.keys(COMMANDS).filter((name) => {
+  if (COMMANDS[name].mutates !== true) return false
+  const table = messagesFor(DEFAULT_LANG)
+  const line = table[`cmd.${name}.after`]
+  return line === undefined || String(line).trim() === ''
+})
+check('每条会改状态的命令都答得出「完成后我处在什么状态」(返回了没有 / 留下了什么 / 下一步敲什么)',
+  silentAfter.length === 0, silentAfter.join('、'))
+
 console.log(failures === 0 ? '\n全部通过\n' : `\n${failures} 项不通过\n`)
 process.exit(failures === 0 ? 0 : 1)

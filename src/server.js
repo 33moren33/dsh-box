@@ -37,8 +37,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { decideApproval, pendingApprovals, readApproval, settleApproval } from './approval.js'
 import { COMMANDS, commandLine, mutates } from './commands.js'
-import { partitionPlugins, readConfig, SETTINGS } from './config.js'
+import { readConfig, SETTINGS } from './config.js'
+import { derivedRoster, partitionRoster } from './roster.js'
 import { BoxError } from './errors.js'
 import { detectHostDsh } from './host.js'
 import { controlStatus, readSession } from './journal.js'
@@ -49,7 +51,7 @@ import { downloadInFlight, isOurDownload, pluginVersion } from './packages.js'
 import { nameRule, uiSeatFile, userDshHome } from './paths.js'
 import { listReleases } from './registry.js'
 import {
-  claimPath, describeClaim, hasCredentials, listSandboxes, liveClaim, mainRunningRecord,
+  APPROVAL_ENV, claimPath, describeClaim, hasCredentials, listSandboxes, liveClaim, mainRunningRecord,
   releasePath, runningSandboxes, suggestSandboxName,
 } from './sandbox.js'
 import { findFreePort } from './launch.js'
@@ -116,7 +118,25 @@ export async function serve(layout, { port = 0, open = true } = {}) {
   const server = createServer((request, response) => {
     const refused = refuse(request, port)
     if (refused !== null) return void json(response, 403, { error: refused.message, code: refused.code })
-    handle(layout, request, response, () => server.close()).catch((error) => {
+    handle(layout, request, response, () => {
+      server.close()
+      // ⛔⛔ `close()` alone is a promise this process cannot keep. It stops
+      // *accepting*, and then waits for every open connection to end — and a
+      // browser holds its keep-alive socket open for minutes after the last
+      // request. Measured: press the page's own "close dsh-box" with a tab
+      // still open and the port is released while **the process never exits**,
+      // so the seat file is never let go either. The next launch is then
+      // refused by a seat whose holder is alive but no longer listening, and
+      // pointed at an address that answers nothing — reported from the outside
+      // as "I pressed close, it did not close, and now double-clicking does
+      // nothing forever".
+      //
+      // ⭐ The page has already been told the program is quitting, so there is
+      // nothing left for those sockets to carry. Ending them is what makes
+      // "quit" true rather than merely announced — the same rule as everywhere
+      // else here: never say on screen something the disk does not agree with.
+      server.closeAllConnections?.()
+    }).catch((error) => {
       json(response, 500, { ok: false, code: 'WINDOW_FAILED', message: error.message })
     })
   })
@@ -248,9 +268,16 @@ async function handle(layout, request, response, close) {
     // use — the view has nothing left to show, so it stops serving. This is
     // not the window deciding anything: `quit` did the stopping, and closing
     // is only this process ending its own life afterwards.
-    if (body.argv?.[0] === 'quit' && result.ok === true) setTimeout(close, 200).unref?.()
+    if (body.argv?.[0] === 'stop' && body.argv?.includes('--all') && result.ok === true) {
+      setTimeout(close, 200).unref?.()
+    }
     return
   }
+  // ⭐⭐ The one door consent comes through. Not part of `/api/command`, and
+  // that separation is the design: a command is a thing to do, an approval is
+  // an answer to a question somebody was asked. Merging them is how the old
+  // `--approved` flag came to be trusted — it rode along inside the action.
+  if (url.pathname === '/api/approve') return void json(response, 200, await answer(layout, body))
   if (url.pathname === '/api/open') return json(response, 200, openLocal(body))
   return json(response, 404, { error: t('window.notFound') })
 }
@@ -297,7 +324,10 @@ let releases = { at: 0, data: null }
  */
 async function snapshot(layout) {
   const config = readConfig(layout)
-  const { live, missing } = partitionPlugins(config)
+  // ⭐ The window's short list is worked out here, not stored anywhere: what the
+  // cabinets actually hold, plus what we have downloaded. It used to be a
+  // registry kept only so this screen would have something to draw.
+  const { live, missing } = partitionRoster(derivedRoster(layout))
   let available = []
   let tags = {}
   try {
@@ -315,6 +345,10 @@ async function snapshot(layout) {
   const cut = available.indexOf(OLDEST_FEATURED)
   return {
     box: layout.root,
+    // ⭐ What somebody is waiting to be asked. Read from disk on every poll like
+    // everything else here, so a request filed by a command line in another
+    // terminal shows up in this window without anything having told it.
+    approvals: pendingApprovals(layout),
     // The machine a launch uses unless a download is named. Read from disk like
     // everything else here — no `npm ls -g`, which would turn an eight-second
     // poll into eight seconds of subprocess.
@@ -470,7 +504,7 @@ async function command(layout, argv) {
  * Only the way out. `detach` is the person taking the wheel back, and refusing
  * that would be refusing the one control that has to keep working.
  */
-const RELEASE_COMMANDS = new Set(['detach'])
+const RELEASE_COMMANDS = new Set(['agent.detach'])
 
 /**
  * Refuse a window command while an agent holds this data directory, or null.
@@ -494,7 +528,7 @@ const RELEASE_COMMANDS = new Set(['detach'])
  * @returns {Record<string, unknown> | null}
  */
 function heldAgainst(layout, argv) {
-  if (RELEASE_COMMANDS.has(argv[0])) return null
+  if (RELEASE_COMMANDS.has(`${argv[0]}.${argv[1]}`)) return null
   if (!mutates(argv[0]) && !mutates(`${argv[0]}.${argv[1]}`)) return null
   const held = controlStatus(layout)
   if (held === null) return null
@@ -521,7 +555,12 @@ function heldAgainst(layout, argv) {
 function checkArgv(argv) {
   if (!Array.isArray(argv) || argv.length === 0) return t('window.noCommand')
   if (argv.some((token) => typeof token !== 'string')) return t('window.nonTextToken')
-  if (!(argv[0] in COMMANDS)) return t('window.unknownCommand', { name: argv[0] })
+  // ⛔ Two words, since the slim-down: the table is keyed `get.plugin`, and a
+  // check that only looked at the first word refused every command in the new
+  // shape except the five whose verb happens to stand alone.
+  if (!(argv[0] in COMMANDS) && !(`${argv[0]}.${argv[1]}` in COMMANDS)) {
+    return t('window.unknownCommand', { name: argv[0] })
+  }
   if (argv[0] === 'ui') return t('window.noNestedUi')
   for (const token of argv) {
     const flag = token.startsWith('--') ? token.slice(2).split('=')[0] : null
@@ -531,19 +570,68 @@ function checkArgv(argv) {
 }
 
 /**
+ * Answer one approval request, and run it here when the answer is yes.
+ *
+ * ⭐⭐ **The window runs it, not the asker.** That is what keeps the evidence
+ * real: `approvedByWindow` asks whether the running process is a child of the
+ * window on the seat, and only a process this function starts can be. The
+ * command line that filed the request is left waiting and reports back what
+ * happened — it never gains a way to approve itself, because there is none.
+ *
+ * ⛔ An expired or already-answered request is refused rather than run late.
+ * The asker has given up by then and told its own caller so; doing the thing
+ * afterwards would be acting with nobody waiting and nobody informed.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {{id?: unknown, decision?: unknown}} body
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function answer(layout, body) {
+  const id = String(body.id ?? '')
+  const allowed = body.decision === 'allow'
+  // ⛔ Asked before deciding, because `decideApproval` answers "here is the
+  // record" for one already answered — which reads as success and would run the
+  // action a second time. A click that arrives twice (a double press, a retried
+  // request) must do the thing once.
+  const before = readApproval(layout, id)
+  if (before !== null && before.decision !== null) {
+    return { ok: false, code: 'ALREADY_ANSWERED', message: t('approval.alreadyAnswered'), id }
+  }
+  const record = decideApproval(layout, id, allowed ? 'allow' : 'deny')
+  if (record === null) {
+    return { ok: false, code: 'NO_SUCH_REQUEST', message: t('approval.gone') }
+  }
+  if (!allowed || record.decision === 'deny') {
+    settleApproval(layout, id, { ok: false, code: 'APPROVAL_DENIED', message: t('approval.denied') })
+    return { ok: true, action: 'approval', id, decision: 'deny' }
+  }
+  const result = await runCommand(layout, record.argv, { approved: true })
+  settleApproval(layout, id, result)
+  return { ok: true, action: 'approval', id, decision: 'allow', result }
+}
+
+/**
  * Start the command line as a child process and read its one JSON line.
  *
  * The working directory is left alone on purpose: `start` uses it as the
  * workspace dsh opens when none is remembered, so changing it here would
  * quietly send window launches somewhere else than command-line ones.
+ *
+ * ⛔⛔ `approved` is passed here and **nowhere else**. Every child of this
+ * window has the window as its parent, so parentage alone would make anything
+ * posted to `/api/command` count as consent — which is precisely the hole the
+ * old `--approved` flag left open. The mark separates "the window started this"
+ * from "the window started this because a person answered a question".
  * @param {import('./paths.js').BoxLayout} layout
  * @param {string[]} argv
+ * @param {object} [options]
+ * @param {boolean} [options.approved] - whether a person just agreed to this.
  * @returns {Promise<Record<string, unknown>>}
  */
-function runCommand(layout, argv) {
+function runCommand(layout, argv, { approved = false } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [CLI, ...argv, '--box', layout.root, '--json'], {
       windowsHide: true,
+      env: approved ? { ...process.env, [APPROVAL_ENV]: '1' } : process.env,
     })
     let out = ''
     let err = ''

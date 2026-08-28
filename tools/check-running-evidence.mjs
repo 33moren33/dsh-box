@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -32,6 +33,11 @@ if (BOX === undefined) {
   console.error('用法: node tools/check-running-evidence.mjs <data 目录>')
   process.exit(2)
 }
+// ⛔⛔ 空的日常档案柜替身。⭐ 这一套是「查字符串冒充查调用」的活判例:开头那段
+//    散文里写着 DSH_HOME,而它一次都没设过 —— 隔离守卫因此一直全绿,直到
+//    08-28 把判据从 includes 收紧成「出现在赋值位置」。理由全文＝ tools/fake-daily.mjs。
+// ⛔ 摆在参数检查之后:BOX 还没确认时 dirname(undefined) 会先崩。
+useFakeDaily(dirname(BOX))
 
 let failures = 0
 const check = (what, passed, detail = '') => {
@@ -42,7 +48,11 @@ const check = (what, passed, detail = '') => {
 /** Run the command line and return its one JSON line. */
 function cli(...argv) {
   return new Promise((done) => {
-    const child = spawn(process.execPath, [CLI, ...argv, '--box', BOX, '--json'], { windowsHide: true })
+    // ⛔ DSH_BOX_NO_PANEL:撞上日常档案柜那道闸门时**当场拒绝**,不弹面板等一分钟。
+    //   错误码仍是 NEEDS_APPROVAL,所以断言的语义一个字没变 —— 变的只是不会挂住。
+    const child = spawn(process.execPath, [CLI, ...argv, '--box', BOX, '--json'], {
+      windowsHide: true, env: { ...process.env, DSH_BOX_NO_PANEL: '1' },
+    })
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
@@ -63,7 +73,7 @@ const mark = join(BOX, 'sandboxes', sandbox, 'home', '.dsh-box-running.json')
 
 console.log('\n账本不在,不等于没在跑\n')
 
-const started = await cli('start', '--version', '9.9.9-stub', '--sandbox', sandbox, '--no-sign-in')
+const started = await cli('start', sandbox, '--version', '9.9.9-stub', '--no-sign-in')
 check('起得来', started.ok === true, started.code ?? started.url)
 check('账本写下了', existsSync(ledger))
 check('⭐ home 里也留了一份印记', existsSync(mark))
@@ -72,12 +82,12 @@ check('⭐ home 里也留了一份印记', existsSync(mark))
 rmSync(ledger, { force: true })
 check('(把账本删掉了)', !existsSync(ledger))
 
-const blocked = await cli('start', '--version', '9.9.9-stub', '--sandbox', sandbox, '--no-sign-in')
+const blocked = await cli('start', sandbox, '--version', '9.9.9-stub', '--no-sign-in')
 check('⛔⛔ 账本没了也拦得住第二台',
   blocked.ok === false && blocked.code === 'SANDBOX_ALREADY_RUNNING', blocked.code)
 check('⭐ 而且顺手把账本补回来了——不然别处仍然会说「没在跑」', existsSync(ledger))
 
-const seen = await cli('sandboxes')
+const seen = await cli('ls', 'sandbox')
 check('列表里照旧看得见它在跑',
   (seen.sandboxes ?? []).some((one) => one.name === sandbox && one.running !== null),
   (seen.sandboxes ?? []).map((one) => `${one.name}:${one.running === null ? '停' : '跑'}`).join('、'))
@@ -88,7 +98,7 @@ check('停得掉', stopped.ok === true, stopped.code ?? 'ok')
 check('账本清了', !existsSync(ledger))
 check('⭐ 印记也清了,不会留下一个假的「还在跑」', !existsSync(mark))
 
-const again = await cli('start', '--version', '9.9.9-stub', '--sandbox', sandbox, '--no-sign-in')
+const again = await cli('start', sandbox, '--version', '9.9.9-stub', '--no-sign-in')
 check('停掉之后能正常再起', again.ok === true, again.code ?? again.url)
 await cli('stop', sandbox)
 

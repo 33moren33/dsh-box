@@ -61,7 +61,7 @@ export function currentLang() {
  * The language this computer appears to be set to.
  *
  * Only ever a starting point for a data directory that has never been told —
- * once `config lang` has been used, that answer wins, because a setting the
+ * once `set lang` has been used, that answer wins, because a setting the
  * user chose must not be second-guessed by an environment variable.
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {string}
@@ -114,70 +114,82 @@ const MESSAGES = {
   zh: {
     'lang.name': '中文',
 
-    'cmd.versions.usage': 'versions',
-    'cmd.versions.summary': '看已下载了哪些版本,以及 npm 上有哪些',
-    'cmd.pull.usage': 'pull <版本号>',
-    'cmd.pull.summary': '下载一个官方版本(逐包核对版本)',
-    'cmd.drop.usage': 'drop <版本号>',
-    'cmd.drop.summary': '删掉一个已下载的版本(约 200–260MB)',
+    'cmd.ls.usage': 'ls',
+    'cmd.ls.summary': '此刻的全景:数据目录、版本、沙箱、谁在跑',
+    'cmd.ls.machine.usage': 'ls machine',
+    'cmd.ls.machine.summary': '看能用哪些 dsh:本机装的、已下载的、你指过的文件夹',
+    'cmd.ls.sandbox.usage': 'ls sandbox',
+    'cmd.ls.sandbox.summary': '列出沙箱',
+    'cmd.ls.memory.usage': 'ls memory',
+    'cmd.ls.memory.summary': '看上次接管期间做了哪些操作(含被拒绝的)',
 
-    'cmd.plugins.usage': 'plugins [--sandbox <名> | --main]',
-    'cmd.plugins.summary': '不给档案柜就列登记表;给了就列那个档案柜实际装着什么',
-    'cmd.plugins.add.usage': 'plugins add <目录> [--id x]',
-    'cmd.plugins.add.summary': '记住一个插件目录(里面要有 package.json)',
-    'cmd.plugins.rm.usage': 'plugins rm <id> [--approved]',
-    'cmd.plugins.rm.summary': '彻底弄走一个插件:从每个档案柜卸下、从登记表移除、下载的连包一起删',
-    'cmd.plugins.rm.notes': `⭐ 做什么取决于这个插件的文件是谁的,只取决于这一点:
-  你自己的文件夹(plugins add <目录> 记进来的)
-      从每个档案柜去掉链接与配置条目,从登记表移除。
-      ⛔ 你那个文件夹一个字节都不碰。
-  dsh-box 下载的(plugins install <包名> 下来的)
-      同上,外加把下载的那份包删掉:它在我们自己的目录里,不删就没人删得掉。
+    'cmd.ls.plugin.usage': 'ls plugin [--in <档案柜>]',
+    'cmd.ls.plugin.summary': '给了档案柜就列它实际装着什么;不给就列这台电脑上叫得出名字的全部',
+    'cmd.ls.plugin.notes': `--in 后面写沙箱名,或者写 main 指你日常那个档案柜。
+不给 --in 问的是另一件事:不是「那个柜子装着什么」,而是「这台电脑上叫得出名字的插件有哪些」——
+各档案柜里实际装着的,加上我们下载过的,合成一张名单。
+⭐ 这张名单就是 get plugin 能直接按 id 搬东西的来源:日常柜里有什么,就搬得动什么。
+⭐ 给了 --in 时读的是那个档案柜自己的配置,不是我们的账:谁写进去的都列出来,
+   并注明是我们装的、还是它本来就有的。`,
 
-⚠ 它会扫过每一个档案柜,不只是你上次装的那个。碰到日常档案柜时会先拦下来
-  说清楚要动哪几处,要 --approved 才继续;不想每次都问:config ask-on-daily off。
-⛔ 只扫得到 dsh-box 认识的档案柜(它建的沙箱 ＋ 日常档案柜)。你手工造的、
-  从没在这里打开过的 DSH_HOME,它看不见。`,
-    'cmd.plugins.install.usage': 'plugins install <id|目录|包名> --sandbox <名> | --main',
-    'cmd.plugins.install.summary': '把插件正式装进某个档案柜(一直在,直到你卸掉)',
-    'cmd.plugins.install.notes': `⭐ 「记住」和「装上」是两层,别混:
-  plugins add <目录>   dsh-box 认识这个插件了(登记表),任何档案柜都还没有它
-  plugins install …    真的装进某一个档案柜,dsh 从此启动就加载它
+    'cmd.get.machine.usage': 'get machine <版本号>',
+    'cmd.get.machine.summary': '下载一个官方版本(逐包核对版本)。文件夹不用下载,直接在 start 里给路径',
+    'cmd.get.plugin.usage': 'get plugin <id|目录|包名> --to <档案柜>',
+    'cmd.get.plugin.summary': '把插件装进某个档案柜(一直在,直到你拿掉)',
+    'cmd.get.plugin.notes': `位置上那个词是什么,由它自己决定,不必再给旗标:
+  一个存在的目录          从磁盘上装
+  ls plugin 列得出的 id   这台电脑上已经有的那一份,直接装进 --to
+  其余                    当成 npm 包名去下载
 
+⭐ 第二种就是「把日常柜里那个插件也装进沙箱」的走法:名字从 ls plugin 那张名单来,
+   而那张名单是从各档案柜实际装着的东西推出来的,不必先登记。
+--to 写沙箱名,或者写 main 指你日常那个;给一个还不存在的沙箱名会顺手建一台。
 装进去的东西写在那个档案柜自己的 profile 配置里,所以你自己敲 dsh 也在,
-不是只在从这里启动时才有。要拿掉用 plugins uninstall。
-⭐ 改这个文件之前会先整份备份(plugins backups 看得到,plugins restore 还原)。
-⛔ 只删得掉我们写进去的那几条;那个档案柜本来就有的插件不归我们动。`,
-    'cmd.plugins.uninstall.usage': 'plugins uninstall <id|包名> --sandbox <名> | --main',
-    'cmd.plugins.uninstall.summary': '把插件从某个档案柜拿掉',
-    'cmd.plugins.uninstall.notes': `一个档案柜有三处能写插件,这条命令三处都管:
+不是只在从这里启动时才有。要拿掉用 rm plugin。
+⭐ 改这个文件之前会先整份备份,改坏了用 set plugin --undo 一步步退回去。
+⛔ --to main 会被拒(NEEDS_APPROVAL):那是你自己敲 dsh 时读的档案柜,要人在配置窗里点过头。
+⚠️ 一次只装得了一个 npm 包 —— 两个 npm 同时写同一个包目录会把它写坏。`,
+
+    'cmd.rm.machine.usage': 'rm machine <版本号|文件夹>',
+    'cmd.rm.machine.summary': '把一台 dsh 从这儿去掉:我们下载的真删,你指的文件夹只忘掉记录',
+    'cmd.rm.plugin.usage': 'rm plugin <id|包名> --from <档案柜>',
+    'cmd.rm.plugin.summary': '把插件从某个档案柜拿掉',
+    'cmd.rm.plugin.notes': `一个档案柜有三处能写插件,这条命令三处都管:
   · 我们写进 profile 配置的行 —— 整行删掉
   · 聚合包 —— 它带进来的十几行一起拿掉
   · profile 的 dsh.profile.bundles —— 从 bundles 和 dependencies **两处**摘掉
 
 ⛔ 只摘 bundles 是白摘:dsh 每跑一条 dsh plugin 命令都会照 dependencies 对账,
    还在那儿又还声明 dsh.bundle 的包会被加回来。所以两处一起,不然等于没删。
-⛔ 包体本身不删——那要在你的 profile 里跑包管理器,而「只需要 Node 20+」是这个
-   工具少数几个能拿得出手的地方。剩下什么会当场说清楚。
-⚠️ 不是我们装的、也不是 bundle 的行,拿不掉——那是别人写进去的。用 plugins
-   disable 把它关掉,那是这个格式里「删」唯一的拼法。`,
-    'cmd.plugins.disable.usage': 'plugins disable <id> --sandbox <名> | --main',
-    'cmd.plugins.disable.summary': '把某一行关掉,不管它是谁写进来的',
-    'cmd.plugins.disable.notes': `⭐⭐ 这是唯一能动「不是我们装的东西」的办法,也是这个格式里「删」的拼法:
+⛔ 你自己文件夹里的插件只断开链接,文件一个字节不动。我们下载的那份,等到没有任何
+   档案柜还在用它时才跟着删——不必也不该由人来清。
+⚠️ 不是我们装的、也不是 bundle 的行,拿不掉——那是别人写进去的。用 set plugin <id> off
+   把它关掉,那是这个格式里「删」唯一的拼法。
+⛔ --from main 会被拒(NEEDS_APPROVAL),要人在配置窗里点过头。`,
+
+    'cmd.set.plugin.usage': 'set plugin <id> on|off --in <档案柜> | set plugin --undo --in <档案柜>',
+    'cmd.set.plugin.summary': '把某一行开关掉,或者把这个档案柜的插件配置退回上一步',
+    'cmd.set.plugin.notes': `set plugin <id> off   把那一行关掉,不管它是谁写进来的
+set plugin <id> on    把关掉的那一行放回来
+set plugin --undo     整份插件配置退一步,可以连按
+
+⭐⭐ 关掉是这个格式里「删」的拼法,也是唯一能动「不是我们装的东西」的办法:
    patch 里根本没有 remove,下层的行只能被上层盖掉,盖不掉就删不掉。
    profile 配置排在所有 bundle 层之后,所以这里写一行 disabled: true 关得掉
    bundle 带进来的插件——官方关自己的遥测用的就是这一招。
+⛔ 只放得回我们自己关的。别人写的 disabled 是别人的决定,悄悄给他打开就是替他做主。
+⭐⭐ --undo 每敲一次退一步,最多五步,敲完会告诉你还能再退几步;退过的那一步会被消费掉。
+   写 --at <时间戳> 是「跳到某个时刻」,那是另一回事:历史留着,而且会先给现在这份留一份备份。
+⭐ --undo 是「精确拿掉」够不着时的后路:文件被别处改成我们认不出的形状,
+   逐条删就找不到东西可删,那时整份还原。
+⚠️ 只有日常档案柜存快照。沙箱是用完就扔的,不存,所以对沙箱 --undo 永远说没有备份。
+⛔ --in main 会被拒(NEEDS_APPROVAL),要人在配置窗里点过头。`,
 
-⛔ 只关得回我们自己关的。别人写的 disabled 是别人的决定,悄悄给他打开就是替他
-   做主。`,
-    'cmd.plugins.enable.usage': 'plugins enable <id> --sandbox <名> | --main',
-    'cmd.plugins.enable.summary': '把 disable 关掉的那一行放回来',
-
-    'cmd.history.usage': 'history [--lines N] [--shape]',
-    'cmd.history.summary': '看这个数据目录里做过的所有事(持久记录)',
-    'cmd.history.notes': `⛔ 跟 memory 是两样东西,别混:
-  memory   上一轮 agent 接管期间做了什么,是给窗口看的显示,下一轮会覆盖掉
-  history  这个数据目录做过的所有事,持久记录,只增不改
+    'cmd.ls.history.usage': 'ls history [--lines N] [--shape]',
+    'cmd.ls.history.summary': '看这个数据目录里做过的所有事(持久记录)',
+    'cmd.ls.history.notes': `⛔ 跟 ls memory 是两样东西,别混:
+  ls memory   上一轮 agent 接管期间做了什么,是给窗口看的显示,下一轮会覆盖掉
+  ls history  这个数据目录做过的所有事,持久记录,只增不改
 
 不写 --lines 就是最近 {historyLines} 条。省略了多少会当场说出来,全文路径也会给。
 --lines 0 是全部;--shape 只回答「有多大、从什么时候到什么时候、失败几条」,
@@ -185,10 +197,10 @@ const MESSAGES = {
 
 ⚠ 只有会改变状态的命令才记。到 2MB 会转一代(.1),更早的那一代会被顶掉。`,
 
-    'cmd.workspaces.usage': 'workspaces --sandbox <名> | --main',
-    'cmd.workspaces.summary': '看这个档案柜见过哪些工作区(第一条就是打开时进的那个)',
-    'cmd.workspaces.notes': `⚠ 两个词别混,它们不是并列关系:
-  档案柜  一个 DSH_HOME,装对话、配置与登录,就是 --main / --sandbox 说的那个
+    'cmd.ls.workspace.usage': 'ls workspace --in <档案柜>',
+    'cmd.ls.workspace.summary': '看这个档案柜见过哪些工作区(第一条就是打开时进的那个)',
+    'cmd.ls.workspace.notes': `⚠ 两个词别混,它们不是并列关系:
+  档案柜  一个 DSH_HOME,装对话、配置与登录,就是 --in 后面写的那个
   工作区  dsh 实际干活的那个项目文件夹,本条命令管的是它,这也是 dsh 官方的叫法
   一个档案柜里装着一张「这台见过哪些工作区」的名单,本条命令看的就是那张名单。
 
@@ -196,118 +208,116 @@ const MESSAGES = {
   所以人得在 dsh 的网页里选一次。而 dsh web 那层没有任何参数能指定它
   (只有 --host / --port / --trusted-host),这正是本命令存在的理由。
 ⛔ 配置窗里没有这个控件,也不会加:人直接在 dsh 里选就行,这条是给 agent 的。`,
-    'cmd.workspaces.use.usage': 'workspaces use <目录> --sandbox <名> | --main [--title <名字>]',
-    'cmd.workspaces.use.summary': '让这个档案柜下次打开时进这个工作区',
-    'cmd.workspaces.use.notes': `已经登记过的会被提到最前面;没登记过的会加一条。⛔ 从不删、也不动对话归属。
+    'cmd.set.workspace.usage': 'set workspace <目录> --in <档案柜> [--title <名字>]',
+    'cmd.set.workspace.summary': '让这个档案柜下次打开时进这个工作区',
+    'cmd.set.workspace.notes': `已经登记过的会被提到最前面;没登记过的会加一条。⛔ 从不删、也不动对话归属。
 ⚠ 改的是 dsh 自己的文件($DSH_HOME/storages/workspace.json)。写之前会核对
-  它的版本号,不认识就拒绝:那张表写错一个字段,整台 dsh 起不来(实测过)。`,
+  它的版本号,不认识就拒绝:那张表写错一个字段,整台 dsh 起不来(实测过)。
+⛔ --in main 会被拒(NEEDS_APPROVAL),要人在配置窗里点过头。`,
 
-    'cmd.packages.usage': 'packages',
-    'cmd.packages.summary': '看 dsh-box 替你下载的插件包,以及各被哪些档案柜用着',
-    'cmd.packages.notes': `下载的包只存一份,谁要用就往那个档案柜链一根,所以删之前得先知道还有谁在用。
-列表每行末尾就是这个答案,不用自己去各个档案柜翻。
-⛔ plugins uninstall 故意不删包,为的是装回来是瞬间的事,所以清理是单独一步。`,
-    'cmd.packages.rm.usage': 'packages rm <包名>',
-    'cmd.packages.rm.summary': '删掉一个下载的包',
-    'cmd.packages.rm.notes': `还有档案柜在用就会被拒绝(PACKAGE_IN_USE),先去那边 plugins uninstall。
-⛔ 硬删会让那些档案柜指着一个不存在的包名,而 dsh 遇到那种情况会拒绝加载整棵插件树。`,
-    'cmd.packages.prune.usage': 'packages prune',
-    'cmd.packages.prune.summary': '清掉没有任何档案柜在用的下载',
-    'cmd.packages.cancel.usage': 'packages cancel',
-    'cmd.packages.cancel.summary': '停掉正在进行的那个下载(连它起的所有进程)',
-    'cmd.packages.cancel.notes': `装一个大包可能要几分钟,卡住了就用这条停掉,不必去开 shell。
-⛔ 停的是整棵进程树 —— 真正卡住的往往不是 npm 自己,是某个依赖的安装脚本。
-半截下载留在原地不动,要清用 packages prune;正在下什么用 logs --package <包名> 看。`,
+    'cmd.stop.usage': 'stop <档案柜> | stop --all | stop --window | stop --download',
+    'cmd.stop.summary': '停下一件正在跑的东西:一台 dsh、全部沙箱、配置窗,或正在下的那个包',
+    'cmd.stop.notes': `stop <档案柜>  停那一台 dsh。写沙箱名,或者写 main 停从这里启动的日常档案柜
+--all          停下所有沙箱,以及从这里启动的那台日常档案柜
+--window       关掉这个数据目录的配置窗服务
+--download     停掉正在进行的那个下载,连它起的所有进程
 
-    'cmd.plugins.backups.usage': 'plugins backups --sandbox <名> | --main',
-    'cmd.plugins.backups.summary': '看这个档案柜的插件配置留了哪些备份',
-    'cmd.plugins.backups.notes': `⭐ 只有日常档案柜留备份。沙箱本来就是干净启动的,玩坏了删掉整个沙箱就是,
-  给它的配置留快照保护不了任何值得保护的东西。
-最多留 {keepBackups} 份,改一次配置留一份,多出来的自动丢最老的。`,
-    'cmd.plugins.backups.rm.usage': 'plugins backups rm <时间戳> --sandbox <名> | --main',
-    'cmd.plugins.backups.rm.summary': '删掉某一份备份',
-    'cmd.plugins.backups.prune.usage': 'plugins backups prune [--keep N] --sandbox <名> | --main',
-    'cmd.plugins.backups.prune.summary': '按上限清一次备份;--keep 0 全清掉',
-    'cmd.plugins.restore.usage': 'plugins restore --sandbox <名> | --main [--at <时间戳>]',
-    'cmd.plugins.restore.summary': '把插件配置整份还原到某次改动之前',
-    'cmd.plugins.restore.notes': `不写 --at 就是最近那一份。还原本身也会先备份现在这份,所以还原错了还能回来。
-⭐ 这是「精确卸载」够不着时的后路:文件被别处改成我们认不出的形状,
-  逐条删就找不到东西可删,那时整份还原。`,
+⛔ 只停得掉从这里启动的那台日常档案柜,它有进程号可认。你自己在别处开的那台,
+   我们只知道 3080 在应答,认不出是哪个进程,不去动它。
+⛔ 停日常档案柜那台要有人在面板上点头(stop main,或 --all 走到它那一步):
+   那是你正在用的东西,停掉之后那次对话就没了,而且可能还有别人在用它。
+⭐ --all 是**先停沙箱、再问日常柜**:沙箱一律照停,拒绝只发生在最后那一台,
+   而且拒绝里会写明已经停掉了哪几台。收拾自己起的沙箱这条常路上没有弹窗。
+⭐ 沙箱只是停下,不会被删,下次同名启动接着用。
+⭐ --window 平时用不着:配置窗自己关的时候会松手。用得着的是另一种情形——exe 被强杀,
+   而它起的那个 Node 服务是子进程,在 Windows 上活得比它久,座位和端口一直被占着,
+   ui 从此永远被拒。座位上那个进程已经不在时,如实说没有开着的配置窗,并把那份记录清掉。
+⛔ --download 停的是整棵进程树 —— 真正卡住的往往不是 npm 自己,是某个依赖的安装脚本。
+   正在下什么用 logs --package <包名> 看。
+⚠ 四件事互不牵连:--all 不关窗口,--window 不停沙箱,--download 只管下载那棵进程树。
+⚠ 没有一个常驻的 dsh-box 进程可关:每条命令都是自己的小进程,跑完就退。所以「全停」
+  只能是一件做出来的事。ui 那个进程被 Ctrl+C 掉也不算,那只结束了 ui 这一条命令。`,
 
-    'cmd.sandboxes.usage': 'sandboxes',
-    'cmd.sandboxes.summary': '列出沙箱',
-    'cmd.start.usage': 'start --sandbox <名>|--new|--main [--version <版本号>]',
+    'cmd.start.usage': 'start <档案柜> | start --new [--version <版本号|文件夹>]',
     'cmd.start.summary': '启动:不写 --version 就用你自己装的那台 dsh',
     'cmd.start.notes': `start ＝ 选两样东西:用哪台 dsh(机器) × 开哪个档案柜(DSH_HOME)
-  机器    不写就是你自己装的那台 dsh;--version <版本号> 改用 dsh-box 下载的
-  档案柜  --sandbox <名字> 某台沙箱 | --new 开一台新的 | --main 你日常的 ~/.dsh
+  机器    不写            你自己装的那台 dsh
+          --version <版本号>   dsh-box 下载的那一个
+          --version <文件夹>   你指的那一份 dsh(带 / 或 \\ 就按文件夹读)
+  档案柜  写沙箱名开那一台 | --new 开一台新的 | 写 main 开你日常的 ~/.dsh
 
   --plugin <id>      把一个插件装进这个档案柜(一直在),可重复
   --unplug <id>      反过来,把它从这个档案柜拿掉,可重复
   --no-sign-in       不导入登录     --follow  留在这里看日志(Ctrl+C 停掉它)
 
-⚠ 什么都不沿用上次:不写 --sandbox 会被拒绝,不写 --version 就是你自己那台。
+⚠ 什么都不沿用上次:不写档案柜会被拒绝,不写 --version 就是你自己那台。
   同一条命令永远得到同一个结果。
-⚠ 这里不说 dsh 打开哪个「工作区」(项目文件夹),那是 workspaces use 管的,
+⚠ 这里不说 dsh 打开哪个「工作区」(项目文件夹),那是 set workspace 管的,
   而且 dsh 不会因为启动目录就登记一个工作区,实测过。
 ⭐ 插件是档案柜的属性,不是这次启动的:不写 --plugin 不是「一个都不装」,是「什么都不改」,
   这个档案柜之前装过的照样加载,你自己敲 dsh 也一样。要纯官方就开一个新沙箱。
-沙箱名可用:字母(中文也可以)、数字、_ . - ,不能有空格,不能以 - 或 . 开头。
+沙箱名可用:字母(中文也可以)、数字、_ . - ,不能有空格,不能以 - 或 . 开头,
+也不能叫 main —— 那是日常档案柜占着的名字。
 
---main 只说档案柜,不说机器。--main 配 --version 是唯一「出事修不回来」的组合:
-磁盘格式跨版本无迁移路径,且那台 dsh 在跑期间,这个 home 的模块指针指着 dsh-box。
-⛔ 所以只有那一格会被拒(NEEDS_APPROVAL),要人在配置窗里亲手点过。agent 不要自己
-  带 --approved:那个旗标是给人点过头之后用的,而且会留在操作记录里。`,
-    'cmd.stop.usage': 'stop <沙箱名> | stop --main',
-    'cmd.stop.summary': '停掉一个正在跑的沙箱,或停掉从这里启动的日常档案柜',
-    'cmd.stop.notes': `⛔ 只停得掉从这里启动的那台日常档案柜,它有进程号可认。
-你自己在别处开的那台,我们只知道 3080 在应答,认不出是哪个进程,不去动它。`,
-    'cmd.adopt.usage': 'adopt <沙箱名> | adopt --from <名|main> --to <名|main>',
-    'cmd.adopt.summary': '把对话从一个档案柜复制到另一个(复制,不是搬走)',
-    'cmd.adopt.notes': `adopt <沙箱名>  ＝ --from <沙箱名> --to main,最常用的那个方向的简写。
-要反过来(把日常档案柜的对话复制进某个沙箱)就写全:
-  adopt --from main --to <沙箱名>
-沙箱之间也可以,写两个沙箱名即可。
+⭐ --version 给文件夹时,往下找三层认这两种:摊在硬盘上的 dsh(源码构建出来的、
+  普通装机的),以及某个应用自带的 dsh(整棵树打包在 app.asar 里,只有它自带的
+  那个程序读得动,所以就用那个程序来起)。
+  钉版核对会照实报一句,但不拦 —— 那棵树不是 dsh-box 装的。
+
+main 只说档案柜,不说机器。main 配上任何一台不是你自己装的 dsh(下载的、或你指的
+文件夹),是唯一「出事修不回来」的组合:磁盘格式跨版本无迁移路径,且那台 dsh 在跑
+期间,这个 home 的模块指针指着那份安装。
+⛔ 所以只有那一格会被拒(NEEDS_APPROVAL),要人在配置窗里亲手点过。没有旗标可以
+  绕开:被拒时 dsh-box 会自己把配置窗弹出来等人点,人点了之后由那扇窗把这条命令跑掉。`,
+    'cmd.get.chat.usage': 'get chat --from <档案柜> --to <档案柜> [--force]',
+    'cmd.get.chat.summary': '把对话从一个档案柜复制到另一个(复制,不是搬走)',
+    'cmd.get.chat.notes': `两头都写档案柜名:沙箱名,或者写 main 指你日常那个。
+最常用的一条是把沙箱里的对话收进日常柜:
+  get chat --from <沙箱名> --to main
+反过来、以及两个沙箱之间,都是同一条命令换个写法。
 
 ⭐ 只复制不搬走:原件留在来源那边,目标已经有的同一条会跳过,所以重复跑是安全的。
 ⛔ 目标那台 dsh 正跑着会被拒绝:dsh 只在启动时扫描对话目录,开着的时候复制进去它看不见。
   确认无碍可加 --force,那些对话会在它下次启动时出现。`,
-    'cmd.rm.usage': 'rm <沙箱名>',
-    'cmd.rm.summary': '删掉一个沙箱及其中一切',
+    'cmd.rm.sandbox.usage': 'rm sandbox <名>',
+    'cmd.rm.sandbox.summary': '删掉一个沙箱及其中一切',
 
-    'cmd.config.usage': 'config',
-    'cmd.config.summary': '看当前设置',
-    'cmd.config.source.usage': 'config source <源>',
-    'cmd.config.source.summary': '换安装源:auto | official | mirror',
-    'cmd.config.lang.usage': 'config lang <zh|en>',
-    'cmd.config.lang.summary': '换语言:{options}',
-    'cmd.config.lang.notes': `语言是这个数据目录的设置,不是页面的偏好:命令行和配置窗跟着一起变,
+    'cmd.ls.setting.usage': 'ls setting',
+    'cmd.ls.setting.summary': '看当前设置,以及这一份在不在 PATH 上、PATH 上有几份',
+    'cmd.ls.setting.notes': `每一项都有一条改它的命令:set source / set lang / set ask-on-quit / set ask-on-daily。
+PATH 也是一个设置,开关是 set path on|off,所以它和别的设置列在同一张表里。
+⚠️ PATH 那一段只在 Windows 上有意义:别的系统上 PATH 归 shell 的配置文件管,
+  不该由一个启动器代改,所以那里只报「这条命令用不上」。
+⛔ 设置文件读不懂的时候这条也读不出来。那时用 rm setting 把它存档、从空的重来。`,
+    'cmd.set.source.usage': 'set source <auto|official|mirror>',
+    'cmd.set.source.summary': '换安装源:auto | official | mirror',
+    'cmd.set.lang.usage': 'set lang <zh|en>',
+    'cmd.set.lang.summary': '换语言:{options}',
+    'cmd.set.lang.notes': `语言是这个数据目录的设置,不是页面的偏好:命令行和配置窗跟着一起变,
 所以两边永远说同一种语言。配置窗右上角那个开关跑的就是这条命令。
 
 没设过就跟这台电脑的语言走;设过之后就以设的为准,不再看环境变量。
 ⛔ 错误代号(PLUGIN_NAME_TAKEN 之类)和写进你配置文件里的标记不翻译:
   它们是数据不是话,跟着语言变会让脚本和我们自己都认不出来。`,
-    'cmd.config.ask-on-quit.usage': 'config ask-on-quit <on|off>',
-    'cmd.config.ask-on-quit.summary': '关配置窗前提不提醒「会停掉所有沙箱」',
-    'cmd.config.ask-on-daily.usage': 'config ask-on-daily <on|off>',
-    'cmd.config.ask-on-daily.summary': '动到日常档案柜之前提不提醒',
-    'cmd.config.reset.usage': 'config reset',
-    'cmd.config.reset.summary': '设置文件读不懂时:把它存档,从空的重来',
-    'cmd.config.reset.notes': `只在别的命令报 CONFIG_UNREADABLE 时才需要它。
-⛔ 旧文件是改名存档,不是删掉:里面记着你登记过哪些插件目录,那份东西别处找不回来。
-存档之后登记表是空的,但档案柜里已经装着的插件不受影响:那些写在档案柜自己的配置里。`,
+    'cmd.set.ask-on-quit.usage': 'set ask-on-quit <on|off>',
+    'cmd.set.ask-on-quit.summary': '关配置窗前提不提醒「会停掉所有沙箱」',
+    'cmd.set.ask-on-daily.usage': 'set ask-on-daily <on|off>',
+    'cmd.set.ask-on-daily.summary': '动到日常档案柜之前提不提醒',
+    'cmd.rm.setting.usage': 'rm setting',
+    'cmd.rm.setting.summary': '设置文件读不懂时:把它存档,从空的重来',
+    'cmd.rm.setting.notes': `只在别的命令报 CONFIG_UNREADABLE 时才需要它。
+⛔ 旧文件是改名存档,不是删掉:它记着你上次选过什么,存档之后还找得回来看。
+存档之后设置回到出厂,但档案柜里已经装着的插件一个都不受影响:那些写在档案柜自己的配置里。`,
 
-    'cmd.path.usage': 'path',
-    'cmd.path.summary': '看这一份在不在 PATH 上,以及 PATH 上有几份',
-    'cmd.path.add.usage': 'path add [--force]',
-    'cmd.path.add.summary': '把这个 exe 所在的目录加进你自己的 PATH',
-    'cmd.path.add.notes': `加完之后新开的终端里敲 dsh-box 就能用,已经开着的终端要重开一次。
+    'cmd.set.path.usage': 'set path on|off [--force]',
+    'cmd.set.path.summary': '把这个 exe 所在的目录加进你自己的 PATH,或者去掉',
+    'cmd.set.path.notes': `on 之后新开的终端里敲 dsh-box 就能用,已经开着的终端要重开一次;off 是反过来。
 只写你自己的 PATH(HKCU\\Environment),不动系统的,也不要管理员权限。
 ⭐ 只加这一条,不整理你 PATH 里别的东西;改之前把原样存一份在数据目录的 env-path 里。
 ⛔ npm 装的那份用不着它:npm 自己会把垫片放进全局目录,那个目录本来就在 PATH 上。
-⚠️ PATH 上已经有另一份 dsh-box 时会拒绝——两份都在,敲名字命中哪一份取决于顺序。要这一份赢就加 --force。`,
-    'cmd.path.rm.usage': 'path rm',
-    'cmd.path.rm.summary': '把这个目录从你的 PATH 上去掉',
+⚠️ PATH 上已经有另一份 dsh-box 时会拒绝——两份都在,敲名字命中哪一份取决于顺序。要这一份赢就加 --force。
+⭐ 这一条改的是这台电脑,不是这个数据目录。它归 set 是因为它确实是个开关,
+  而且便携包的用户装完要自己敲一次(安装版由安装器代敲)。`,
 
     'path.windowsOnly': '这条命令只在 Windows 上有意义。别的系统上 PATH 归 shell 的配置文件管,不该由一个启动器代改。',
     'path.noExe': '这条命令要由 dsh-box 的 exe 自己来跑。npm 装的那份不需要它:npm 已经把垫片放好了。',
@@ -330,32 +340,63 @@ const MESSAGES = {
 
     'cmd.ui.usage': 'ui [--port n]',
     'cmd.ui.summary': '打开配置窗',
-    'cmd.quit.usage': 'quit [--main]',
-    'cmd.quit.summary': '总退出:停下所有沙箱;加 --main 连日常档案柜一起停',
-    'cmd.quit.notes': `没有一个常驻的 dsh-box 进程可关:每条命令都是自己的小进程,跑完就退。
-所以「退出」只能是一件做出来的事,让所有沙箱停下。沙箱只是停下,不会被删。
-ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,沙箱照跑。`,
-    'cmd.status.usage': 'status',
-    'cmd.status.summary': '此刻的全景:数据目录、版本、沙箱、谁在跑',
-    'cmd.logs.usage': 'logs <沙箱名> [选项] | logs --package <包名>',
-    'cmd.logs.summary': '看某台沙箱最近一次启动说了什么;--package 看某个 npm 插件的下载进度',
-    'cmd.logs.notes': `  --shape            只报形状(多少行/多大/几行像出错/最后一行),不吐正文
+    'cmd.ui.notes': `一个数据目录只开一个配置窗服务。它自己关掉的时候会松手,所以正常关窗不必做别的;
+要从命令行关掉它是 stop --window。
+⛔ 已经开着的时候再敲一次不会开第二个:它会把现成那个地址报给你。要多开一个视图,
+  用浏览器再打开一次那个地址就行。`,
+    'cmd.logs.usage': 'logs <档案柜> [选项] | logs --version <版本号> | logs --package <包名>',
+    'cmd.logs.summary': '看某个档案柜最近一次启动说了什么;--package 看某个 npm 插件的下载进度',
+    'cmd.logs.notes': `  <档案柜>           沙箱名,或者写 main 看日常档案柜启动的日志
+  --shape            只报形状(多少行/多大/几行像出错/最后一行),不吐正文
   --errors           只要像出错的行,各带前后三行
   --lines <n>        要多少行(默认 50 行或 4000 字符,谁先到算谁)
-  --all              列出这台沙箱留着的所有日志文件
-  --main             看日常档案柜启动的日志,不用给沙箱名
+  --all              列出这个档案柜留着的所有日志文件
   --version <版本号> 看下载/删除那个版本时说了什么(下载中也能看,这就是进度)
+  --package <包名>   看那个 npm 插件下载装入时说了什么(下载中也能看)
 
 ⭐ 先 --shape 再决定读不读:无论日志多大,那个回答都是固定几百字符。
 默认只给最后 50 行或 4000 字符,并且会明说省略了多少、全文在哪。`,
-    'cmd.attach.usage': 'attach',
-    'cmd.attach.summary': '接管:配置窗会显示你正在操作,并停止接受点击',
-    'cmd.detach.usage': 'detach [--forced]',
-    'cmd.detach.summary': '交还:配置窗恢复正常,操作记录留下可回看',
-    'cmd.detach.notes': `--forced 表示不是自己交还的,是人按了配置窗上的停止把控制权收回去。
-这一笔写进记录里,memory 读得到:「你在这里被拦下过」是下次最该知道的事。`,
-    'cmd.memory.usage': 'memory',
-    'cmd.memory.summary': '看上次接管期间做了哪些操作(含被拒绝的)',
+    'cmd.agent.attach.usage': 'agent attach',
+    'cmd.agent.attach.summary': '接管:配置窗会显示你正在操作,并停止接受点击',
+    'cmd.agent.detach.usage': 'agent detach [--forced]',
+    'cmd.agent.detach.summary': '交还:配置窗恢复正常,操作记录留下可回看',
+    'cmd.agent.detach.notes': `--forced 表示不是自己交还的,是人按了配置窗上的停止把控制权收回去。
+这一笔写进记录里,ls memory 读得到:「你在这里被拦下过」是下次最该知道的事。`,
+
+    // ⭐⭐ 「完成后」——每条命令回答同一个问题:**做完之后我处在什么状态**。
+    // 返回了没有、留下了什么、下一步敲什么。summary 答的是「它做什么」,notes
+    // 答的是「人们会在哪儿栽」,都不答这一个;而这一个才是照着用的人真正要的。
+    // 判例:一个真实使用者盯着一条早已完成的 start 等了 2 分 36 秒,因为「立即
+    // 返回」这件事只写在 AGENTS.md 里,help 一个字都没有。
+    // ⛔ 不是把册子抄一遍:一句话,只说状态。这一整张表 --help --json 会整个吐给
+    //   agent,多写的每个字都是它要读进去的。
+    // ⛔ 短句体裁,不带 ⭐⛔⚠(守卫会查),该说的分寸用「会被拒」「要先…」说出来。
+    'cmd.ls.after': '只看了一眼;永不联网,所以永远快',
+    'cmd.ls.machine.after': '只看了一眼,什么都没变。要下载用 get machine <版本号>',
+    'cmd.ls.plugin.after': '只看了一眼。要真装进某个档案柜是 get plugin',
+    'cmd.ls.setting.after': '只看了一眼。每一项都有一条对应的 set 去改它',
+    'cmd.get.machine.after': '下完才返回,可能要几分钟;完成后 start <档案柜> --version <版本号> 就能选它,中途看进度用 logs --version <版本号>',
+    'cmd.get.plugin.after': '那个档案柜从此一直装着它,你自己敲 dsh 也会加载;--to 给一个还不存在的沙箱名会顺手建一台沙箱;那台 dsh 已经在跑的话要重启才生效。装的是别处已有的那一份时,原来那个档案柜一条不少',
+    'cmd.get.signin.after': '那台沙箱里有登录了;本来就有的话什么都不做(imported 为 false),换 key 要先 rm signin',
+    'cmd.get.chat.after': '目标档案柜多出那些对话,来源那边一条不少;目标那台正跑着会被拒,加 --force 的话那些对话要等它下次启动才看得见',
+    'cmd.rm.machine.after': '给版本号:那份从磁盘上没了,有沙箱正用着会被拒。给文件夹:只是我们不再记得它,你的文件夹一个字节没动,用过它的沙箱同时清掉模块指针层(下次启动 dsh 自己会重建);没有沙箱用过它会被拒,免得一句「已完成」骗人',
+    'cmd.rm.plugin.after': '从这个档案柜拿掉;要是没有别的档案柜还在用它,我们下载的那份包也一并删掉(deletedPackages 会列出来),再装就要重新下载。你自己文件夹里的插件只断开链接,文件一个字节不动',
+    'cmd.rm.sandbox.after': '那台沙箱连同它的档案柜一起没了,撤不回来;正在跑会被拒,先 stop',
+    'cmd.rm.signin.after': '那个档案柜没有登录了,里面的对话一条不动',
+    'cmd.rm.setting.after': '坏掉的设置文件改名存档,设置回到出厂;档案柜里已经装着的插件一个都不受影响',
+    'cmd.start.after': '会挡住你:一直等到 dsh 真的开始服务才返回,通常十几秒,上限 120 秒(超时报 BOOT_TIMEOUT)。返回之后 dsh 留在后台跑,这条命令不守着它。输出里有 sandbox(这台叫什么,配 --new 时就靠它知道)、url、pid、port、logFile。要在里面真的发出消息,还得用 set workspace 给这个档案柜一个项目工作区,否则模型菜单是空的。停它用 stop <档案柜>,想守着日志加 --follow(那就再也不返回了,Ctrl+C 停)',
+    'cmd.stop.after': '被点名的那件停了,东西都还在:沙箱连同它的档案柜留着(要再起用 start),半截的下载留在原地、下次装同一个包会盖过去,配置窗的座位和端口放开、要再开窗口用 ui',
+    'cmd.set.plugin.after': 'off 之后那一行还在文件里,但下次启动不再加载;on 之后又会加载。--undo 让整份插件配置回到上一步的样子,并告诉你还能再退几步,再敲一次就再退一步',
+    'cmd.set.workspace.after': '写完就返回;那个档案柜下次打开时进这个工作区,已经在跑的那台不受影响',
+    'cmd.set.source.after': '下一次下载就走新的源',
+    'cmd.set.lang.after': '命令行和配置窗一起换了语言;已经开着的页面要重载一次',
+    'cmd.set.ask-on-quit.after': '开关变了,配置窗下次按退出时照它办',
+    'cmd.set.ask-on-daily.after': '开关变了,命令行和配置窗一起按它办',
+    'cmd.set.path.after': 'on 之后新开的终端里裸敲 dsh-box 就能用,已经开着的终端读的还是旧的 PATH;off 之后 PATH 上那一条没了。改之前的原样存在数据目录的 env-path 里',
+    'cmd.ui.after': '不返回,一直服务到它被停掉;地址印在上面,别的终端照常可以敲命令。要停它用 stop --window',
+    'cmd.logs.after': '只看了一眼;默认最多给最后 50 行或 4000 字符,并说明省略了多少、全文在哪',
+    'cmd.agent.attach.after': '从这一刻起配置窗显示你正在操作、并拒绝页面上的点击,直到 agent detach 或有人按停止',
+    'cmd.agent.detach.after': '配置窗恢复正常;这一轮做过什么留在回看面板和 ls memory 里',
 
     'help.title': 'dsh 沙箱启动器 —— 在隔离沙箱里跑 DeepSeek Harness',
     'help.perCommand': '某一条的细则: help <命令> 或 <命令> --help(例如 help start)',
@@ -365,6 +406,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
   code 是不会变的标识,message 是给人看的、随时可能改写。
 数据默认放在 ./dsh-box-files/data(可用 --box <目录> 或环境变量 DSH_BOX_HOME 改)。`,
     'help.flags': '旗标',
+    'help.after': '完成后',
     'help.valuePlaceholder': '值',
     'help.mutates': '会改变状态,所以会记进操作记录',
     'help.readOnly': '只读,不改任何东西',
@@ -389,17 +431,21 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'launch.noKey': '这个档案柜没有登录,要对话得先在里面配一个 API Key',
     'launch.logAt': '日志 {file}',
     'launch.detached': '在后台跑着(进程号 {pid}),停它: stop {name}',
-    'window.alreadyServing': '这个数据目录已经开着配置窗:{url}(进程号 {pid})。要开第二个视图,用浏览器再打开一次那个地址',
+    'window.alreadyServing': '这个数据目录已经开着配置窗:{url}(进程号 {pid})。要开第二个视图,用浏览器再打开一次那个地址。它是上次强杀留下的孤儿就用 stop --window 收掉',
+    'window.noneServing': '这个数据目录没有开着的配置窗',
+    'window.stopped': '已关掉配置窗:{url}(进程号 {pid})',
+    'window.gone': '座位上记的进程号 {pid} 现在已经不是它了,没有动它;那份记录已清掉',
     'launch.sandboxStarting': '沙箱「{name}」正被另一个进程启动,等它起完再说',
     'launch.mainStarting': '日常档案柜正被另一个进程启动,等它起完再说',
     'launch.noFreePort': '在 {from} 到 {to} 之间找不到空闲端口',
-    'launch.linkDangling': '「{name}」链上去之后指向了不存在的地方,登记的路径是 {path}。重新登记一次这个插件目录,用完整路径',
+    'launch.linkDangling': '「{name}」链上去之后指向了不存在的地方,记着的路径是 {path}。用完整路径重新装一次这个插件目录',
     'launch.noHostDshFile': '你自己装的 dsh 里没有 {entry} 这个文件,它可能刚被卸载,或者升级到一半',
     'launch.versionNotDownloaded': '版本 {version} 还没下载',
     'launch.sandboxAlreadyRunning': '沙箱「{name}」已经开着:{url}(进程 {pid})。同一个沙箱同时只能跑一台,两台会互踩同一份档案柜。要并行就换个沙箱,要重启就先停掉它',
     'launch.bootExited': 'dsh 还没启动完就退出了,退出码 {code}',
     'launch.bootExitedLate': 'dsh 服务完页面之后退出了,退出码 {code}',
     'launch.bootTimeout': 'dsh 在 {seconds} 秒内没有启动完成',
+    'launch.stoppedAfterFailure': '这次起的那台(进程号 {pid})已经停掉了,没给你留在后台',
     'launch.badPid': '拒绝停止进程号 {pid}',
 
     'cabinet.daily': '日常档案柜',
@@ -413,11 +459,14 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
 
     'plugin.installed': '已把「{name}」装进{where}',
     'plugin.installedWhere': '写在 {file}——你自己敲 dsh 也会加载它',
-    'plugin.removeHint': '要拿掉: plugins uninstall {id} {cabinet}',
+    'plugin.removeHint': '要拿掉: rm plugin {id} {cabinet}',
     'plugin.uninstalled': '已把「{name}」从{where}拿掉',
+    'plugin.downloadSwept': '没有别的档案柜还在用它,下载的那份也一并删了: {list}',
     'plugin.folderUntouched': '没有改动你那个文件夹',
 
     'restore.done': '{where} 的插件配置已还原到 {at} 那一份',
+    'restore.stepsLeft': '再敲一次还能往回退 {count} 步',
+    'restore.noneLeft': '已经退到头了,没有更早的了',
     'restore.linksNotRolledBack': '只还原了配置,链接没有跟着回滚。少了的插件不会被加载,多出来的链接是空占位',
 
     'version.notDownloadedAlready': '{version} 本来就没下载',
@@ -427,12 +476,27 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'version.stillDeleting': '还在删,已 {seconds} 秒',
     'version.deleted': '{version} 已删除',
 
-    'host.versionNotDownloaded': '版本 {version} 还没下载,试试: pull {version}',
+    'host.versionNotDownloaded': '版本 {version} 还没下载,试试: get release {version}',
     'host.noHostDsh': '没找到你自己装的 dsh。两条路:装一台(npm i -g @deepseek-ai/dsh),或者用 --version <版本号> 指定一个 dsh-box 已经下载的版本',
     'engine.unknown': '不知道用的哪台',
     'engine.versionUnreadable': '版本读不出',
     'engine.host': '你自己装的 {version}',
     'engine.release': 'dsh-box 下载的 {version}',
+    'engine.tree': '你指的那份 {version}({path})',
+    'engine.app': '应用自带的 {version}({path})',
+
+    'engine.pathMissing': '这个文件夹不存在:{path}',
+    'engine.noDshInPath': '{path} 里没找到 dsh。往下找了三层,要么是这个文件夹不对,要么是源码还没装依赖、没构建',
+    'engine.noDshInApp': '{path} 是个应用,但它里面没有 dsh',
+    'engine.insideArchive': '{path} 里的 dsh({version},{packages} 个包)整棵树封在 app.asar 里,硬盘上一个文件都没有,所以起不来:dsh 启动时要在档案柜里建一层指向自己那棵树的链接,而链接是操作系统解析的,它进不了 asar。这是那一版打包漏解了(它自己声明过要把 node_modules 解出来),换一版产物就好',
+    'engine.entryMissing': '{path} 里的 dsh 声明了一个启动文件,而那个文件不在',
+    'engine.appPlatform': '认「应用自带的 dsh」目前只在 Windows 上实现过,这台是 {platform}。可以改指一个摊在硬盘上的 dsh 文件夹',
+    'engine.appNoExe': '{path} 看着像个应用,但认不出该用它里面哪个程序来跑(找到:{found})',
+    'engine.appUnreadable': '读不到 {path} 里的东西——它自带的那个程序没有回话',
+
+    'engine.pinOk': '钉版核对:{packages} 个包,版本全一致',
+    'engine.pinMixed': '钉版核对:{packages} 个包里混着别的版本({list})。这棵树不是我们装的,所以只说一声,照样启动',
+    'engine.pinUnchecked': '钉版核对:数不到兄弟包,证实不了。照样启动',
 
     'mounts.unreadablePatch': '读不懂这个档案柜的插件配置({file}),所以不会去改它。先看看那个文件出了什么事,或者从备份还原',
     'backup.none': '这个档案柜还没有备份,备份是在改插件配置时才产生的',
@@ -450,6 +514,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'name.trailingDot': '沙箱名不能以「.」结尾,Windows 会悄悄去掉它',
     'name.charset': '沙箱名只能用字母(中文、日文等也算)、数字、下划线「_」、点「.」和连字符「-」,不能有空格和标点符号',
     'name.reserved': '「{name}」撞上了 Windows 的保留设备名,系统不允许用它建文件夹',
+    'name.reservedDaily': '「main」是日常档案柜的名字,沙箱不能叫它 —— 否则 --in main 就说不清指的是哪一个。换个名字,别的都行',
     'name.rule': '字母(中文也可以)、数字、_ . - ,不能有空格,不能以 - 或 . 开头',
 
     'box.notADirectory': '{dir} 已存在,而且不是文件夹',
@@ -505,8 +570,8 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'settings.askOnDaily.summary': '动到日常档案柜之前提不提醒',
     'settings.lang.setting': '界面与命令行说哪种语言',
 
-    'config.unreadable': '读不懂 {file}:{error}\n  没有动它。这个文件记着你登记过的插件和上次的选择,覆盖掉就找不回来了。\n  自己修好它,或者 config reset 把它存档、从空的重来。',
-    'config.notAnObject': '{file} 里不是一个对象,读不懂。没有动它;config reset 可以存档重来',
+    'config.unreadable': '读不懂 {file}:{error}\n  没有动它。这个文件记着你上次的选择,覆盖掉就找不回来了。\n  自己修好它,或者 rm setting 把它存档、从空的重来。',
+    'config.notAnObject': '{file} 里不是一个对象,读不懂。没有动它;rm setting 可以存档重来',
     'config.busy': '另一个 dsh-box 进程正在改配置,等了 {seconds} 秒还没轮到。\n  过一会儿再试。若确认没有别的进程在跑,删掉 {lock}',
 
     'plugin.dirNotFound': '找不到目录 {path}',
@@ -525,7 +590,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'status.labelAgent': '接管中',
     'status.labelHost': '本机 dsh',
     'status.labelDownloaded': '已下载',
-    'status.labelPlugins': '记住插件',
+    'status.labelPlugins': '叫得出的插件',
     'status.labelMainPlugins': '日常装着',
     'status.labelSettings': '设置',
     'status.labelMain': '日常档案柜',
@@ -537,7 +602,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'status.oursTag': '{name}(dsh-box 装的)',
     'status.mainForeign': '3080 上有一台在跑,但不是从这里启动的',
     'status.mainNone': '没有从这里启动的,3080 也空着',
-    'status.mainRunning': '从这里启动着 {url}(进程 {pid}),停它: stop --main',
+    'status.mainRunning': '从这里启动着 {url}(进程 {pid}),停它: stop main',
     'status.sandboxCount': '沙箱 {count} 个,其中 {running} 个在跑',
     'status.boxStopped': '停着',
     'status.boxRunning': '跑在 {url}',
@@ -568,7 +633,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'logs.whatLaunch': '最近一次启动',
     'logs.neverMain': '它还没从这里启动过',
     'logs.neverSandbox': '它还没被启动过',
-    'logs.which': '看哪个沙箱的日志? 或者用 --main 看日常档案柜、--version <版本号> 看下载',
+    'logs.which': '看哪个档案柜的日志? 给沙箱名,或者写 main 看日常档案柜;看下载用 --version <版本号> 或 --package <包名>',
 
     'attach.done': '已接管。配置窗会显示你的操作并停止接受点击,人随时可以按窗口上的「停止并收回」拿回控制权。',
     'attach.session': '会话 {session}',
@@ -587,25 +652,42 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'box.usingInstead': '改用 {dir} —— 想自己指定就加 --box <目录>',
 
     'versions.downloaded': '已下载',
-    'versions.noneDownloaded': '(还没有 —— 试试: pull 0.1.0-rc.7)',
+    'versions.named': '你指过的文件夹',
+    'versions.noneNamed': '(还没有 —— 起沙箱时 --version 给一个文件夹就会出现在这里)',
+    'versions.namedBy': '{list} 用过',
+    'versions.noneDownloaded': '(还没有 —— 试试: get machine 0.1.0-rc.7)',
     'versions.pinned': '版本已逐包核对',
     'versions.mixed': '版本混杂 —— 请重新下载',
     'versions.registryDown': '(连不上 npm: {error})',
     'versions.available': 'npm 上可选',
     'versions.tagLatest': '官方稳定版',
     'versions.tagNext': '官方尝鲜版',
-    'pull.which': '要哪个版本? 例如: pull 0.1.0-rc.7',
+    'pull.which': '要哪个版本? 例如: get release 0.1.0-rc.7',
     'pull.ready': '{version} 已就绪',
-    'drop.which': '要删哪个版本? 用 versions 查看',
+    'drop.which': '要去掉哪一台? 给版本号或文件夹,用 ls machine 查看',
     'drop.redownload': '用过它的沙箱,下次启动前要重新下载',
+    'forget.done': '已经不再记得 {path}(它出现在这些沙箱的记录里:{list})',
+    'forget.keptOnDisk': '你的文件夹一个字节都没动:{path} 还在原地,随时可以再指给它',
+    'forget.cleared': '顺手清掉了这些沙箱的模块指针层:{list}。下次启动 dsh 自己会重建',
+    'forget.running': '{list} 正跑在这台上,先停掉它再来。这条不是洁癖:清掉一台正在跑的 dsh 脚下的模块指针,就是这条记录本来要防的那种事',
+    'forget.unknown': '没有任何沙箱用过 {path},所以这儿没有关于它的记录可忘。用 ls machine 看现在记得哪些',
 
-    'cabinet.bothFlags': '--main 和 --sandbox 说的是同一件事的两个答案:哪个档案柜。只能给一个',
-    'cabinet.which': '装到哪个档案柜? --sandbox <名字> 某台沙箱,--main 你日常的 ~/.dsh',
-    'cabinet.dailyNeedsApproval': '这一步会改你日常的 ~/.dsh —— 你自己敲 dsh 时读的就是它,所以要有人在配置窗里点过头才执行:dsh-box ui,选日常档案柜,弹窗会说清会动哪几处、备份在哪。\n  自己带 --approved 不算数,只有配置窗起的那次才算。沙箱这边不用点头,删掉就没了。',
+    'cabinet.bothFlags': '哪个档案柜只能有一个答案,这里给了两个',
+    'cabinet.which': '哪个档案柜? 后面写沙箱名,或者写 main 指你日常的 ~/.dsh',
+    'cabinet.dailyNeedsApproval': '这一步会动你日常的 ~/.dsh —— 你自己敲 dsh 时读的就是它,所以要有人在面板上点过头才执行。\n  没有哪个旗标能替代那一下:面板会自己弹出来,请到面板里点「允许」。沙箱这边不用点头,删掉就没了。',
 
-    'plugins.addWhich': '哪个目录? 例如: plugins add ../my-plugin',
-    'plugins.remembered': '已记住 {package},id 为「{id}」',
-    'plugins.rememberedReplaced': '已记住 {package},id 为「{id}」(换掉了同 id 的旧记录)',
+    // ── 闸门:一次请求、一次点击、一次执行
+    'approval.opening': '这一步要人点头。正在打开面板,请在里面点「允许」({seconds} 秒内)',
+    'approval.waiting': '等你在面板里点头……',
+    'approval.granted': '面板里已点头,这条命令由面板执行完了',
+    'approval.denied': '面板里点了「拒绝」,什么都没做',
+    'approval.timedOut': '{seconds} 秒内没有人点头,这一步没做。\n  要么让人到面板里点「允许」,要么别动日常档案柜 —— 在沙箱里复刻一份来验证(get plugin --from main --to <沙箱>)。',
+    'approval.noPanel': '打不开面板,而这一步必须有人在面板上点头,所以当场停在这里,没有等。\n  手动开一个再试:dsh-box ui。npx 用户是 npx dsh-box ui。',
+    'approval.gone': '这条请求已经不在了(过期或被清掉),没有执行',
+    'approval.alreadyAnswered': '这条请求已经答过了,不会再执行第二遍',
+    'approval.what': '{line}',
+    'approval.ranInWindow': '面板执行完了:{line}',
+
     'plugins.cabinetHeader': '{cabinet} 现在装着的插件',
     'plugins.unreadableWarn': '这个档案柜的插件配置读不懂,下面这份可能不全',
     'plugins.cabinetEmpty': '(一个都没有 —— 纯官方 dsh)',
@@ -618,22 +700,12 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.overrideLine': '{id}  ← 改的是已有的这一行,不是装一个插件',
     'plugins.fromHome': '(来自档案柜根上那份 patch,每个 profile 都吃)',
     'plugins.platformFolded': '另有 {count} 处官方基座,没列出来',
-    'plugins.registryHeader': '记住的插件(这是登记表,还没装进任何档案柜)',
-    'plugins.registryEmpty': '(没有 —— 试试: plugins add <目录>)',
-    'plugins.missingLine': '{package}  ← 文件夹已不在',
-    'plugins.installHint': '装进某个档案柜: plugins install <id> --sandbox <名>|--main',
-    'plugins.installWhich': '装哪个插件? 给一个登记过的 id、一个插件目录,或者一个 npm 包名',
-    'plugins.rmWhich': '拿掉哪个 id? 用 plugins 查看',
-    'plugins.rmUnknown': '没记过「{id}」,也没有哪个档案柜装着它',
-    'plugins.rmApprovalDownloaded': '「{package}」不只在沙箱里,{daily}也装着它。\n  拿掉它会一并从{places}卸下来,并删掉下载的那份包。\n  改的是那个档案柜自己的配置,所以你直接敲 dsh 也会跟着变。\n  动日常档案柜要有人在配置窗里点头:dsh-box ui,在插件那一行按移除。自己带 --approved 不算数。',
-    'plugins.rmApprovalYours': '「{package}」不只在沙箱里,{daily}也装着它。\n  拿掉它会一并从{places}卸下来,你自己那个文件夹不动。\n  改的是那个档案柜自己的配置,所以你直接敲 dsh 也会跟着变。\n  动日常档案柜要有人在配置窗里点头:dsh-box ui,在插件那一行按移除。自己带 --approved 不算数。',
-    'plugins.rmHeader': '「{package}」',
-    'plugins.rmNowhere': '没有哪个档案柜装着它',
-    'plugins.rmDetached': '已从{cabinet}卸下',
-    'plugins.rmUnregistered': '已从登记表移除',
-    'plugins.rmUnregisteredNever': '已从登记表移除(本来也没记过)',
-    'plugins.rmPackageDeleted': '下载的那份包也删了 —— 要用再下一次',
-    'plugins.rmFolderUntouched': '你那个文件夹一个字节都没动',
+    'plugins.installWhich': '装哪个插件? 给一个插件目录、一个 npm 包名,或者别的档案柜里已有的 id(配 --from)。只给 --from 不给 id,就是把那一柜整个搬过来',
+    'plugins.copySameCabinet': '「{name}」既是搬出的那一柜也是搬进的那一柜,这样说没有意思',
+    'plugins.copyDone': '从「{from}」搬进「{cabinet}」{count} 个:',
+    'plugins.copyAlready': '另有 {count} 个那边本来就有,没动',
+    'plugins.copyMissing': '{package} 的文件夹已经不在了,没搬',
+    'plugins.copyRefused': '{package} 没搬成:{why}',
     'plugins.unreadablePatch': '读不懂{cabinet}的插件配置({file}),所以不会去改它——先看看那个文件出了什么事,或者从备份还原',
     'plugins.nameTakenAt': '「{package}」这个名字在{cabinet}里已经被别的东西占着了,指向 {points}。\n  没有动它——那不是 dsh-box 装的,换掉就撤不回来了。\n  真要换成 {wanted},得先由装它的人把原来那个卸掉。',
     'plugins.nameTakenGone': '「{package}」这个名字在{cabinet}里已经被别的东西占着了,而它指向的地方已经不在了。\n  没有动它——那不是 dsh-box 装的,换掉就撤不回来了。\n  真要换成 {wanted},得先由装它的人把原来那个卸掉。',
@@ -650,7 +722,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'plugins.stillDownloading': '还在下载,已 {seconds} 秒;包树里已经有 {packages} 个 —— 这个数不动了就不是在下包了',
     'plugins.installInFlight': '这会儿正在装「{other}」。一次只能装一个——两个 npm 同时写同一个包目录会把它写坏。等它装完再来,或者先看看它到哪了:logs --package {other}',
     'plugins.retryOfficial': '{mirror} 没给全,换官方源重来一次(镜像是按快慢选的,快不等于全)',
-    'plugins.mirrorHint': '你把源固定成镜像了。镜像可能缺包或还没同步完,换回来试试:config source auto',
+    'plugins.mirrorHint': '你把源固定成镜像了。镜像可能缺包或还没同步完,换回来试试:set source auto',
     'plugins.installReady': '{name} 已装进「{cabinet}」',
     'logs.wherePackage': '插件包 {name}',
     'logs.whatPackage': '最近一次下载安装',
@@ -660,9 +732,9 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'npm.installExit': 'npm 装不上(退出码 {code})——{last}',
     'npm.timedOut': 'npm 跑了超过 {minutes} 分钟还没完,已经把它和它起的所有进程一起停掉了。多半不是网速慢 —— 看看日志最后几行是哪个包的安装脚本卡住了',
     'npm.saidNothing': '它什么也没说',
-    'plugins.uninstallWhich': '拿掉哪个? 用 plugins --sandbox <名> 看这个档案柜装着什么',
-    'plugins.notOurs': '「{id}」是{cabinet}本来就装着的,不是 dsh-box 装的——我们不动别人写进去的东西。要拿掉它请用装它的那个办法',
-    'plugins.notInstalled': '{cabinet}里没有 dsh-box 装的「{id}」——用 plugins {flags} 看看有什么',
+    'plugins.uninstallWhich': '拿掉哪个? 用 ls plugin --in <档案柜> 看这个档案柜装着什么',
+    'plugins.notOurs': '「{id}」是{cabinet}本来就装着的,不是 dsh-box 装的——我们不动别人写进去的东西。要拿掉它请用装它的那个办法,或者用 set plugin 把它关掉',
+    'plugins.notInstalled': '{cabinet}里没有 dsh-box 装的「{id}」——用 ls plugin --in <档案柜> 看看有什么',
 
     'aggregate.expanded': '「{name}」是聚合包,按它自带的 {file} 展开成 {count} 个:',
     'aggregate.alsoRemoved': '它带进来的 {count} 个也一起拿掉了:',
@@ -672,12 +744,12 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
 
     'plugins.staged': '连它需要的依赖一共 {count} 个包,已放进这个档案柜的 _local —— dsh 只加载得了住在 profiles 里面的插件',
     'staging.nameTaken': '这个档案柜的 _local 里已经有一个叫「{package}」的东西了({dir}),而且不是 dsh-box 放的。没有动它——那可能是你自己在开发的插件。要装这个 npm 包,先把那个挪走或改名',
-    'staging.notDownloaded': '「{package}」不在下载仓里,可能被 packages rm 删掉了。重新 plugins install 一次就有',
+    'staging.notDownloaded': '「{package}」不在下载仓里 —— 最后一个用它的档案柜卸掉时就跟着删了。重新 get plugin 一次就有',
     'launch.repointedDownloads': '{count} 个 npm 插件已对准这台 dsh 的零件',
 
-    'plugins.disableWhich': '关掉哪一行? 用 plugins --sandbox <名> 看有哪些 id',
-    'plugins.enableWhich': '放回哪一行? 用 plugins --sandbox <名> 看有哪些 id',
-    'plugins.noSuchRow': '{cabinet}里没有 id 是「{id}」的行。这个格式允许你冲着一个不存在的 id 写规则,它什么也不会做,所以宁可现在拒绝——用 plugins {flags} 看看有哪些',
+    'plugins.disableWhich': '关掉哪一行? 用 ls plugin --in <档案柜> 看有哪些 id',
+    'plugins.enableWhich': '放回哪一行? 用 ls plugin --in <档案柜> 看有哪些 id',
+    'plugins.noSuchRow': '{cabinet}里没有 id 是「{id}」的行。这个格式允许你冲着一个不存在的 id 写规则,它什么也不会做,所以宁可现在拒绝——用 ls plugin {flags} 看看有哪些',
     'plugins.enableNotOurs': '「{id}」在{cabinet}里是别人关掉的,不是 dsh-box 关的。替他打开就是替他做主,所以不动——要开请用当初关它的那个办法',
     'plugins.switchedOff': '{cabinet}里的「{id}」已关掉',
     'plugins.switchedOffWhere': '写的是 {file} 里的一行 disabled: true —— 下层那一行本身没动,这个格式里没有「删」',
@@ -691,19 +763,10 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'bundles.bundlesOnly': '从 bundles 里摘了({file});它本来就不在 dependencies 里,所以不会被加回来',
     'bundles.filesLeft': '包体还留在 {dir} —— 现在没有任何东西声明它、也没有任何东西加载它。要腾地方请自己删,我们不替官方跑包管理器',
 
-    'backups.unknownAction': 'plugins backups 只认 rm 和 prune,不认「{action}」',
-    'backups.header': '{cabinet} 的插件配置备份',
     'backups.noneMain': '(还没有 —— 备份是改插件配置时才产生的)',
     'backups.noneSandbox': '(沙箱不留备份 —— 它本来就是干净启动的,玩坏了删掉就是)',
     'backups.limit': '最多留 {keep} 份,多的会自动丢掉最老的',
-    'backups.restoreHint': '还原最近那份: plugins restore {where}',
-    'backups.rmHint': '删掉某一份:   plugins backups rm <时间戳> {where}',
-    'backups.pruneHint': '全清掉:       plugins backups prune --keep 0 {where}',
-    'backups.rmWhich': '删哪一份? 时间戳用 plugins backups 看',
-    'backups.noSuch': '没有 {at} 这一份',
-    'backups.removed': '{cabinet} 的备份 {at} 已删掉,还剩 {count} 份',
-    'flag.keepInteger': '--keep 要一个不小于 0 的整数,给的是「{value}」',
-    'backups.pruned': '{cabinet}:留下最近 {keep} 份,删掉了 {count} 份',
+    'backups.restoreHint': '退回上一步: set plugin --undo {where}',
     'restore.preRestoreBackup': '还原前那份也备着:{file}',
 
     'history.shapeHeader': '操作记录的形状',
@@ -717,40 +780,26 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'history.header': '操作记录    共 {count} 条',
     'history.headerTail': '操作记录    共 {count} 条,这里是最后 {shown} 条',
     'history.empty': '(还没有 —— 只有会改变状态的命令才记)',
-    'history.omitted': '省略了前面 {count} 条 —— 要全部: history --lines 0',
+    'history.omitted': '省略了前面 {count} 条 —— 要全部: ls history --lines 0',
     'history.unreadable': '另有 {count} 行读不出来,没有算进上面的数目',
     'history.fullAt': '全文在 {files}',
     'history.noFile': '(还没有这个文件)',
 
-    'workspaces.useWhich': '用哪个目录? 例如: workspaces use E:\\code\\my-repo --sandbox 甲',
+    'workspaces.useWhich': '用哪个目录? 例如: set workspace E:\\code\\my-repo --in 甲',
     'workspaces.next': '{cabinet} 下次打开的工作区:{path}',
     'workspaces.addedNew': '这是新登记的一条',
     'workspaces.movedFront': '本来就登记着,提到了最前面',
     'workspaces.alreadyFront': '本来就在最前面,没有改动',
     'workspaces.writtenTo': '写在 {file}',
-    'workspaces.unknownAction': 'workspaces 只认 use,不认「{action}」',
     'workspaces.header': '{cabinet} 见过的工作区    第一条就是打开时进的那个',
     'workspaces.neverStarted': '(这个档案柜还没启动过,或者一个项目都没选过)',
     'workspaces.emptyList': '(一个都没有 —— dsh 不会自己登记当前目录)',
     'sessions.count': '{count} 条对话',
-    'workspaces.switchHint': '换一个: workspaces use <目录> {where}',
+    'workspaces.switchHint': '换一个: set workspace <目录> {where}',
     'workspaces.atFile': '在 {file}',
 
     'packages.nothingDownloading': '现在没有正在进行的下载,没什么可停的',
-    'packages.cancelled': '已经停掉「{name}」的下载,连它起的所有进程一起。半截的包留在原地,清掉用:packages prune',
-    'packages.rmWhich': '删哪个包? 用 packages 看有哪些',
-    'packages.noSuch': '没下载过「{name}」',
-    'packages.inUse': '「{name}」还装在 {usedBy} 里,没有删。\n  先从那些档案柜卸掉它(plugins uninstall),再回来删这个包。\n  直接删掉会让那些档案柜指着一个不存在的包名,而 dsh 遇到那种情况会拒绝加载整棵插件树',
-    'packages.removed': '「{name}」的下载已经删掉了,要用再下一次',
-    'packages.pruned': '删掉了 {count} 个没有任何档案柜在用的下载',
-    'packages.unknownAction': 'packages 只认 rm 和 prune,不认「{action}」',
-    'packages.header': 'dsh-box 替你下载的插件包    一份共享,谁要用就往谁那儿链一根',
-    'packages.empty': '(还没有 —— plugins install <包名> 会下到这里)',
-    'packages.nobodyUses': '没有档案柜在用',
-    'packages.usedBy': '用着的:{list}',
-    'packages.filesCount': '{count} 个文件',
-    'packages.at': '在 {dir}',
-    'packages.hints': '删一个: packages rm <包名>      清掉没人用的: packages prune',
+    'packages.cancelled': '已经停掉「{name}」的下载,连它起的所有进程一起。半截的包留在原地,下次装同一个包会盖过去',
 
     'sandboxes.header': '沙箱                每个都是一台独立的 dsh,彼此看不到对方的对话',
     'sandboxes.none': '(还没有)',
@@ -758,17 +807,17 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'sandboxes.notSignedIn': '未登录',
     'sandboxes.runningAt': '正在跑 {url}',
 
-    'adopt.bothForms': 'adopt <沙箱名> 和 --from/--to 是同一件事的两种写法,只能用一种',
-    'adopt.which': '从哪儿复制到哪儿? adopt <沙箱名> 把那个沙箱的对话复制进你日常的 ~/.dsh;要别的方向就写全:--from <沙箱名|main> --to <沙箱名|main>',
+    'adopt.bothForms': '来源和去处各只能给一个答案,这里给了两个',
+    'adopt.which': '从哪儿复制到哪儿? 两头都要写: --from <沙箱名|main> --to <沙箱名|main>',
     'adopt.copied': '已从{from}复制 {adopted} 条对话到{to},跳过 {skipped} 条重复',
     'adopt.originalsStay': '原件都还在{from},这是复制不是搬走',
     'adopt.visibleNextStart': '{to} 下次启动即可看到',
 
-    'start.bothFlags': '--main 和 --sandbox/--new 说的是同一件事的两个答案:开哪个档案柜。只能给一个',
-    'start.whichCabinet': '要开哪个档案柜? --sandbox <名字> 用某台沙箱,--new 开一台新的,--main 用你日常的 ~/.dsh。不写不再沿用上次——同一条命令应当永远得到同一个结果',
-    'start.unknownPlugins': '没记过这些插件 id:{list} —— 用 plugins 查看',
+    'start.bothFlags': '开哪个档案柜只能有一个答案:给了名字就别再给 --new',
+    'start.whichCabinet': '要开哪个档案柜? 写沙箱名用那一台,--new 开一台新的,写 main 用你日常的 ~/.dsh。不写不再沿用上次——同一条命令应当永远得到同一个结果',
+    'start.unknownPlugins': '这几个插件 id 叫不出来:{list} —— 用 ls plugin 看看有哪些',
     'start.pluginGone': '注意:「{id}」被勾着但文件夹已不在,这次不装它',
-    'start.mainNeedsApproval': '用 dsh-box 下载的版本去开你真实的 ~/.dsh,是唯一一个出事修不回来的组合,要有人在配置窗里点过头才执行:dsh-box ui,在里面选日常档案柜和这个版本,弹窗会说清会发生什么。自己带 --approved 不算数,只有配置窗起的那次才算——那是这个工具唯一能确认「人在场」的方式。',
+    'start.mainNeedsApproval': '要用 dsh-box 下载的那个版本去开你真实的 ~/.dsh。两样单独都不危险,凑在一起是唯一一个出事修不回来的组合:\n  1. 磁盘格式跨版本没有迁移路径 —— 用它打开之后,你本机那台 dsh 可能就打不开这个档案柜了。\n  2. 档案柜里有一层链接记着上次用的是哪个本体,这次会指到 dsh-box;非正常退出的话,原来那层链接就失效了。\n  3. 你要是同时用别的方式起了本机 dsh,那就是两台 dsh 指着同一个档案柜。\n  要有人在面板上点「允许」才执行。面板会自己弹出来;没弹出来就手动开一个:dsh-box ui。',
     'start.mainAlreadyRunning': '日常档案柜已经开着一台(端口 3080),先关掉它再启动',
     'start.notSandbox': '非沙箱:开的是你真实的 ~/.dsh',
     'start.releaseOnMain': '用的不是你自己装的那台,而是 dsh-box 下载的版本。两件事要知道:',
@@ -783,48 +832,51 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'launch.followStop': '按 Ctrl+C 停止(进程号 {pid})',
     'launch.stopping': '正在停止…',
 
-    'cmd.signin.usage': 'signin <沙箱名>',
-    'cmd.signin.summary': '把你的登录复制进这台沙箱(它本来没有的话)',
-    'cmd.signout.usage': 'signout <沙箱名> | signout --main',
-    'cmd.signout.summary': '把登录从一个档案柜里拿掉',
-    'cmd.signout.notes': `⛔ 没有备份,拿掉就是拿掉,要用得重新登录。不备份是有意的:备份等于你的 Key 在硬盘上
+    'cmd.get.signin.usage': 'get signin --to <沙箱>',
+    'cmd.get.signin.summary': '把你的登录复制进这台沙箱(它本来没有的话)',
+    'cmd.get.signin.notes': `⛔ --to 只能是沙箱。日常档案柜就是登录的来源,没有「导入它自己」这回事。`,
+    'cmd.rm.signin.usage': 'rm signin --from <档案柜>',
+    'cmd.rm.signin.summary': '把登录从一个档案柜里拿掉',
+    'cmd.rm.signin.notes': `⛔ 没有备份,拿掉就是拿掉,要用得重新登录。不备份是有意的:备份等于你的 Key 在硬盘上
   多一份明文副本,而这个工具的数据目录本来就是可以整个拷走的。
-  ⛔ 日常档案柜那份是你自己的,不是我们导进去的,所以要人在配置窗里点过头才执行。`,
-    'signIn.which': '给哪台沙箱导入登录? 用 sandboxes 查看',
+  ⛔ --from main 那份是你自己的,不是我们导进去的,所以要人在配置窗里点过头才执行。`,
+    'signIn.which': '给哪台沙箱导入登录? 用 ls sandbox 查看',
     'signIn.mainIsSource': '日常档案柜就是登录的来源,没有「导入它自己」这回事',
     'signIn.nothingToCopy': '你自己的 ~/.dsh 里没有登录可复制——先在 dsh 里登录一次',
     'signIn.already': '沙箱「{name}」本来就有登录,没动',
     'signIn.done': '已把你的登录复制进「{name}」——这里的对话从此真实计费',
-    'signOut.which': '把哪个档案柜的登录拿掉? 给沙箱名,或用 --main',
+    'signOut.which': '把哪个档案柜的登录拿掉? --from 后面写沙箱名,或者写 main',
     'signOut.none': '「{name}」本来就没有登录',
     'signOut.done': '已把登录从「{name}」拿掉',
     'signOut.noWayBack': '没有备份:要再用得重新登录一次',
-    'signOut.mainNeedsApproval': '要拿掉的是你自己那份登录,而且没有备份。这一步要人在配置窗里点过头:dsh-box ui,在日常档案柜那一格取消登录的勾。自己带 --approved 不算数。',
+    'signOut.mainNeedsApproval': '要拿掉的是你自己那份登录,不留备份。之后在 dsh 里重新登录一次就能恢复,但这个工具帮不了你。\n  要有人在面板上点「允许」才执行。面板会自己弹出来;没弹出来就手动开一个:dsh-box ui。',
     'stop.mainNotRunning': '日常档案柜现在没有从这里启动的实例在跑',
     'stop.mainNote': '3080 上若有一台,那是你自己开的,不归这里管',
     'stop.mainStopped': '已停掉日常档案柜(进程号 {pid})——它的 home 是你日常那个,数据都还在',
-    'stop.which': '停哪个沙箱? 用 sandboxes 查看,或用 --main 停日常档案柜',
+    'stop.mainNeedsApproval': '要停的是你自己在用的那台 dsh,里面那次对话停掉就没了,而且可能还有别人在用它。这一步要有人在面板上点头。',
+    'stop.which': '停什么? 给档案柜名(用 ls sandbox 查看,日常那个写 main),或者用 --all / --window / --download',
     'stop.notRunning': '沙箱「{name}」现在没有在跑',
     'stop.stopped': '已停掉「{name}」(进程号 {pid})',
     'stop.staleRow': '账本上那条是旧的:进程号 {pid} 现在属于别的程序,没有动它。那条记录已经清掉。',
-    'rm.which': '哪个沙箱? 用 sandboxes 查看',
+    'rm.which': '哪个沙箱? 用 ls sandbox 查看',
     'rm.removed': '已删除「{name}」—— 那台 dsh 不复存在',
 
     'settings.header': '设置',
     'settings.choicesLine': '可选:{choices}',
-    'settings.unknown': '没有叫「{key}」的设置 —— 不带参数运行 config 可看全部',
+    'settings.unknown': '没有叫「{key}」的设置 —— 用 ls setting 可看全部',
     'settings.whichValue': '把 {key} 设成什么? 可选:{choices}',
     'settings.badValue': '{key} 不能设成「{value}」——可选:{choices}',
     'config.nothingToReset': '{file} 本来就不在,没什么可重置的',
-    'config.archived': '旧的设置存到了 {file}——没有删,里面记着你登记过哪些插件',
+    'config.archived': '旧的设置存到了 {file}——没有删,里面记着你上次选过什么',
     'config.freshStart': '下一条命令会从空的重新开始',
 
     'quit.nothingRunning': '没有沙箱在跑,不用停什么',
     'quit.staleRows': '另有 {count} 条旧记录:它们记的进程号现在属于别的程序,没有动,记录已清掉。',
     'quit.stopped': '已停下 {count} 台沙箱:{names}',
     'quit.mainStopped': '日常档案柜也停了(进程号 {pid})——它的 home 是你日常那个,数据都还在',
-    'quit.mainLeft': '日常档案柜是从这里启动的,还留着(要一起停:加 --main)',
+    'quit.mainStale': '日常档案柜那条记录记的进程号({pid})现在属于别的程序,没有动,记录已清掉',
     'quit.mainForeign': '3080 上有一台 dsh,但不是从这里启动的,动不了也不该动',
+    'quit.mainNeedsApproval': '沙箱已经停了 {count} 台。剩下日常档案柜那一台是你自己在用的,停它要有人在面板上点头。',
 
     'flag.noValue': '--{flag} 是开关,不接受取值',
     'flag.unknown': '不认识的选项「--{flag}」——不带参数运行可看用法',
@@ -838,6 +890,16 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.machineCard': 'dsh 本体',
     'ui.pull': '下载',
     'ui.customVersionPh': '或直接填版本号,例如 0.0.1-rc.1',
+    'ui.enginePathPh': '或者贴一个文件夹:自己构建的 dsh,或某个自带 dsh 的应用',
+    'ui.usePath': '用这个文件夹',
+    'ui.pathNeeded': '先把文件夹路径贴进左边那个框',
+    'ui.pullNotAPath': '这是个文件夹,不用下载——它已经在你机器上了。点上面那一格就能用它',
+    'ui.pathChipUnstarted': '还没起过',
+    'ui.forgetTitle': '从这儿去掉(不会删你的文件夹)',
+    'ui.forgetAsk': '把「{where}」从这儿去掉?',
+    'ui.forgetBody': '只是 dsh-box 不再记得它。<b>你的文件夹不会被删</b> —— {path} 原地不动,随时可以再贴一次路径。用过它的沙箱会同时清掉模块指针层,下次启动 dsh 自己会重建。',
+    'ui.forget': '去掉',
+    'ui.forgotMsg': '已不再记得 {path};那个文件夹没有动过',
     'ui.sourceLabel': '安装源',
     'ui.sourceAuto': '自动',
     'ui.sourceOfficial': '官方 npm',
@@ -853,10 +915,6 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.signInWillImport': '将导入',
     'ui.signInDailyNote': '这是你自己的登录;取消勾选会把它拿掉,没有备份',
     'ui.signInSandboxNote': '勾上＝把你的登录复制进来;取消＝从这台沙箱拿掉',
-    'ui.signOutAskTitle': '把你自己的登录拿掉?',
-    'ui.signOutAskBody': '这会删掉日常档案柜里的登录凭据,不留备份。',
-    'ui.signOutAskNote': '之后在 dsh 里重新登录一次就能恢复,但这个工具帮不了你。',
-    'ui.signOutOk': '拿掉',
     'ui.importSignIn': '导入登录凭据',
     'ui.importSignInNote': '只对新建的沙箱档案柜有意义',
     'ui.pluginsCard': '这个档案柜的插件',
@@ -867,9 +925,8 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.npmInstall': '从 npm 装入',
     'ui.npmCancel': '停止下载',
     'ui.npmCancelled': '已经停掉「{name}」的下载。',
-    'ui.npmNote': '从 npm 下载并装进上面选中的沙箱档案柜。日常档案柜走命令行:plugins install <包名> --main',
+    'ui.npmNote': '从 npm 下载并装进上面选中的沙箱档案柜。日常档案柜走命令行:get plugin <包名> --to main',
     'ui.npmBadName': '「{name}」不是合法的 npm 包名,没有发出命令。',
-    'ui.npmMainRefused': '窗口这条路只装进沙箱。要装进日常档案柜,用命令行:plugins install <包名> --main',
     'ui.npmInstallingHead': '正在从 npm 下载并装入 {name}…(可能要几分钟)',
     'ui.npmInstalled': '「{name}」已装进「{cabinet}」。',
     'ui.npmBrought': '这个包带来了 {count} 个插件。',
@@ -880,10 +937,12 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.cancel': '取消',
     'ui.ok': '确定',
     'ui.notice': '提示',
+    'ui.approvalTitle': '有一步要你点头',
+    'ui.approvalAllow': '允许',
+    'ui.approvalDeny': '拒绝',
     'ui.dontAskAgain': '下次不再提醒',
     'ui.dropDontAskNote': '之后动到日常档案柜时直接执行',
     'ui.dropConfirm': '卸下并移除',
-    'ui.quitMainToo': '连日常档案柜一起停',
     'ui.quitDontAskNote': '之后关闭时直接按这次的选择执行',
     'ui.quitConfirm': '停下并退出',
     'ui.staleStuck': '刷新过一次还是对不上通行证。请手动重新打开配置窗(命令行:dsh-box ui)。',
@@ -910,7 +969,7 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.machineHintNoHost': '这台电脑上没有装 dsh,所以只能用下载的版本。',
     'ui.pluginHintMain': '装进日常档案柜就一直在,你自己敲 dsh 也会加载。想试一下就用沙箱。',
     'ui.pluginHintSandbox': '装进这个沙箱就一直在,不是只有这次启动才有。想要纯官方的就新建一个沙箱。',
-    'ui.unreadableWarn': '这个档案柜的插件配置读不懂,下面这份可能不全。在有人看过之前不会去动它——命令行可以整份还原:plugins restore',
+    'ui.unreadableWarn': '这个档案柜的插件配置读不懂,下面这份可能不全。在有人看过之前不会去动它——命令行可以整份退回上一步:set plugin --undo',
     'ui.willRemoveNote': '按下启动时会从这个档案柜拿掉',
     'ui.installedHereNote': '已经装在这个档案柜里',
     'ui.tagGoing': '要拿掉',
@@ -919,10 +978,6 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.tagNot': '没装',
     'ui.tagTheirs': '本来就有',
     'ui.theirsNote': '这个档案柜本来就有的,不是 dsh-box 装的,这里动不了',
-    'ui.uninstallDelete': '卸载并删除',
-    'ui.forget': '不再记',
-    'ui.uninstallDeleteTitle': '从每个档案柜卸下,并删掉下载的那份包',
-    'ui.forgetTitle': '从每个档案柜卸下并忘记它;你自己那个文件夹不动',
     'ui.missingPlugin': '{label} —— 文件夹已经不在了,装不上',
     'ui.noPlugins': '这个档案柜一个插件都没有,是纯官方的 dsh。',
     'ui.dailyNote': '你天天用的 ~/.dsh',
@@ -966,11 +1021,6 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.pullNeedsVersion': '先填一个版本号,或在上面选一个要下载的版本——「你自己装的那台」不是从 npm 下的,没法下载。',
     'ui.pullingHead': '正在下载 {version}…',
     'ui.pullDone': '{version} 已就绪:{packages} 个包已核对。',
-    'ui.approveHead': 'dsh　　　<b>沙箱版本 {version}</b>,非本机<br>档案柜　<b>本机档案柜 ~/.dsh</b>',
-    'ui.approvePoint1': '1. <b>磁盘格式跨版本</b>——本地 dsh 打不开更改后的档案柜。',
-    'ui.approvePoint2': '2. <b>档案柜里有一层链接</b>,记着上次用的是哪个本体。这次会指到 dsh-box,非正常退出原来的链接失效。',
-    'ui.approvePoint3': '3. 如果通过其他方式启动本机 dsh,此时<b>两台 dsh 指向本机档案柜</b>,易冲突损坏档案柜。',
-    'ui.approveOk': '照做',
     'ui.startingHead': '正在启动…',
     'ui.sandboxQuoted': '沙箱「{name}」',
     'ui.startedMsg': '{where}已启动,用的是{engine} {version}。',
@@ -978,11 +1028,10 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
     'ui.nameRule': '名字可用:{rule}',
     'ui.quitRowSandboxNone': '沙箱　　　没有在跑的',
     'ui.quitRowSandbox': '沙箱　　　{count} 台在跑:{names}',
-    'ui.quitRowMainHere': '档案柜　　本机档案柜从这里启动着(进程 {pid}),默认不停',
+    'ui.quitRowMainHere': '档案柜　　本机档案柜从这里启动着(进程 {pid}),也会停 —— 停它要你再点一次头',
     'ui.quitRowMainForeign': '档案柜　　3080 上有一台,不是从这里启动的,认不出进程,不会去动',
     'ui.quitRowMainNone': '档案柜　　没有从这里启动的',
     'ui.quitPoint1': '1. <b>沙箱只是停下</b>,对话与配置都还在,下次启动同名的接着用。',
-    'ui.quitMainNote': '不勾就让它继续跑',
     'ui.quitAlsoMain': ',日常档案柜也停了(进程 {pid})',
     'ui.quitDoneTitle': '已退出',
     'ui.quitDoneBody': '已停下 {count} 台沙箱{alsoMain}。这个页面可以关掉了。',
@@ -997,51 +1046,56 @@ ui 那个进程被 Ctrl+C 掉不算 quit,那只是结束了 ui 这一条命令,�
   en: {
     'lang.name': 'English',
 
-    'cmd.versions.usage': 'versions',
-    'cmd.versions.summary': 'Which releases are downloaded, and which exist on npm',
-    'cmd.pull.usage': 'pull <release>',
-    'cmd.pull.summary': 'Download an official release (every package version checked)',
-    'cmd.drop.usage': 'drop <release>',
-    'cmd.drop.summary': 'Delete a downloaded release (about 200–260MB)',
+    'cmd.ls.usage': 'ls',
+    'cmd.ls.summary': 'The whole picture right now: data directory, releases, sandboxes, what is running',
+    'cmd.ls.machine.usage': 'ls machine',
+    'cmd.ls.machine.summary': 'Which dsh can be used: the one installed here, the downloads, the folders you named',
+    'cmd.ls.sandbox.usage': 'ls sandbox',
+    'cmd.ls.sandbox.summary': 'List the sandboxes',
+    'cmd.ls.memory.usage': 'ls memory',
+    'cmd.ls.memory.summary': 'What was done during the last takeover, refusals included',
 
-    'cmd.plugins.usage': 'plugins [--sandbox <name> | --main]',
-    'cmd.plugins.summary': 'With no cabinet, list the registry; with one, list what that cabinet actually has',
-    'cmd.plugins.add.usage': 'plugins add <folder> [--id x]',
-    'cmd.plugins.add.summary': 'Remember a plugin folder (it needs a package.json)',
-    'cmd.plugins.rm.usage': 'plugins rm <id> [--approved]',
-    'cmd.plugins.rm.summary': 'Get rid of a plugin entirely: out of every cabinet, out of the registry, and the downloaded package with it',
-    'cmd.plugins.rm.notes': `⭐ What this does depends on whose files the plugin is, and on nothing else:
-  your own folder (registered with plugins add <folder>)
-      links and config entries come out of every cabinet, and the registry row goes.
-      ⛔ Not one byte of your folder is touched.
-  downloaded by dsh-box (fetched by plugins install <package>)
-      the same, plus the downloaded package is deleted: it lives in our own
-      directory, and nobody else can delete it.
+    'cmd.ls.plugin.usage': 'ls plugin [--in <cabinet>]',
+    'cmd.ls.plugin.summary': 'With a cabinet, what it actually has; without one, everything this computer can name',
+    'cmd.ls.plugin.notes': `After --in write a sandbox name, or main for your everyday cabinet.
+Without --in the question is a different one: not "what does that cabinet have"
+but "which plugins can this computer name at all" — what the cabinets actually
+hold, plus what we have downloaded, as one list.
+⭐ That list is where get plugin gets its ids: whatever the daily cabinet holds
+   is something you can move by name.
+⭐ With --in, the answer is read from that cabinet's own config rather than from
+   our books: every row shows up, whoever wrote it, marked as ours or as one the
+   cabinet already had.`,
 
-⚠ It sweeps every cabinet, not only the one you last installed into. When your
-  everyday cabinet is involved it stops first and says exactly what it would
-  touch; --approved continues. To stop being asked: config ask-on-daily off.
-⛔ It can only sweep cabinets dsh-box knows about (the sandboxes it made, plus
-  your everyday cabinet). A DSH_HOME you made by hand and never opened from
-  here is invisible to it.`,
-    'cmd.plugins.install.usage': 'plugins install <id|folder|package> --sandbox <name> | --main',
-    'cmd.plugins.install.summary': 'Install a plugin into one cabinet, for good, until you take it out',
-    'cmd.plugins.install.notes': `⭐ Remembering and installing are two layers. Do not mix them up:
-  plugins add <folder>   dsh-box now knows this plugin (the registry).
-                         No cabinet has it yet.
-  plugins install …      actually puts it into one cabinet; dsh loads it from
-                         then on.
+    'cmd.get.machine.usage': 'get machine <release>',
+    'cmd.get.machine.summary': 'Download an official release (every package version checked). A folder needs no download; give its path to start',
+    'cmd.get.plugin.usage': 'get plugin <id|folder|package> --to <cabinet>',
+    'cmd.get.plugin.summary': 'Install a plugin into one cabinet, for good, until you take it out',
+    'cmd.get.plugin.notes': `What the word after the verb is decides how it is read; no flag says which:
+  an existing folder      installed from disk
+  an id ls plugin lists   the copy this computer already has, put into --to
+  anything else           an npm package name to download
 
+⭐ The second reading is how a plugin the daily cabinet holds gets into a sandbox:
+   the name comes from the ls plugin list, and that list is derived from what the
+   cabinets actually hold, so nothing has to be registered first.
+After --to write a sandbox name, or main for your everyday cabinet; a name that
+does not exist yet creates that sandbox on the way past.
 What goes in is written into that cabinet's own profile config, so typing dsh
-yourself loads it too, not only when the launch came from here. Take it back
-out with plugins uninstall.
-⭐ The file is backed up in full before it is touched (plugins backups lists
-  them, plugins restore puts one back).
-⛔ Only the lines we wrote come out again; plugins the cabinet already had are
-  not ours to touch.`,
-    'cmd.plugins.uninstall.usage': 'plugins uninstall <id|package> --sandbox <name> | --main',
-    'cmd.plugins.uninstall.summary': 'Take a plugin out of one cabinet',
-    'cmd.plugins.uninstall.notes': `A cabinet names plugins in three places, and this covers all three:
+yourself loads it too, not only when the launch came from here. Take it back out
+with rm plugin.
+⭐ The file is backed up in full before it is touched; set plugin --undo walks
+  back through those copies one step at a time.
+⛔ --to main is refused (NEEDS_APPROVAL): that is the cabinet your own dsh reads,
+  so a person has to agree in the config window first.
+⚠️ One npm package at a time — two npm runs writing the same package directory
+  corrupt it.`,
+
+    'cmd.rm.machine.usage': 'rm machine <release|folder>',
+    'cmd.rm.machine.summary': 'Take one dsh out of here: a release we downloaded is really deleted, a folder you named is only forgotten',
+    'cmd.rm.plugin.usage': 'rm plugin <id|package> --from <cabinet>',
+    'cmd.rm.plugin.summary': 'Take a plugin out of one cabinet',
+    'cmd.rm.plugin.notes': `A cabinet names plugins in three places, and this covers all three:
   · a row we wrote into the profile patch — the row is removed
   · an aggregate — the dozen-odd rows it brought go with it
   · dsh.profile.bundles in the profile — taken out of **both** bundles and dependencies
@@ -1049,30 +1103,45 @@ out with plugins uninstall.
 ⛔ Out of bundles alone is out of nothing: dsh reconciles against dependencies
    after every dsh plugin command and puts back anything still declared there
    that still exports a patch. So both, or it did not happen.
-⛔ The package files stay. Deleting them means running a package manager inside
-   your profile, and "all you need is Node 20+" is one of the few things this
-   tool can claim. Whatever is left over is said plainly.
+⛔ A plugin from a folder of your own is only unlinked; its files are untouched.
+   The copy we downloaded goes only once no cabinet is using it any more — that
+   is not a tidy-up anybody should have to run.
 ⚠️ A row that is neither ours nor a bundle cannot be taken out — somebody else
-   wrote it. Use plugins disable, which is how "remove" is spelled in this format.`,
-    'cmd.plugins.disable.usage': 'plugins disable <id> --sandbox <name> | --main',
-    'cmd.plugins.disable.summary': 'Switch one row off, whoever put it there',
-    'cmd.plugins.disable.notes': `⭐⭐ The only way to act on something this tool did not install, and the way
-   "remove" is spelled here: the patch format has no remove at all. A row in a
-   lower layer can be overridden and never deleted. The profile patch sits after
-   every bundle layer, so a disabled: true row here reaches a plugin a bundle
-   brought in — which is exactly how upstream switches off its own telemetry.
+   wrote it. Use set plugin <id> off, which is how "remove" is spelled here.
+⛔ --from main is refused (NEEDS_APPROVAL) until a person has agreed in the
+   config window.`,
 
-⛔ Only what we switched off can be switched back on. A disabled row somebody
-   else wrote is their decision, and undoing it quietly is overruling them.`,
-    'cmd.plugins.enable.usage': 'plugins enable <id> --sandbox <name> | --main',
-    'cmd.plugins.enable.summary': 'Put back a row that disable switched off',
+    'cmd.set.plugin.usage': 'set plugin <id> on|off --in <cabinet> | set plugin --undo --in <cabinet>',
+    'cmd.set.plugin.summary': 'Switch a row on or off, or take the whole plugin config one step back',
+    'cmd.set.plugin.notes': `set plugin <id> off   switch that row off, whoever put it there
+set plugin <id> on    put back a row that was switched off
+set plugin --undo     the whole plugin config, one step back; can be pressed again
 
-    'cmd.history.usage': 'history [--lines N] [--shape]',
-    'cmd.history.summary': 'Everything ever done in this data directory (the permanent record)',
-    'cmd.history.notes': `⛔ Not the same thing as memory. Do not mix them up:
-  memory   what an agent did while it last held the window: a display, and the
-           next session overwrites it
-  history  everything this data directory has ever done: permanent, append-only
+⭐⭐ Switching off is how "remove" is spelled in this format, and the only way to
+   act on something this tool did not install: the patch format has no remove at
+   all. A row in a lower layer can be overridden and never deleted. The profile
+   patch sits after every bundle layer, so a disabled: true row here reaches a
+   plugin a bundle brought in — exactly how upstream switches off its own telemetry.
+⛔ Only what we switched off can be switched back on. A disabled row somebody else
+   wrote is their decision, and undoing it quietly is overruling them.
+⭐⭐ --undo goes back one step each time it is run, up to five, and says how many
+   are left; a step walked back over is used up.
+   --at <timestamp> is "jump to that moment" instead: the history stays, and the
+   current file is backed up first.
+⭐ --undo is the way out when precise removal cannot reach: if the file has been
+  edited elsewhere into a shape we no longer recognise, removing our entries one
+  by one finds nothing to remove, and the whole file goes back instead.
+⚠️ Only the daily cabinet keeps snapshots. A sandbox is a clean start you throw
+  away, so --undo on one always answers "no backup".
+⛔ --in main is refused (NEEDS_APPROVAL) until a person has agreed in the config
+   window.`,
+
+    'cmd.ls.history.usage': 'ls history [--lines N] [--shape]',
+    'cmd.ls.history.summary': 'Everything ever done in this data directory (the permanent record)',
+    'cmd.ls.history.notes': `⛔ Not the same thing as ls memory. Do not mix them up:
+  ls memory   what an agent did while it last held the window: a display, and the
+              next session overwrites it
+  ls history  everything this data directory has ever done: permanent, append-only
 
 Without --lines you get the last {historyLines}. How much was left out is said
 out loud, and the path to the whole file comes with it.
@@ -1082,11 +1151,11 @@ out loud, and the path to the whole file comes with it.
 ⚠ Only commands that change something are recorded. At 2MB it rotates (.1), and
 the generation before that is dropped.`,
 
-    'cmd.workspaces.usage': 'workspaces --sandbox <name> | --main',
-    'cmd.workspaces.summary': 'Which workspaces this cabinet has seen (the first one is what it opens into)',
-    'cmd.workspaces.notes': `⚠ Two words, and they are not two of a kind:
-  cabinet    one DSH_HOME, holding conversations, config and sign-in. This is
-             what --main and --sandbox name.
+    'cmd.ls.workspace.usage': 'ls workspace --in <cabinet>',
+    'cmd.ls.workspace.summary': 'Which workspaces this cabinet has seen (the first one is what it opens into)',
+    'cmd.ls.workspace.notes': `⚠ Two words, and they are not two of a kind:
+  cabinet    one DSH_HOME, holding conversations, config and sign-in. That is
+             what goes after --in.
   workspace  the project folder dsh actually works in. That is what this
              command manages, and it is dsh's own word for it.
   A cabinet holds a list of "workspaces this one has seen", and that list is
@@ -1098,117 +1167,120 @@ the generation before that is dropped.`,
   / --trusted-host), which is exactly why this command exists.
 ⛔ There is no control for this in the config window and there will not be: a
   person can pick it inside dsh. This one is for agents.`,
-    'cmd.workspaces.use.usage': 'workspaces use <folder> --sandbox <name> | --main [--title <title>]',
-    'cmd.workspaces.use.summary': 'Make this cabinet open into this workspace next time',
-    'cmd.workspaces.use.notes': `One already on the list moves to the front; one that is not gets added.
+    'cmd.set.workspace.usage': 'set workspace <folder> --in <cabinet> [--title <title>]',
+    'cmd.set.workspace.summary': 'Make this cabinet open into this workspace next time',
+    'cmd.set.workspace.notes': `One already on the list moves to the front; one that is not gets added.
 ⛔ Nothing is ever removed, and which conversation belongs where is not touched.
 ⚠ This writes dsh's own file ($DSH_HOME/storages/workspace.json). Its version is
   checked first and an unfamiliar one is refused: one wrong field in that table
-  and dsh will not start at all (measured).`,
+  and dsh will not start at all (measured).
+⛔ --in main is refused (NEEDS_APPROVAL) until a person has agreed in the config
+   window.`,
 
-    'cmd.packages.usage': 'packages',
-    'cmd.packages.summary': 'Plugin packages dsh-box downloaded for you, and which cabinets use each one',
-    'cmd.packages.notes': `A downloaded package is kept once and linked into whichever cabinet wants it,
-so before deleting one you need to know who is still using it. The end of each
-line is that answer; you do not have to go through the cabinets yourself.
-⛔ plugins uninstall deliberately leaves the package alone, so that putting it
-back is instant. Cleaning up is therefore a separate step.`,
-    'cmd.packages.rm.usage': 'packages rm <package>',
-    'cmd.packages.rm.summary': 'Delete one downloaded package',
-    'cmd.packages.rm.notes': `Refused while any cabinet still uses it (PACKAGE_IN_USE); run plugins uninstall
-there first.
-⛔ Deleting it anyway would leave those cabinets pointing at a package name that
-does not resolve, and dsh refuses to load the whole plugin tree when that happens.`,
-    'cmd.packages.prune.usage': 'packages prune',
-    'cmd.packages.prune.summary': 'Clear downloads that no cabinet is using',
-    'cmd.packages.cancel.usage': 'packages cancel',
-    'cmd.packages.cancel.summary': 'Stop the download that is running, and everything it started',
-    'cmd.packages.cancel.notes': `A large package can take minutes; when one gets stuck, stop it here rather than opening a shell.
-⛔ The whole process tree goes — what hangs is usually not npm itself but a dependency's install script.
-Half-fetched packages are left alone; clear them with packages prune. To see what it is doing: logs --package <name>.`,
+    'cmd.stop.usage': 'stop <cabinet> | stop --all | stop --window | stop --download',
+    'cmd.stop.summary': 'Stop one running thing: a dsh, every sandbox, the config window, or the download',
+    'cmd.stop.notes': `stop <cabinet>  stop that dsh. A sandbox name, or main for the everyday cabinet
+                started from here
+--all           stop every sandbox, and the everyday cabinet started from here
+--window        close the config window service holding this data directory
+--download      stop the download that is running, and everything it started
 
-    'cmd.plugins.backups.usage': 'plugins backups --sandbox <name> | --main',
-    'cmd.plugins.backups.summary': 'Which backups exist of this cabinet\'s plugin config',
-    'cmd.plugins.backups.notes': `⭐ Only your everyday cabinet keeps backups. A sandbox is a clean start you
-  throw away; if you break one, delete the whole sandbox. A snapshot of its
-  config protects nothing that was worth protecting.
-At most {keepBackups} are kept, one per change, and the oldest goes when there
-are more.`,
-    'cmd.plugins.backups.rm.usage': 'plugins backups rm <timestamp> --sandbox <name> | --main',
-    'cmd.plugins.backups.rm.summary': 'Delete one backup',
-    'cmd.plugins.backups.prune.usage': 'plugins backups prune [--keep N] --sandbox <name> | --main',
-    'cmd.plugins.backups.prune.summary': 'Trim backups to the limit; --keep 0 clears them all',
-    'cmd.plugins.restore.usage': 'plugins restore --sandbox <name> | --main [--at <timestamp>]',
-    'cmd.plugins.restore.summary': 'Restore the whole plugin config to how it was before some change',
-    'cmd.plugins.restore.notes': `Without --at you get the most recent one. Restoring makes a backup of the
-current file first, so restoring the wrong one is not the end of the road.
-⭐ This is the way out when precise removal cannot reach: if the file has been
-  edited elsewhere into a shape we no longer recognise, removing our entries
-  one by one finds nothing to remove, and the whole file goes back instead.`,
+⛔ Only an everyday cabinet started from here can be stopped; that one has a
+   process id we can name. One you started elsewhere yourself is something we
+   only see as "3080 answers", so we leave it alone.
+⛔ Stopping the everyday cabinet needs a person on the panel (stop main, or --all
+   when it reaches that one): it is the thing you work in, whatever that session
+   held is gone once it stops, and somebody else may be using it too.
+⭐ --all stops the sandboxes first and asks about the everyday one last. Sandboxes
+   always stop; the refusal happens only at that final step, and it names which
+   ones were already stopped. The common path — tidying up after yourself — never
+   meets a dialog.
+⭐ Sandboxes are only stopped, never deleted; starting the same name continues them.
+⭐ --window is not needed for an ordinary close: the window lets go of its seat
+   itself. It is for the other case — the exe is killed while the Node service it
+   started outlives it on Windows, the seat and port stay taken, and ui is refused
+   from then on. When the process on the seat is gone it says there is no window
+   open and clears the leftover record, rather than pretending to have stopped
+   something.
+⛔ --download takes the whole process tree: what hangs is usually not npm itself
+   but a dependency's install script. To see what it is doing: logs --package <name>.
+⚠ The four are unrelated: --all closes no window, --window stops no sandbox, and
+  --download touches only that download's process tree.
+⚠ There is no long-running dsh-box process to close: every command is its own
+  small process that exits when it is done, so "stop everything" can only be
+  something done. Ctrl+C on the ui process is not it either; that ends one command.`,
 
-    'cmd.sandboxes.usage': 'sandboxes',
-    'cmd.sandboxes.summary': 'List the sandboxes',
-    'cmd.start.usage': 'start --sandbox <name>|--new|--main [--version <release>]',
+    'cmd.start.usage': 'start <cabinet> | start --new [--version <release|folder>]',
     'cmd.start.summary': 'Start. Without --version this uses the dsh you installed yourself',
     'cmd.start.notes': `start = picking two things: which dsh (the machine) × which cabinet (DSH_HOME)
-  machine  unset means the dsh you installed yourself; --version <release>
-           switches to one dsh-box downloaded
-  cabinet  --sandbox <name> a sandbox | --new a fresh one | --main your own ~/.dsh
+  machine  unset               the dsh you installed yourself
+           --version <release>  the one dsh-box downloaded
+           --version <folder>   the dsh you point at (a / or \\ in it means folder)
+  cabinet  a sandbox name for that one | --new a fresh one | main for your own ~/.dsh
 
   --plugin <id>      install a plugin into this cabinet, for good. Repeatable
   --unplug <id>      the reverse: take it out of this cabinet. Repeatable
   --no-sign-in       do not import the sign-in
   --follow           stay here and watch the log (Ctrl+C stops it)
 
-⚠ Nothing carries over from last time: omitting --sandbox is refused, and
+⚠ Nothing carries over from last time: omitting the cabinet is refused, and
   omitting --version means the machine this computer has.
   The same command always gives the same result.
 ⚠ This says nothing about which workspace (project folder) dsh opens. That is
-  what workspaces use is for, and dsh does not register a workspace just
+  what set workspace is for, and dsh does not register a workspace just
   because it was started in one. Measured.
 ⭐ A plugin is a property of the cabinet, not of this launch: leaving out
   --plugin does not mean "install none", it means "change nothing". Whatever
   this cabinet already had still loads, and it loads when you type dsh too.
   For plain official dsh, make a new sandbox.
-Sandbox names may use letters (Chinese is fine), digits, _ . - ; no spaces, and
-not starting with - or .
+Sandbox names may use letters (Chinese is fine), digits, _ . - ; no spaces, not
+starting with - or ., and not main — that name belongs to the everyday cabinet.
 
---main names a cabinet, not a machine. --main together with --version is the one
+⭐ Given a folder, --version looks three levels down for either of two things: a
+  dsh lying on disk (built from source, or an ordinary install), and a dsh that
+  ships inside an application (its whole tree packed into app.asar, readable
+  only by the program shipped beside it — so that program is what starts it).
+  The pin check reports what it finds and does not refuse: that tree is not one
+  dsh-box installed.
+
+main names a cabinet, not a machine. main together with any dsh other than the
+one you installed yourself — a download, or a folder you point at — is the one
 combination that cannot be undone: on-disk formats have no migration path
 between releases, and while that dsh runs, this home's module pointers aim into
-dsh-box's directory.
+that installation.
 ⛔ So that one square is refused (NEEDS_APPROVAL) until a person has clicked
-  through it in the config window. An agent should not pass --approved itself:
-  that flag exists for after a person has agreed, and it stays in the record.`,
-    'cmd.stop.usage': 'stop <sandbox> | stop --main',
-    'cmd.stop.summary': 'Stop a running sandbox, or the everyday cabinet started from here',
-    'cmd.stop.notes': `⛔ Only an everyday cabinet started from here can be stopped; that one has a
-process id we can name.
-One you started elsewhere yourself is something we only see as "3080 answers".
-We cannot tell which process it is, so we leave it alone.`,
-    'cmd.adopt.usage': 'adopt <sandbox> | adopt --from <name|main> --to <name|main>',
-    'cmd.adopt.summary': 'Copy conversations from one cabinet into another (a copy, not a move)',
-    'cmd.adopt.notes': `adopt <sandbox>  = --from <sandbox> --to main, short for the common direction.
-For the other way round (copying your everyday conversations into a sandbox),
-write it out:
-  adopt --from main --to <sandbox>
-Between two sandboxes works too: name both.
+  through it in the config window. No flag gets around it: on refusal dsh-box
+  opens the config window itself and waits, and once a person allows it, that
+  window is what runs the command.`,
+    'cmd.get.chat.usage': 'get chat --from <cabinet> --to <cabinet> [--force]',
+    'cmd.get.chat.summary': 'Copy conversations from one cabinet into another (a copy, not a move)',
+    'cmd.get.chat.notes': `Both ends are cabinets: a sandbox name, or main for your everyday one.
+The common one is collecting a sandbox's conversations into the daily cabinet:
+  get chat --from <sandbox> --to main
+The other direction, and sandbox to sandbox, are the same command written differently.
 
 ⭐ Copied, not moved: the originals stay where they were, and anything the
   destination already has is skipped, so running it again is safe.
 ⛔ Refused while a dsh is running on the destination: dsh scans the conversation
   directory only at startup, so anything copied in while it runs stays invisible
   to it. Add --force if you are sure; they appear the next time it starts.`,
-    'cmd.rm.usage': 'rm <sandbox>',
-    'cmd.rm.summary': 'Delete a sandbox and everything in it',
+    'cmd.rm.sandbox.usage': 'rm sandbox <name>',
+    'cmd.rm.sandbox.summary': 'Delete a sandbox and everything in it',
 
-    'cmd.config.usage': 'config',
-    'cmd.config.summary': 'Show the current settings',
-    'cmd.config.source.usage': 'config source <source>',
-    'cmd.config.source.summary': 'Change where releases come from: auto | official | mirror',
-    'cmd.config.lang.usage': 'config lang <zh|en>',
-    'cmd.config.lang.summary': 'Change the language: {options}',
-    'cmd.config.lang.notes': `The language is a setting of this data directory, not a preference of the page:
+    'cmd.ls.setting.usage': 'ls setting',
+    'cmd.ls.setting.summary': 'The current settings, and whether this copy is on PATH and how many copies are',
+    'cmd.ls.setting.notes': `Every row has a command that changes it: set source / set lang / set ask-on-quit
+/ set ask-on-daily. PATH is a setting too — the switch is set path on|off — which
+is why it belongs in the same table as the rest.
+⚠️ The PATH part only means anything on Windows. Elsewhere PATH belongs to your
+  shell config, which is not a launcher's to edit, so it says so and stops.
+⛔ When the settings file cannot be read this cannot read it either. That is what
+  rm setting is for: archive it and start from empty.`,
+    'cmd.set.source.usage': 'set source <auto|official|mirror>',
+    'cmd.set.source.summary': 'Change where releases come from: auto | official | mirror',
+    'cmd.set.lang.usage': 'set lang <zh|en>',
+    'cmd.set.lang.summary': 'Change the language: {options}',
+    'cmd.set.lang.notes': `The language is a setting of this data directory, not a preference of the page:
 the command line and the config window change together, so the two can never be
 in different languages. The switch in the window's corner runs this command.
 
@@ -1218,24 +1290,22 @@ setting wins and the environment is no longer consulted.
   config files are not translated: they are data rather than speech, and moving
   them with the language would leave both scripts and this tool unable to
   recognise what they wrote.`,
-    'cmd.config.ask-on-quit.usage': 'config ask-on-quit <on|off>',
-    'cmd.config.ask-on-quit.summary': 'Whether closing the config window warns that it stops every sandbox',
-    'cmd.config.ask-on-daily.usage': 'config ask-on-daily <on|off>',
-    'cmd.config.ask-on-daily.summary': 'Whether to warn before touching your everyday cabinet',
-    'cmd.config.reset.usage': 'config reset',
-    'cmd.config.reset.summary': 'When the settings file cannot be read: archive it and start from empty',
-    'cmd.config.reset.notes': `Only needed when another command reports CONFIG_UNREADABLE.
-⛔ The old file is renamed and kept, not deleted: it records which plugin folders
-you registered, and that is not recoverable anywhere else.
-After the reset the registry is empty, but plugins already installed in cabinets
-are unaffected: those live in each cabinet's own config.`,
+    'cmd.set.ask-on-quit.usage': 'set ask-on-quit <on|off>',
+    'cmd.set.ask-on-quit.summary': 'Whether closing the config window warns that it stops every sandbox',
+    'cmd.set.ask-on-daily.usage': 'set ask-on-daily <on|off>',
+    'cmd.set.ask-on-daily.summary': 'Whether to warn before touching your everyday cabinet',
+    'cmd.rm.setting.usage': 'rm setting',
+    'cmd.rm.setting.summary': 'When the settings file cannot be read: archive it and start from empty',
+    'cmd.rm.setting.notes': `Only needed when another command reports CONFIG_UNREADABLE.
+⛔ The old file is renamed and kept, not deleted: it records what you picked last
+time, and the archive is where to go looking for it.
+Afterwards the settings are back to factory, but plugins already installed in
+cabinets are entirely unaffected: those live in each cabinet's own config.`,
 
-    'cmd.path.usage': 'path',
-    'cmd.path.summary': 'Whether this copy is on PATH, and how many copies are',
-    'cmd.path.add.usage': 'path add [--force]',
-    'cmd.path.add.summary': "Put this exe's folder on your own PATH",
-    'cmd.path.add.notes': `Afterwards, typing dsh-box works in newly opened terminals; already open
-ones have to be reopened.
+    'cmd.set.path.usage': 'set path on|off [--force]',
+    'cmd.set.path.summary': "Put this exe's folder on your own PATH, or take it back off",
+    'cmd.set.path.notes': `After on, typing dsh-box works in newly opened terminals; already open ones have
+to be reopened. off is the reverse.
 Only your own PATH is written (HKCU\\Environment), never the machine's, and no
 administrator rights are needed.
 ⭐ Only this one entry is added, and nothing else in your PATH is tidied up; a copy
@@ -1243,9 +1313,10 @@ of it as it was goes into env-path in the data directory first.
 ⛔ The npm install does not need this: npm puts its own shim in its global folder,
 which is already on PATH.
 ⚠️ Refused when another dsh-box is already on PATH — with two of them there, which
-one the name reaches depends on the order. Pass --force to make this one win.`,
-    'cmd.path.rm.usage': 'path rm',
-    'cmd.path.rm.summary': 'Take this folder back off your PATH',
+one the name reaches depends on the order. Pass --force to make this one win.
+⭐ This one changes the computer, not this data directory. It belongs to set
+  because it really is a switch, and because a portable copy has to run it once
+  itself (the installer does it for the installed build).`,
 
     'path.windowsOnly': 'This command only means anything on Windows. Elsewhere PATH belongs to your shell config, which is not a launcher\'s to edit.',
     'path.noExe': 'This command has to be run by the dsh-box exe itself. The npm install does not need it: npm has already put its shim in place.',
@@ -1268,42 +1339,67 @@ one the name reaches depends on the order. Pass --force to make this one win.`,
 
     'cmd.ui.usage': 'ui [--port n]',
     'cmd.ui.summary': 'Open the config window',
-    'cmd.quit.usage': 'quit [--main]',
-    'cmd.quit.summary': 'Quit everything: stop every sandbox; with --main, the everyday cabinet too',
-    'cmd.quit.notes': `There is no long-running dsh-box process to close: every command is its own
-small process that exits when it is done.
-So "quit" can only be something done rather than something closed: every sandbox
-is stopped. They are only stopped, never deleted.
-Ctrl+C on the ui process is not a quit; it ends that one command, and the
-sandboxes keep running.`,
-    'cmd.status.usage': 'status',
-    'cmd.status.summary': 'The whole picture right now: data directory, releases, sandboxes, what is running',
-    'cmd.logs.usage': 'logs <sandbox> [options] | logs --package <name>',
-    'cmd.logs.summary': 'What a sandbox said the last time it started; --package shows an npm plugin download',
-    'cmd.logs.notes': `  --shape             the shape only (how many lines / how big / how many look
+    'cmd.ui.notes': `One data directory has one window service. It lets go of its seat when it closes,
+so an ordinary close needs nothing else; to close it from the command line, use
+stop --window.
+⛔ Running it again while one is open does not open a second: it reports the
+  address of the one already serving. For a second view, open that address in a
+  browser again.`,
+    'cmd.logs.usage': 'logs <cabinet> [options] | logs --version <release> | logs --package <name>',
+    'cmd.logs.summary': 'What a cabinet said the last time it started; --package shows an npm plugin download',
+    'cmd.logs.notes': `  <cabinet>           a sandbox name, or main for the everyday cabinet's log
+  --shape             the shape only (how many lines / how big / how many look
                       like errors / the last line), without the body
   --errors            only the lines that look like errors, three lines either side
   --lines <n>         how many lines (default 50 lines or 4000 characters,
                       whichever comes first)
-  --all               list every log file this sandbox has kept
-  --main              the everyday cabinet's startup log; no sandbox name needed
+  --all               list every log file this cabinet has kept
   --version <release> what was said while that release was downloaded or deleted
                       (readable during a download, which is what progress is)
+  --package <name>    what was said while that npm plugin was downloaded and
+                      installed (readable while it runs)
 
 ⭐ Ask --shape first and then decide whether to read: however big the log is,
 that answer is a few hundred characters.
 By default you get the last 50 lines or 4000 characters, and it says how much
 was left out and where the whole file is.`,
-    'cmd.attach.usage': 'attach',
-    'cmd.attach.summary': 'Take over: the config window shows that you are working and stops accepting clicks',
-    'cmd.detach.usage': 'detach [--forced]',
-    'cmd.detach.summary': 'Hand back: the config window returns to normal, and the record stays for review',
-    'cmd.detach.notes': `--forced means it was not handed back voluntarily: a person pressed stop in the
+    'cmd.agent.attach.usage': 'agent attach',
+    'cmd.agent.attach.summary': 'Take over: the config window shows that you are working and stops accepting clicks',
+    'cmd.agent.detach.usage': 'agent detach [--forced]',
+    'cmd.agent.detach.summary': 'Hand back: the config window returns to normal, and the record stays for review',
+    'cmd.agent.detach.notes': `--forced means it was not handed back voluntarily: a person pressed stop in the
 config window and took control back.
-That fact goes into the record and memory can read it: "you were stopped here" is
-the thing most worth knowing next time.`,
-    'cmd.memory.usage': 'memory',
-    'cmd.memory.summary': 'What was done during the last takeover, refusals included',
+That fact goes into the record and ls memory can read it: "you were stopped here"
+is the thing most worth knowing next time.`,
+
+    // See the note on the Chinese block: one sentence per command, about the
+    // state a caller is in when it returns.
+    'cmd.ls.after': 'This only looked, and it never goes to the network, so it is always fast',
+    'cmd.ls.machine.after': 'Nothing changed; this only looked. To download one, use get machine <release>',
+    'cmd.ls.plugin.after': 'This only looked. To really put one into a cabinet, use get plugin',
+    'cmd.ls.setting.after': 'This only looked. Every row here has a set command that changes it',
+    'cmd.get.machine.after': 'Returns only when the download is done, which can take minutes. After that, start <cabinet> --version <release> can choose it; to watch it meanwhile, use logs --version <release>',
+    'cmd.get.plugin.after': 'That cabinet now keeps it, so plain dsh loads it too. A name after --to that does not exist yet creates that sandbox on the way past. A dsh already running has to be restarted for this to take effect. When the copy came from somewhere this computer already had it, that other cabinet loses nothing',
+    'cmd.get.signin.after': 'That sandbox has a sign-in. If it already had one, nothing is done (imported is false); to swap keys, rm signin first',
+    'cmd.get.chat.after': 'The target cabinet has those conversations and the source still has all of its own. Refused while the target is running; with --force they appear at its next start',
+    'cmd.rm.machine.after': 'Given a release: it is off the disk, and refused while a sandbox is using it. Given a folder: only our record of it goes — not one byte of yours is touched — and the sandboxes that used it have their module pointer layer cleared (dsh rebuilds it at the next boot). Refused when no sandbox ever used it, so a hollow "done" cannot mislead',
+    'cmd.rm.plugin.after': 'Taken out of this cabinet; if no other cabinet is still using it, the copy we downloaded is deleted too (listed in deletedPackages), so putting it back means downloading again. A plugin from a folder of your own is only unlinked — its files are untouched',
+    'cmd.rm.sandbox.after': 'That sandbox and its cabinet are gone, and it cannot be undone. Refused while it is running, so stop it first',
+    'cmd.rm.signin.after': 'That cabinet has no sign-in; not one conversation inside it is touched',
+    'cmd.rm.setting.after': 'The unreadable settings file is renamed aside and the settings are back to factory. Plugins already installed in cabinets are untouched',
+    'cmd.start.after': 'This blocks: it waits until dsh is really serving before returning — usually ten or twenty seconds, ceiling 120s (BOOT_TIMEOUT past that). Once it returns, dsh is left running in the background and this command does not babysit it. The output carries sandbox (what this one is called, which is how --new tells you), url, pid, port and logFile. To actually send a message inside it, the cabinet also needs a project workspace via set workspace, or the model menu is empty. Stop it with stop <cabinet>; add --follow to stay and watch the log instead (which never returns — Ctrl+C to stop)',
+    'cmd.stop.after': 'The named thing is stopped and nothing is lost: a sandbox and its cabinet stay (start brings it back), a half-finished download stays where it is and the next install of the same package writes over it, and the config window releases its seat and port (ui opens one again)',
+    'cmd.set.plugin.after': 'After off the row is still in the file but the next start will not load it; after on it loads again. --undo puts the whole plugin config back as it was one step ago and says how many steps remain; run it again to go back one more',
+    'cmd.set.workspace.after': 'Returns as soon as it is written. That cabinet opens in this workspace next time; a dsh already running is unaffected',
+    'cmd.set.source.after': 'The next download uses the new source',
+    'cmd.set.lang.after': 'Command line and config window changed language together; a page already open needs one reload',
+    'cmd.set.ask-on-quit.after': 'The switch changed; the config window follows it the next time quit is pressed',
+    'cmd.set.ask-on-daily.after': 'The switch changed; command line and config window both follow it',
+    'cmd.set.path.after': 'After on, a newly opened terminal can type dsh-box on its own while terminals already open still read the old PATH; after off that entry is gone. The value from before the change is kept in env-path under the data directory',
+    'cmd.ui.after': 'Does not return: it serves until something stops it. The address is printed above, and other terminals can keep running commands. To stop it, use stop --window',
+    'cmd.logs.after': 'This only looked. At most the last 50 lines or 4000 characters by default, saying how much was left out and where the whole file is',
+    'cmd.agent.attach.after': 'From now on the config window says you are driving and refuses clicks on the page, until agent detach or until somebody presses stop',
+    'cmd.agent.detach.after': 'The config window is back to normal; what this run did stays in the recall panel and in ls memory',
 
     'help.title': 'dsh-box — run DeepSeek Harness in an isolated sandbox',
     'help.perCommand': 'Detail on one: help <command> or <command> --help (for example, help start)',
@@ -1313,6 +1409,7 @@ the thing most worth knowing next time.`,
   The code is a fixed identifier; the message is for people and may be reworded at any time.
 Data goes in ./dsh-box-files/data by default (change it with --box <folder> or DSH_BOX_HOME).`,
     'help.flags': 'Flags',
+    'help.after': 'When it returns',
     'help.valuePlaceholder': 'value',
     'help.mutates': 'Changes something, so it goes into the record',
     'help.readOnly': 'Read-only; changes nothing',
@@ -1337,17 +1434,21 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'launch.noKey': 'This cabinet has no sign-in; add an API key inside it before it can talk to a model',
     'launch.logAt': 'Log {file}',
     'launch.detached': 'Running in the background (process {pid}). To stop it: stop {name}',
-    'window.alreadyServing': 'This data directory already has a config window at {url} (process {pid}). For a second view, open that address in a browser again',
+    'window.alreadyServing': 'This data directory already has a config window at {url} (process {pid}). For a second view, open that address in a browser again. If it is an orphan left by a kill, clear it with stop --window',
+    'window.noneServing': 'This data directory has no config window open',
+    'window.stopped': 'Config window closed: {url} (process {pid})',
+    'window.gone': 'Process {pid} on the seat is somebody else now, so nothing was stopped. The record has been cleared',
     'launch.sandboxStarting': 'Another process is starting sandbox "{name}"; wait for it to come up',
     'launch.mainStarting': 'Another process is starting the daily cabinet; wait for it to come up',
     'launch.noFreePort': 'No free port between {from} and {to}',
-    'launch.linkDangling': '{name} links to somewhere that does not exist; the registered path is {path}. Register that plugin folder again, using a full path',
+    'launch.linkDangling': '{name} links to somewhere that does not exist; the recorded path is {path}. Install that plugin folder again, using a full path',
     'launch.noHostDshFile': 'The dsh you installed yourself has no file at {entry}. It may have just been uninstalled, or an upgrade is half done',
     'launch.versionNotDownloaded': 'Release {version} has not been downloaded',
     'launch.sandboxAlreadyRunning': 'Sandbox "{name}" is already open: {url} (process {pid}). Only one dsh at a time per sandbox; two of them write over each other in the same cabinet. Use another sandbox to run both, or stop this one first',
     'launch.bootExited': 'dsh exited before it finished starting, exit code {code}',
     'launch.bootExitedLate': 'dsh exited after serving the page, exit code {code}',
     'launch.bootTimeout': 'dsh did not finish starting within {seconds} seconds',
+    'launch.stoppedAfterFailure': 'The dsh this launch started (pid {pid}) has been stopped, not left running in the background',
     'launch.badPid': 'Refusing to stop process {pid}',
 
     'cabinet.daily': 'your everyday cabinet',
@@ -1361,11 +1462,14 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
 
     'plugin.installed': 'Installed {name} into {where}',
     'plugin.installedWhere': 'Written to {file} — typing dsh yourself loads it too',
-    'plugin.removeHint': 'To take it out: plugins uninstall {id} {cabinet}',
+    'plugin.removeHint': 'To take it out: rm plugin {id} {cabinet}',
     'plugin.uninstalled': 'Removed {name} from {where}',
+    'plugin.downloadSwept': 'No other cabinet was using it, so the download went too: {list}',
     'plugin.folderUntouched': 'Your folder was not changed',
 
     'restore.done': 'Plugin config for {where} restored to the copy from {at}',
+    'restore.stepsLeft': 'Run it again to go back {count} more step(s)',
+    'restore.noneLeft': 'That was the earliest one — there is nothing further back',
     'restore.linksNotRolledBack': 'Only the config was restored; links were not rolled back. Plugins that are gone will not load, and the extra links are empty placeholders',
 
     'version.notDownloadedAlready': '{version} was not downloaded in the first place',
@@ -1375,12 +1479,27 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'version.stillDeleting': 'Still deleting, {seconds}s so far',
     'version.deleted': '{version} deleted',
 
-    'host.versionNotDownloaded': 'Release {version} has not been downloaded. Try: pull {version}',
+    'host.versionNotDownloaded': 'Release {version} has not been downloaded. Try: get release {version}',
     'host.noHostDsh': 'No dsh of your own was found. Either install one (npm i -g @deepseek-ai/dsh), or name a release dsh-box has already downloaded with --version <release>',
     'engine.unknown': 'machine unknown',
     'engine.versionUnreadable': 'version unreadable',
     'engine.host': 'the {version} you installed yourself',
     'engine.release': 'the {version} dsh-box downloaded',
+    'engine.tree': 'the {version} you pointed at ({path})',
+    'engine.app': "an application's own {version} ({path})",
+
+    'engine.pathMissing': 'No such folder: {path}',
+    'engine.noDshInPath': 'No dsh under {path}. Three levels down were searched, so either that is the wrong folder, or a source tree whose dependencies have not been installed yet',
+    'engine.noDshInApp': '{path} is an application, but it carries no dsh',
+    'engine.insideArchive': 'The dsh in {path} ({version}, {packages} packages) is sealed inside app.asar with no files on disk, so it cannot start: at boot dsh builds a layer of links in the filing cabinet pointing at its own tree, and links are resolved by the operating system, which cannot see into an asar. That build failed to unpack what it declared (it asks for node_modules to be unpacked); another build of it works',
+    'engine.entryMissing': 'The dsh in {path} names a startup file that is not there',
+    'engine.appPlatform': "Reading a dsh out of an application has only been implemented for Windows, and this is {platform}. Point at a dsh folder lying on disk instead",
+    'engine.appNoExe': '{path} looks like an application, but which program inside it to run is not clear (found: {found})',
+    'engine.appUnreadable': 'Cannot read what is inside {path} — the program shipped with it did not answer',
+
+    'engine.pinOk': 'Pin check: {packages} packages, all on one version',
+    'engine.pinMixed': 'Pin check: {packages} packages, some on other versions ({list}). This tree is not one we installed, so this is said rather than acted on, and the launch continues',
+    'engine.pinUnchecked': 'Pin check: no sibling packages to count, nothing proved. Starting anyway',
 
     'mounts.unreadablePatch': "This cabinet's plugin config ({file}) cannot be read, so it will not be changed. Look at what happened to that file, or restore it from a backup",
     'backup.none': 'This cabinet has no backups yet; one is made when the plugin config is changed',
@@ -1398,6 +1517,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'name.trailingDot': 'A sandbox name cannot end with "."; Windows drops it silently',
     'name.charset': 'A sandbox name can use letters (including Chinese, Japanese and so on), digits, underscore "_", dot "." and hyphen "-", with no spaces and no punctuation',
     'name.reserved': '"{name}" collides with a reserved Windows device name, so no folder can be created with it',
+    'name.reservedDaily': '"main" is the name of the daily cabinet, so a sandbox cannot use it — otherwise --in main would not say which one you meant. Any other name is fine',
     'name.rule': 'letters (Chinese is fine), digits, _ . - ; no spaces, and not starting with - or .',
 
     'box.notADirectory': '{dir} already exists and is not a folder',
@@ -1453,8 +1573,8 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'settings.askOnDaily.summary': 'Whether to warn before touching your everyday cabinet',
     'settings.lang.setting': 'Which language the window and the command line speak',
 
-    'config.unreadable': 'Cannot read {file}: {error}\n  It was left alone. This file records the plugins you registered and what you picked last time, and overwriting it loses both.\n  Repair it yourself, or use config reset to archive it and start from empty.',
-    'config.notAnObject': '{file} does not contain an object and cannot be read. It was left alone; config reset can archive it and start over',
+    'config.unreadable': 'Cannot read {file}: {error}\n  It was left alone. This file records what you picked last time, and overwriting it loses that.\n  Repair it yourself, or use rm setting to archive it and start from empty.',
+    'config.notAnObject': '{file} does not contain an object and cannot be read. It was left alone; rm setting can archive it and start over',
     'config.busy': 'Another dsh-box process is changing the config and {seconds} seconds of waiting was not enough.\n  Try again shortly. If you are sure nothing else is running, delete {lock}',
 
     'plugin.dirNotFound': 'No such directory: {path}',
@@ -1473,7 +1593,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'status.labelAgent': 'agent',
     'status.labelHost': 'your dsh',
     'status.labelDownloaded': 'downloaded',
-    'status.labelPlugins': 'registered',
+    'status.labelPlugins': 'plugins we can name',
     'status.labelMainPlugins': 'daily has',
     'status.labelSettings': 'settings',
     'status.labelMain': 'daily',
@@ -1485,7 +1605,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'status.oursTag': '{name} (installed by dsh-box)',
     'status.mainForeign': 'one is running on 3080, but it was not started from here',
     'status.mainNone': 'none started from here, and 3080 is free',
-    'status.mainRunning': 'started from here at {url} (process {pid}); to stop it: stop --main',
+    'status.mainRunning': 'started from here at {url} (process {pid}); to stop it: stop main',
     'status.sandboxCount': '{count} sandboxes, {running} of them running',
     'status.boxStopped': 'stopped',
     'status.boxRunning': 'running at {url}',
@@ -1516,7 +1636,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'logs.whatLaunch': 'its last launch',
     'logs.neverMain': 'it has never been started from here',
     'logs.neverSandbox': 'it has never been started',
-    'logs.which': "Which sandbox's log? Or --main for the everyday cabinet, --version <release> for a download",
+    'logs.which': "Which cabinet's log? A sandbox name, or main for the everyday cabinet; for a download use --version <release> or --package <name>",
 
     'attach.done': 'Attached. The config window now shows your actions and stops accepting clicks; a person can press "Stop and take back control" there at any time.',
     'attach.session': 'Session {session}',
@@ -1535,25 +1655,42 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'box.usingInstead': 'Using {dir} instead — name one yourself with --box <folder>',
 
     'versions.downloaded': 'Downloaded',
-    'versions.noneDownloaded': '(none yet — try: pull 0.1.0-rc.7)',
+    'versions.named': 'Folders you pointed at',
+    'versions.noneNamed': '(none yet — give --version a folder when starting a sandbox and it appears here)',
+    'versions.namedBy': 'used by {list}',
+    'versions.noneDownloaded': '(none yet — try: get machine 0.1.0-rc.7)',
     'versions.pinned': 'every package verified',
     'versions.mixed': 'mixed versions — download it again',
     'versions.registryDown': '(cannot reach npm: {error})',
     'versions.available': 'Available on npm',
     'versions.tagLatest': 'official stable',
     'versions.tagNext': 'official preview',
-    'pull.which': 'Which release? For example: pull 0.1.0-rc.7',
+    'pull.which': 'Which release? For example: get release 0.1.0-rc.7',
     'pull.ready': '{version} is ready',
-    'drop.which': 'Which release to delete? See them with versions',
+    'drop.which': 'Which machine? A release number or a folder; ls machine shows them',
     'drop.redownload': 'A sandbox that was using it must download it again before its next launch',
+    'forget.done': '{path} is no longer remembered here (it appeared in the records of: {list})',
+    'forget.keptOnDisk': 'Not one byte of yours was touched: {path} is still there, and can be pointed at again any time',
+    'forget.cleared': 'The module pointer layer was cleared for: {list}. dsh rebuilds it at the next boot',
+    'forget.running': '{list} is running on this one; stop it first. This is not fastidiousness: clearing the module pointers under a live dsh is the very thing this record exists to prevent',
+    'forget.unknown': 'No sandbox has ever used {path}, so there is no record of it here to forget. ls machine shows what is remembered',
 
-    'cabinet.bothFlags': '--main and --sandbox are two answers to the same question: which cabinet. Give only one',
-    'cabinet.which': 'Which cabinet? --sandbox <name> for a sandbox, --main for your everyday ~/.dsh',
-    'cabinet.dailyNeedsApproval': 'This changes your everyday ~/.dsh — the one your own `dsh` reads — so it runs only after a person has agreed in the config window: dsh-box ui, pick the everyday cabinet, and the dialog says what will be touched and where the backup goes.\n  Passing --approved yourself does not count; only a run started by the config window does. A sandbox needs none of this: delete it and it is gone.',
+    'cabinet.bothFlags': 'Which cabinet can only have one answer, and two were given',
+    'cabinet.which': 'Which cabinet? Write a sandbox name, or main for your everyday ~/.dsh',
+    'cabinet.dailyNeedsApproval': 'This acts on your everyday ~/.dsh — the one your own `dsh` reads — so it runs only after a person has agreed on the panel.\n  No flag can stand in for that click: the panel opens by itself, so go there and press Allow. A sandbox needs none of this: delete it and it is gone.',
 
-    'plugins.addWhich': 'Which folder? For example: plugins add ../my-plugin',
-    'plugins.remembered': 'Remembered {package}, with id "{id}"',
-    'plugins.rememberedReplaced': 'Remembered {package}, with id "{id}" (replacing the old row with that id)',
+    // ── The gate: one request, one click, one run
+    'approval.opening': 'This step needs a person. Opening the panel — press Allow there (within {seconds}s)',
+    'approval.waiting': 'Waiting for you to answer on the panel…',
+    'approval.granted': 'Allowed on the panel; the panel ran this command through',
+    'approval.denied': 'Refused on the panel; nothing was done',
+    'approval.timedOut': 'Nobody answered within {seconds}s, so this step did not happen.\n  Either have a person press Allow on the panel, or leave the everyday cabinet alone — copy it into a sandbox and check there instead (get plugin --from main --to <sandbox>).',
+    'approval.noPanel': 'The panel would not open, and this step cannot happen without somebody pressing Allow on it — so this stopped here rather than waiting.\n  Open one by hand and try again: dsh-box ui. On npx that is npx dsh-box ui.',
+    'approval.gone': 'That request is no longer there (expired or swept), and it did not run',
+    'approval.alreadyAnswered': 'That request has already been answered; it will not run a second time',
+    'approval.what': '{line}',
+    'approval.ranInWindow': 'The panel ran it: {line}',
+
     'plugins.cabinetHeader': 'Plugins currently in {cabinet}',
     'plugins.unreadableWarn': "This cabinet's plugin config cannot be read, so this list may be incomplete",
     'plugins.cabinetEmpty': '(none — plain official dsh)',
@@ -1566,22 +1703,12 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'plugins.overrideLine': '{id}  ← changes a row that is already there, rather than adding a plugin',
     'plugins.fromHome': "(from the patch at the cabinet's root, which every profile reads)",
     'plugins.platformFolded': '{count} more official base rows, not listed',
-    'plugins.registryHeader': 'Registered plugins (the registry — none of this is installed anywhere yet)',
-    'plugins.registryEmpty': '(none — try: plugins add <folder>)',
-    'plugins.missingLine': '{package}  ← folder no longer exists',
-    'plugins.installHint': 'Install into a cabinet: plugins install <id> --sandbox <name>|--main',
-    'plugins.installWhich': 'Which plugin? Give a registered id, a plugin folder, or an npm package name',
-    'plugins.rmWhich': 'Which id? See them with plugins',
-    'plugins.rmUnknown': '"{id}" was never registered, and no cabinet has it',
-    'plugins.rmApprovalDownloaded': '"{package}" is not only in sandboxes; {daily} has it too.\n  Removing it takes it out of {places}, and deletes the downloaded package as well.\n  What changes is that cabinet\'s own config, so typing dsh yourself changes with it.\n  Touching the daily cabinet needs a person in the config window: dsh-box ui, then remove it on the plugin row. Passing --approved yourself does not count.',
-    'plugins.rmApprovalYours': '"{package}" is not only in sandboxes; {daily} has it too.\n  Removing it takes it out of {places}, leaving your own folder alone.\n  What changes is that cabinet\'s own config, so typing dsh yourself changes with it.\n  Touching the daily cabinet needs a person in the config window: dsh-box ui, then remove it on the plugin row. Passing --approved yourself does not count.',
-    'plugins.rmHeader': '"{package}"',
-    'plugins.rmNowhere': 'No cabinet had it installed',
-    'plugins.rmDetached': 'Removed from {cabinet}',
-    'plugins.rmUnregistered': 'Removed from the registry',
-    'plugins.rmUnregisteredNever': 'Removed from the registry (it was never registered anyway)',
-    'plugins.rmPackageDeleted': 'The downloaded package was deleted too — download it again to use it',
-    'plugins.rmFolderUntouched': 'Not one byte of your folder was touched',
+    'plugins.installWhich': 'Which plugin? Give a plugin folder, an npm package name, or an id another cabinet already has (with --from). Give --from and no id to copy that whole cabinet across',
+    'plugins.copySameCabinet': '"{name}" is both the cabinet copied from and the one copied to, which does not say anything',
+    'plugins.copyDone': 'Copied {count} from "{from}" into "{cabinet}":',
+    'plugins.copyAlready': '{count} more were already there and were left alone',
+    'plugins.copyMissing': "{package}'s folder is no longer there, so it was not copied",
+    'plugins.copyRefused': '{package} was not copied: {why}',
     'plugins.unreadablePatch': "Cannot read {cabinet}'s plugin config ({file}), so it will not be changed — look at what happened to that file, or restore from a backup",
     'plugins.nameTakenAt': 'The name "{package}" is already taken by something else in {cabinet}, pointing at {points}.\n  It was left alone — dsh-box did not install it, and replacing it cannot be taken back.\n  To really replace it with {wanted}, whoever installed the original has to take it out first.',
     'plugins.nameTakenGone': 'The name "{package}" is already taken by something else in {cabinet}, and what it points at no longer exists.\n  It was left alone — dsh-box did not install it, and replacing it cannot be taken back.\n  To really replace it with {wanted}, whoever installed the original has to take it out first.',
@@ -1598,7 +1725,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'plugins.stillDownloading': 'Still downloading, {seconds}s so far; {packages} packages have landed — when that number stops moving, it is no longer fetching',
     'plugins.installInFlight': '"{other}" is being installed right now. Only one at a time — two npm runs writing the same package directory corrupt it. Wait for it to finish, or watch where it has got to: logs --package {other}',
     'plugins.retryOfficial': '{mirror} did not have all of it. Trying the official registry instead — the mirror was picked for speed, and fast is not the same as complete',
-    'plugins.mirrorHint': 'Your source is pinned to the mirror. Mirrors can lag or miss a package; try letting it choose: config source auto',
+    'plugins.mirrorHint': 'Your source is pinned to the mirror. Mirrors can lag or miss a package; try letting it choose: set source auto',
     'plugins.installReady': '{name} is now installed in "{cabinet}"',
     'logs.wherePackage': 'plugin package {name}',
     'logs.whatPackage': 'its last download and install',
@@ -1608,9 +1735,9 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'npm.installExit': 'npm could not install it (exit code {code}) — {last}',
     'npm.timedOut': 'npm ran for more than {minutes} minutes without finishing, so it and everything it started have been stopped. This is usually not a slow line — look at the last lines of the log for which package’s install script is stuck',
     'npm.saidNothing': 'it said nothing',
-    'plugins.uninstallWhich': 'Which one? See what this cabinet has with plugins --sandbox <name>',
-    'plugins.notOurs': '"{id}" was already in {cabinet} before dsh-box; what someone else wrote in is not ours to remove. Take it out the way it was put in',
-    'plugins.notInstalled': 'There is no dsh-box-installed "{id}" in {cabinet} — see what is there with plugins {flags}',
+    'plugins.uninstallWhich': 'Which one? See what this cabinet has with ls plugin --in <cabinet>',
+    'plugins.notOurs': '"{id}" was already in {cabinet} before dsh-box; what someone else wrote in is not ours to remove. Take it out the way it was put in, or switch it off with set plugin',
+    'plugins.notInstalled': 'There is no dsh-box-installed "{id}" in {cabinet} — see what is there with ls plugin --in <cabinet>',
 
     'aggregate.expanded': '"{name}" is an aggregate; expanded to {count} rows from its own {file}:',
     'aggregate.alsoRemoved': 'The {count} it brought with it went too:',
@@ -1620,12 +1747,12 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
 
     'plugins.staged': 'It and what it needs — {count} packages — are now in this cabinet\'s _local; dsh can only load plugins that live inside profiles',
     'staging.nameTaken': 'This cabinet\'s _local already holds something called "{package}" ({dir}), and dsh-box did not put it there. It was left alone — it may be a plugin you are working on. To install the npm package, move or rename that one first',
-    'staging.notDownloaded': '"{package}" is not in the download tree; packages rm may have removed it. Run plugins install again to fetch it',
+    'staging.notDownloaded': '"{package}" is not in the download tree — it went when the last cabinet using it let go. Run get plugin again to fetch it',
     'launch.repointedDownloads': 'Aimed {count} downloaded plugin(s) at this dsh installation',
 
-    'plugins.disableWhich': 'Switch which row off? See the ids with plugins --sandbox <name>',
-    'plugins.enableWhich': 'Switch which row back on? See the ids with plugins --sandbox <name>',
-    'plugins.noSuchRow': 'No row with the id "{id}" in {cabinet}. The format lets you write a rule against an id that is not there and it simply does nothing, so this is refused now instead — see what is there with plugins {flags}',
+    'plugins.disableWhich': 'Switch which row off? See the ids with ls plugin --in <cabinet>',
+    'plugins.enableWhich': 'Switch which row back on? See the ids with ls plugin --in <cabinet>',
+    'plugins.noSuchRow': 'No row with the id "{id}" in {cabinet}. The format lets you write a rule against an id that is not there and it simply does nothing, so this is refused now instead — see what is there with ls plugin {flags}',
     'plugins.enableNotOurs': '"{id}" was switched off in {cabinet} by somebody else, not by dsh-box. Switching it back on would be overruling them, so nothing was done — turn it on the way it was turned off',
     'plugins.switchedOff': '"{id}" is now off in {cabinet}',
     'plugins.switchedOffWhere': 'Written as one `disabled: true` row in {file} — the row underneath is untouched; this format has no "remove"',
@@ -1639,19 +1766,10 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'bundles.bundlesOnly': 'Taken out of bundles ({file}); it was not a dependency, so nothing will put it back',
     'bundles.filesLeft': 'The package files are still in {dir} — nothing declares them now and nothing loads them. Delete them yourself if you want the space; this tool does not run a package manager on upstream\'s behalf',
 
-    'backups.unknownAction': 'plugins backups knows only rm and prune, not "{action}"',
-    'backups.header': 'Plugin config backups for {cabinet}',
     'backups.noneMain': '(none yet — one is made when the plugin config is changed)',
     'backups.noneSandbox': '(sandboxes keep no backups — a sandbox is a clean start, and a broken one can simply be deleted)',
     'backups.limit': 'At most {keep} are kept; the oldest goes automatically when there are more',
-    'backups.restoreHint': 'Restore the latest: plugins restore {where}',
-    'backups.rmHint': 'Delete one:         plugins backups rm <timestamp> {where}',
-    'backups.pruneHint': 'Clear them all:     plugins backups prune --keep 0 {where}',
-    'backups.rmWhich': 'Which one? See the timestamps with plugins backups',
-    'backups.noSuch': 'There is no copy from {at}',
-    'backups.removed': 'Backup {at} for {cabinet} deleted; {count} remain',
-    'flag.keepInteger': '--keep takes an integer of at least 0; "{value}" was given',
-    'backups.pruned': '{cabinet}: kept the latest {keep}, deleted {count}',
+    'backups.restoreHint': 'Go back one step: set plugin --undo {where}',
     'restore.preRestoreBackup': 'The copy from before the restore is kept too: {file}',
 
     'history.shapeHeader': 'The shape of the record',
@@ -1665,40 +1783,26 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'history.header': 'Record    {count} entries in all',
     'history.headerTail': 'Record    {count} entries in all; these are the last {shown}',
     'history.empty': '(nothing yet — only commands that change something are recorded)',
-    'history.omitted': 'The {count} earlier entries are omitted — for all of them: history --lines 0',
+    'history.omitted': 'The {count} earlier entries are omitted — for all of them: ls history --lines 0',
     'history.unreadable': '{count} more lines could not be read and are not in the numbers above',
     'history.fullAt': 'Full record at {files}',
     'history.noFile': '(no file yet)',
 
-    'workspaces.useWhich': 'Which folder? For example: workspaces use E:\\code\\my-repo --sandbox alpha',
+    'workspaces.useWhich': 'Which folder? For example: set workspace E:\\code\\my-repo --in alpha',
     'workspaces.next': '{cabinet} opens into this workspace next time: {path}',
     'workspaces.addedNew': 'this is a new registration',
     'workspaces.movedFront': 'it was already registered, and moved to the front',
     'workspaces.alreadyFront': 'it was already at the front; nothing changed',
     'workspaces.writtenTo': 'Written to {file}',
-    'workspaces.unknownAction': 'workspaces knows only use, not "{action}"',
     'workspaces.header': 'Workspaces {cabinet} has seen    the first is what it opens into',
     'workspaces.neverStarted': '(this cabinet has never started, or no project was ever picked)',
     'workspaces.emptyList': '(none — dsh does not register the current directory by itself)',
     'sessions.count': '{count} conversations',
-    'workspaces.switchHint': 'Switch: workspaces use <folder> {where}',
+    'workspaces.switchHint': 'Switch: set workspace <folder> {where}',
     'workspaces.atFile': 'At {file}',
 
     'packages.nothingDownloading': 'No download is running, so there is nothing to stop',
-    'packages.cancelled': 'Stopped the download of "{name}", and everything it had started. Half-fetched packages stay where they are; clear them with: packages prune',
-    'packages.rmWhich': 'Which package? See them with packages',
-    'packages.noSuch': '"{name}" was never downloaded',
-    'packages.inUse': '"{name}" is still installed in {usedBy}, so it was not deleted.\n  Uninstall it from those cabinets first (plugins uninstall), then come back and delete the package.\n  Deleting it anyway would leave those cabinets pointing at a package name that does not resolve, and dsh answers that by refusing to load the whole plugin tree',
-    'packages.removed': 'The download of "{name}" is deleted — download it again to use it',
-    'packages.pruned': 'Deleted {count} downloads that no cabinet was using',
-    'packages.unknownAction': 'packages knows only rm and prune, not "{action}"',
-    'packages.header': 'Plugin packages dsh-box downloaded for you    one shared copy, linked into whichever cabinet wants it',
-    'packages.empty': '(none yet — plugins install <package> downloads here)',
-    'packages.nobodyUses': 'no cabinet uses it',
-    'packages.usedBy': 'used by: {list}',
-    'packages.filesCount': '{count} files',
-    'packages.at': 'At {dir}',
-    'packages.hints': 'Delete one: packages rm <package>      clear unused ones: packages prune',
+    'packages.cancelled': 'Stopped the download of "{name}", and everything it had started. Half-fetched packages stay where they are; installing the same package again writes over them',
 
     'sandboxes.header': "Sandboxes           each is an independent dsh; none can see another's conversations",
     'sandboxes.none': '(none yet)',
@@ -1706,17 +1810,17 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'sandboxes.notSignedIn': 'not signed in',
     'sandboxes.runningAt': 'running at {url}',
 
-    'adopt.bothForms': 'adopt <sandbox> and --from/--to are two spellings of the same thing; use only one',
-    'adopt.which': "Copy from where to where? adopt <sandbox> copies that sandbox's conversations into your everyday ~/.dsh; for any other direction write it out: --from <sandbox|main> --to <sandbox|main>",
+    'adopt.bothForms': 'Where from and where to can each have only one answer, and two were given',
+    'adopt.which': 'Copy from where to where? Both ends are needed: --from <sandbox|main> --to <sandbox|main>',
     'adopt.copied': 'Copied {adopted} conversations from {from} into {to}, skipping {skipped} duplicates',
     'adopt.originalsStay': 'The originals are all still in {from}; this is a copy, not a move',
     'adopt.visibleNextStart': '{to} sees them the next time it starts',
 
-    'start.bothFlags': '--main and --sandbox/--new are two answers to the same question: which cabinet to open. Give only one',
-    'start.whichCabinet': 'Which cabinet? --sandbox <name> for a sandbox, --new for a fresh one, --main for your everyday ~/.dsh. Nothing is carried over from last time — the same command should always give the same result',
-    'start.unknownPlugins': 'These plugin ids were never registered: {list} — see them with plugins',
+    'start.bothFlags': 'Which cabinet to open can only have one answer: with a name given, do not also pass --new',
+    'start.whichCabinet': 'Which cabinet? A sandbox name for that one, --new for a fresh one, main for your everyday ~/.dsh. Nothing is carried over from last time — the same command should always give the same result',
+    'start.unknownPlugins': 'These plugin ids cannot be named here: {list} — see the ones that can with ls plugin',
     'start.pluginGone': 'Note: "{id}" was selected but its folder no longer exists, so it is not installed this time',
-    'start.mainNeedsApproval': "Opening your real ~/.dsh with a release dsh-box downloaded is the one combination that cannot be repaired if it goes wrong, so it runs only after a person has agreed in the config window: dsh-box ui, pick the everyday cabinet and this release there, and the dialog says what will happen. Passing --approved yourself does not count, only a run started by the config window does — that is the one thing here that shows a person was present.",
+    'start.mainNeedsApproval': 'This opens your real ~/.dsh with a release dsh-box downloaded. Neither half is dangerous alone; together they are the one combination that cannot be repaired if it goes wrong:\n  1. On-disk formats have no migration path across releases — afterwards your own dsh may not be able to open this cabinet.\n  2. The cabinet holds a layer of links recording which machine it last used. This launch points them at dsh-box, and an abnormal exit leaves the old ones dead.\n  3. If you also start your own dsh some other way, two of them are pointing at one cabinet.\n  It runs after somebody presses Allow on the panel. The panel opens by itself; if it did not, open one: dsh-box ui.',
     'start.mainAlreadyRunning': 'The everyday cabinet already has one running (port 3080); close it before starting another',
     'start.notSandbox': 'Not a sandbox: this opens your real ~/.dsh',
     'start.releaseOnMain': 'This is not the dsh you installed yourself but a release dsh-box downloaded. Two things to know:',
@@ -1731,50 +1835,54 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'launch.followStop': 'Ctrl+C stops it (process {pid})',
     'launch.stopping': 'Stopping…',
 
-    'cmd.signin.usage': 'signin <sandbox>',
-    'cmd.signin.summary': 'Copy your sign-in into this sandbox, if it has none',
-    'cmd.signout.usage': 'signout <sandbox> | signout --main',
-    'cmd.signout.summary': 'Take the sign-in out of a cabinet',
-    'cmd.signout.notes': `⛔ There is no backup: once out, signing in again is the only way back. That is deliberate —
+    'cmd.get.signin.usage': 'get signin --to <sandbox>',
+    'cmd.get.signin.summary': 'Copy your sign-in into this sandbox, if it has none',
+    'cmd.get.signin.notes': `⛔ --to can only name a sandbox. The daily cabinet is where a sign-in comes from,
+  so importing it into itself is not a thing.`,
+    'cmd.rm.signin.usage': 'rm signin --from <cabinet>',
+    'cmd.rm.signin.summary': 'Take the sign-in out of a cabinet',
+    'cmd.rm.signin.notes': `⛔ There is no backup: once out, signing in again is the only way back. That is deliberate —
   a backup would be a second plaintext copy of your key, in a data directory whose whole point is
   that you can carry it away.
-  ⛔ The daily cabinet's copy is your own rather than one we imported, so that one runs only after
+  ⛔ With --from main the copy is your own rather than one we imported, so that one runs only after
   a person has agreed in the config window.`,
-    'signIn.which': 'Which sandbox should get the sign-in? See sandboxes',
+    'signIn.which': 'Which sandbox should get the sign-in? See them with ls sandbox',
     'signIn.mainIsSource': 'The daily cabinet is where a sign-in comes from; there is no importing it into itself',
     'signIn.nothingToCopy': 'Your own ~/.dsh has no sign-in to copy — sign in once in dsh first',
     'signIn.already': 'Sandbox "{name}" already has a sign-in; nothing changed',
     'signIn.done': 'Copied your sign-in into "{name}" — conversations there are billed for real',
-    'signOut.which': 'Which cabinet should lose its sign-in? Name a sandbox, or pass --main',
+    'signOut.which': 'Which cabinet should lose its sign-in? After --from write a sandbox name, or main',
     'signOut.none': '"{name}" had no sign-in',
     'signOut.done': 'Took the sign-in out of "{name}"',
     'signOut.noWayBack': 'No backup was kept: signing in again is the way back',
-    'signOut.mainNeedsApproval': 'This removes your own sign-in, and nothing is kept. It runs only after a person agrees in the config window: dsh-box ui, then untick the sign-in on the daily cabinet. Passing --approved yourself does not count.',
+    'signOut.mainNeedsApproval': 'This removes your own sign-in and keeps no copy. Signing in again in dsh restores it, but this tool cannot do that for you.\n  It runs after somebody presses Allow on the panel. The panel opens by itself; if it did not, open one: dsh-box ui.',
     'stop.mainNotRunning': 'The everyday cabinet has no instance running that was started from here',
     'stop.mainNote': 'If one answers on 3080, you started it yourself and it is not ours to manage',
     'stop.mainStopped': 'Stopped the everyday cabinet (process {pid}) — its home is your everyday one, and the data is all still there',
-    'stop.which': 'Which sandbox? See them with sandboxes, or use --main for the everyday cabinet',
+    'stop.mainNeedsApproval': 'This stops the dsh you are working in: whatever that session held is gone once it stops, and somebody else may be using it too. A person has to agree on the panel.',
+    'stop.which': 'Stop what? Name a cabinet (see them with ls sandbox; the everyday one is main), or use --all / --window / --download',
     'stop.notRunning': 'Sandbox "{name}" is not running',
     'stop.stopped': 'Stopped "{name}" (process {pid})',
     'stop.staleRow': 'That ledger row was stale: process {pid} now belongs to something else, so it was left alone. The row has been cleared.',
-    'rm.which': 'Which sandbox? See them with sandboxes',
+    'rm.which': 'Which sandbox? See them with ls sandbox',
     'rm.removed': 'Deleted "{name}" — that dsh no longer exists',
 
     'settings.header': 'Settings',
     'settings.choicesLine': 'choices: {choices}',
-    'settings.unknown': 'There is no setting called "{key}" — run config with no arguments to see them all',
+    'settings.unknown': 'There is no setting called "{key}" — see them all with ls setting',
     'settings.whichValue': 'Set {key} to what? Choices: {choices}',
     'settings.badValue': '{key} cannot be set to "{value}" — choices: {choices}',
     'config.nothingToReset': '{file} does not exist; there is nothing to reset',
-    'config.archived': 'The old settings were archived to {file} — not deleted; it records which plugins you registered',
+    'config.archived': 'The old settings were archived to {file} — not deleted; it records what you picked last time',
     'config.freshStart': 'The next command starts from empty',
 
     'quit.nothingRunning': 'No sandbox is running; there is nothing to stop',
     'quit.staleRows': '{count} more rows were stale: the process ids they named now belong to something else, so nothing was touched and the rows were cleared.',
     'quit.stopped': 'Stopped {count} sandboxes: {names}',
     'quit.mainStopped': 'The everyday cabinet was stopped too (process {pid}) — its home is your everyday one, and the data is all still there',
-    'quit.mainLeft': 'The everyday cabinet was started from here and is still running (to stop it too: add --main)',
+    'quit.mainStale': "The everyday cabinet's row named process {pid}, which now belongs to something else; nothing was touched and the row was cleared",
     'quit.mainForeign': 'A dsh answers on 3080, but it was not started from here; it cannot and should not be touched',
+    'quit.mainNeedsApproval': '{count} sandboxes have been stopped. The one left is the everyday cabinet, which is the one you work in, so stopping it needs a person to agree on the panel.',
 
     'flag.noValue': '--{flag} is a switch and takes no value',
     'flag.unknown': 'Unknown option "--{flag}" — run with no arguments to see usage',
@@ -1788,6 +1896,16 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.machineCard': 'dsh machine',
     'ui.pull': 'Download',
     'ui.customVersionPh': 'or type a release, e.g. 0.0.1-rc.1',
+    'ui.enginePathPh': 'or paste a folder: a dsh you built, or an application that ships one',
+    'ui.usePath': 'Use this folder',
+    'ui.pathNeeded': 'Paste the folder path into the box on the left first',
+    'ui.pullNotAPath': 'That is a folder, so there is nothing to download — it is already on this computer. Pick its chip above to use it',
+    'ui.pathChipUnstarted': 'not started yet',
+    'ui.forgetTitle': 'Take it out of here (your folder is not deleted)',
+    'ui.forgetAsk': 'Take "{where}" out of here?',
+    'ui.forgetBody': 'Only dsh-box stops remembering it. <b>Your folder is not deleted</b> — {path} stays where it is, and can be pasted again any time. Sandboxes that used it have their module pointer layer cleared; dsh rebuilds it at the next boot.',
+    'ui.forget': 'Take it out',
+    'ui.forgotMsg': '{path} is no longer remembered; that folder was not touched',
     'ui.sourceLabel': 'Source',
     'ui.sourceAuto': 'auto',
     'ui.sourceOfficial': 'official npm',
@@ -1803,10 +1921,6 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.signInWillImport': 'will be copied in',
     'ui.signInDailyNote': 'This is your own sign-in; unticking takes it out, and nothing is kept',
     'ui.signInSandboxNote': 'Ticked copies your sign-in in; unticked takes it out of this sandbox',
-    'ui.signOutAskTitle': 'Take out your own sign-in?',
-    'ui.signOutAskBody': 'This deletes the sign-in in the daily cabinet, and keeps no copy.',
-    'ui.signOutAskNote': 'Signing in again in dsh restores it, but this tool cannot do that for you.',
-    'ui.signOutOk': 'Take it out',
     'ui.importSignIn': 'Import sign-in credentials',
     'ui.importSignInNote': 'only meaningful for a newly created sandbox cabinet',
     'ui.pluginsCard': 'Plugins in this cabinet',
@@ -1817,9 +1931,8 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.npmInstall': 'Install from npm',
     'ui.npmCancel': 'Stop download',
     'ui.npmCancelled': 'Stopped the download of "{name}".',
-    'ui.npmNote': 'Downloads from npm into the sandbox cabinet selected above. For the daily cabinet use the command line: plugins install <name> --main',
+    'ui.npmNote': 'Downloads from npm into the sandbox cabinet selected above. For the daily cabinet use the command line: get plugin <name> --to main',
     'ui.npmBadName': '"{name}" is not a valid npm package name; no command was sent.',
-    'ui.npmMainRefused': 'This road only installs into a sandbox. For the daily cabinet, use the command line: plugins install <name> --main',
     'ui.npmInstallingHead': 'Downloading and installing {name} from npm… (this can take a few minutes)',
     'ui.npmInstalled': '"{name}" is now installed in "{cabinet}".',
     'ui.npmBrought': 'This package brought {count} plugins.',
@@ -1830,10 +1943,12 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.cancel': 'Cancel',
     'ui.ok': 'OK',
     'ui.notice': 'Notice',
+    'ui.approvalTitle': 'One step needs you',
+    'ui.approvalAllow': 'Allow',
+    'ui.approvalDeny': 'Refuse',
     'ui.dontAskAgain': 'Do not ask again',
     'ui.dropDontAskNote': 'future changes to the everyday cabinet run without asking',
     'ui.dropConfirm': 'Uninstall and remove',
-    'ui.quitMainToo': 'Stop the everyday cabinet too',
     'ui.quitDontAskNote': 'future closes follow this choice without asking',
     'ui.quitConfirm': 'Stop and quit',
     'ui.staleStuck': 'Reloaded once and the pass still does not match. Reopen the config window by hand (command line: dsh-box ui).',
@@ -1860,7 +1975,7 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.machineHintNoHost': 'No dsh is installed on this computer, so only downloaded releases can run.',
     'ui.pluginHintMain': 'Installed into the everyday cabinet it stays, and typing dsh yourself loads it too. To just try one, use a sandbox.',
     'ui.pluginHintSandbox': 'Installed into this sandbox it stays, not only for this launch. For plain official dsh, make a new sandbox.',
-    'ui.unreadableWarn': "This cabinet's plugin config cannot be read, so this list may be incomplete. It will not be touched until someone has looked — the command line can restore it whole: plugins restore",
+    'ui.unreadableWarn': "This cabinet's plugin config cannot be read, so this list may be incomplete. It will not be touched until someone has looked — the command line can put the whole file back one step: set plugin --undo",
     'ui.willRemoveNote': 'comes out of this cabinet when start is pressed',
     'ui.installedHereNote': 'already installed in this cabinet',
     'ui.tagGoing': 'removing',
@@ -1869,10 +1984,6 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.tagNot': 'not installed',
     'ui.tagTheirs': 'already there',
     'ui.theirsNote': 'already in this cabinet before dsh-box; cannot be changed here',
-    'ui.uninstallDelete': 'Uninstall and delete',
-    'ui.forget': 'Forget',
-    'ui.uninstallDeleteTitle': 'Comes out of every cabinet, and the downloaded package is deleted',
-    'ui.forgetTitle': 'Comes out of every cabinet and is forgotten; your own folder is not touched',
     'ui.missingPlugin': '{label} — folder no longer exists, cannot be installed',
     'ui.noPlugins': 'Nothing extra in this cabinet: plain official dsh.',
     'ui.dailyNote': 'the ~/.dsh you use every day',
@@ -1916,11 +2027,6 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.pullNeedsVersion': 'Type a release first, or pick one above to download — the machine you installed yourself did not come from npm and cannot be downloaded.',
     'ui.pullingHead': 'Downloading {version}…',
     'ui.pullDone': '{version} is ready: {packages} packages verified.',
-    'ui.approveHead': 'dsh — <b>downloaded release {version}</b>, not this machine<br>cabinet — <b>your own ~/.dsh</b>',
-    'ui.approvePoint1': '1. <b>On-disk formats differ across releases</b> — your local dsh cannot open the cabinet afterwards.',
-    'ui.approvePoint2': '2. <b>The cabinet holds a layer of links</b> recording which machine it last used. This launch points them at dsh-box; an abnormal exit leaves the old links dead.',
-    'ui.approvePoint3': '3. If a local dsh is started some other way, <b>two dsh point at the same cabinet</b> and can corrupt it.',
-    'ui.approveOk': 'Do it',
     'ui.startingHead': 'Starting…',
     'ui.sandboxQuoted': 'Sandbox "{name}"',
     'ui.startedMsg': '{where} started, using {engine} {version}.',
@@ -1928,11 +2034,10 @@ Data goes in ./dsh-box-files/data by default (change it with --box <folder> or D
     'ui.nameRule': 'Allowed names: {rule}',
     'ui.quitRowSandboxNone': 'sandboxes — none running',
     'ui.quitRowSandbox': 'sandboxes — {count} running: {names}',
-    'ui.quitRowMainHere': 'cabinet — your own, started from here (process {pid}); left running by default',
+    'ui.quitRowMainHere': 'cabinet — your own, started from here (process {pid}); it stops too, and stopping it asks you once more',
     'ui.quitRowMainForeign': 'cabinet — one answers on 3080, not started from here; process unknown, left alone',
     'ui.quitRowMainNone': 'cabinet — none started from here',
     'ui.quitPoint1': '1. <b>Sandboxes are only stopped</b>; conversations and config remain, and starting the same name continues them.',
-    'ui.quitMainNote': 'unticked leaves it running',
     'ui.quitAlsoMain': ', and the everyday cabinet too (process {pid})',
     'ui.quitDoneTitle': 'Quit',
     'ui.quitDoneBody': 'Stopped {count} sandboxes{alsoMain}. This page can be closed now.',
