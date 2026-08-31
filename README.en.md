@@ -92,7 +92,9 @@ From source it is `node bin/cli.js ui`.
 
 ## For Agents
 
-The command line was built for this: it has `--help`, and `--json` on any command answers in JSON. **A failure is JSON too, and carries a `code` that never changes.** So there is no long-running HTTP API here and no MCP — a middle layer would add nothing.
+The command line was built for this: it has `--help`, and `--json` on any command answers in JSON. **A failure is JSON too, and carries a `code` that never changes.** So there is no long-running HTTP API here.
+
+MCP is on the table, to make wiring this in easier. It answers a different question — not "can an agent use it" but "**how would an agent know it exists**" — and it will be another face of the same command declaration, not a second implementation.
 
 What is new is taking over:
 
