@@ -824,11 +824,40 @@ export function portableCredentials(sourceHome) {
 
   // Rendered, never spliced: what goes out is a document this tool wrote from
   // the pieces it recognised, so a line it did not understand cannot ride along
-  // inside it. `version: 1` is the layout dsh reads — a flat source is carried
-  // across already migrated, exactly as dsh's own in-place upgrade would.
-  const parts = ['version: 1']
-  if (scan.refs.length > 0) parts.push('refs:', ...scan.refs.map((line) => `  ${line.trim()}`))
-  if (scan.apiKeys.length > 0) parts.push('records:', ...scan.apiKeys)
+  // inside it.
+  //
+  // ⛔⛔ Which layout to render is **not** a matter of taste, and it used to be
+  // wrong. This wrote `version: 1` + `refs:` unconditionally, on the belief that
+  // it "is the layout dsh reads". It is the layout the *newer* engines read.
+  // There are two of them in the wild and they disagree:
+  //   - `0.1.0-rc.6` / `0.1.0-rc.7` — every top-level key maps to a string, and
+  //     nothing else is admitted. A `version: 1` line is a number where a key's
+  //     value belongs, so the whole document is refused and the sandbox dies on
+  //     boot with `BOOT_EXITED`. Measured on both Windows and aarch64/musl.
+  //   - `0.1.1-rc.2` / `0.1.2-rc.1` — want `version` / `refs` / `records`, and
+  //     call the other one "the pre-release flat layout" **but migrate it in
+  //     place on load** rather than refuse it. Measured: a flat file booted, and
+  //     the file on disk had been rewritten into the versioned layout afterwards.
+  //
+  // ⭐ So the two layouts are not symmetric, and that decides it: the flat one is
+  // read by the old engines and *upgraded* by the new ones, while the versioned
+  // one is read only by the new. **Render the oldest layout that can carry what
+  // we have** and every engine can take it — the newer ones by a migration that
+  // is upstream's own, not a trick of ours.
+  //
+  // ⭐ Note what this deliberately does not do: it does not go looking inside the
+  // engine's `node_modules` to see which parser is in there. That would tie us to
+  // the shape of somebody else's package tree — the same coupling §2.5 of the
+  // 09-01 round refused when it declined to import dsh's path constants — and it
+  // would still have to answer this question when no engine is pinned yet, which
+  // is exactly the case while `get signin` is running.
+  const flatEnough = scan.apiKeys.length === 0
+  // `records:` has no flat spelling: a tagged entry is a mapping, and the flat
+  // layout admits strings only. A document that has them came from an engine new
+  // enough to have written them, so the versioned layout is the honest render.
+  const parts = flatEnough
+    ? scan.refs.map((line) => line.trim())
+    : ['version: 1', ...(scan.refs.length > 0 ? ['refs:', ...scan.refs.map((line) => `  ${line.trim()}`)] : []), 'records:', ...scan.apiKeys]
   return {
     text: `${parts.join('\n')}\n`,
     refs: scan.refs.length,

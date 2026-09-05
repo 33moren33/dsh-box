@@ -1,6 +1,6 @@
 [package]
 name = "dsh-box-shell"
-version = "0.5.1"
+version = "0.5.2"
 description = "dsh 沙箱启动器的桌面壳:开一个原生小窗,里面还是同一个 Node 服务"
 edition = "2021"
 rust-version = "1.77.2"

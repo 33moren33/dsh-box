@@ -167,11 +167,22 @@ check('⛔⛔ 而那把 cookie 签名密钥没有跟着走',
 check('⭐ 搬完的仍是 dsh 读得懂的形状(版本位在,而且判回 keys)',
   carried !== null && carried.text.startsWith('version: 1\n')
   && credentialsState(shaped('carried', carried.text)) === 'keys')
-// ⛔ 上一代扁平版式:搬过去时顺手升级成 refs —— 与 dsh 自己那次就地升级同一个结果,
-//    ⛔ 不是我们发明的形状。
+// ⛔⛔ 扁平的源要原样保持扁平,⛔ 不许顺手升级 —— 这条断言以前写反了,而写反的
+//    那一版正是 0.5.0 那个「rc 引擎上 get signin 之后沙箱起不来」的病灶。
+//    两代引擎不对称,都是实测:
+//      0.1.0-rc.6 / 0.1.0-rc.7 —— 顶层每个值都必须是字符串,`version: 1` 是数字,
+//        整份文档当场被拒,沙箱 BOOT_EXITED(Windows 与 aarch64/musl 双端量到);
+//      0.1.1-rc.2 / 0.1.2-rc.1 —— 想要 version/refs/records,但**读到扁平的会就地
+//        迁移**而不是拒绝(实测:扁平文件照样起得来,起完那份文件已被改写成带版本位的)。
+//    ⭐ 判词:能装下内容的最老那种版式,才是搬得最远的那种 —— 老引擎直接认,
+//    新引擎自己会升级,而升级那一步是上游自己的,不是我们发明的。
 const flatCarried = portableCredentials(shaped('flat-src', 'DEEPSEEK_API_KEY: x\n'))
-check('⭐ 扁平版式搬过去时升级成 version:1 + refs',
-  flatCarried !== null && flatCarried.text === 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: x\n', JSON.stringify(flatCarried?.text))
+check('⭐⭐ 扁平的源搬过去仍是扁平(老引擎认,新引擎自己会升级)',
+  flatCarried !== null && flatCarried.text === 'DEEPSEEK_API_KEY: x\n', JSON.stringify(flatCarried?.text))
+// ⛔ 反过来:`records:` 没有扁平写法(标签条目是映射,而扁平版式只收字符串),
+//    所以源里有 api-key 记录时仍渲染成带版本位的那套 —— 上面 mixedDaily 那组管着。
+check('⭐ 只有 refs 的源也降回扁平(没有 records 就不该抬版式)',
+  portableCredentials(shaped('refs-only-src', 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: y\n'))?.text === 'DEEPSEEK_API_KEY: y\n')
 check('⛔ 源那边只有浏览器会话时,没东西可搬,说没有',
   portableCredentials(shaped('grant-src', 'version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      secret: s\n')) === null)
 check('⛔ 读不懂的源不许硬搬(半份凭证比没有更坏)',
