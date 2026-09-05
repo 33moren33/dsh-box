@@ -144,19 +144,28 @@ fn run_command_line(args: &[String]) -> i32 {
         // — which never inherits anything — closed at the same instant it
         // exited. So the leak lives here, not in `launch.js`.
         //
-        // ⛔⛔ stdin is **not** inherited either, and that is not tidiness. On
-        // Windows `CreateProcess` carries `bInheritHandles = TRUE` whenever any
-        // handle is being passed, and that flag hands over *every* inheritable
-        // handle this process holds — including the caller's own stdout pipe,
-        // which arrived inheritable from whoever launched this exe. So leaving
-        // one of the three inherited keeps the whole door open, and the fix
-        // above does nothing. Measured: with stdout/stderr piped and stdin
-        // inherited, the pipe was still open after 90 seconds.
+        // ⛔⛔ stdin is carried the same way, and for the same reason it is not
+        // *inherited*. On Windows `CreateProcess` carries
+        // `bInheritHandles = TRUE` whenever any handle is being passed, and that
+        // flag hands over *every* inheritable handle this process holds —
+        // including the caller's own stdout pipe, which arrived inheritable from
+        // whoever launched this exe. So handing over one of the three reopens
+        // the door the fix above closes. Measured: with stdout/stderr piped and
+        // stdin **inherited**, the pipe was still open after 90 seconds.
         //
-        // Nothing here reads stdin — every question this tool asks is asked in
-        // the config window — and Ctrl+C arrives as a console control event to
-        // the process group, not down this handle.
-        .stdin(Stdio::null())
+        // ⭐ A pipe of our own is not the same thing: the child is given the read
+        // end of something we created, never a handle we were handed. `feed`
+        // then copies our stdin into it, exactly as `carry` copies the other two
+        // back out. Courier both ways.
+        //
+        // ⛔ This used to be `Stdio::null()`, on the grounds that nothing here
+        // read stdin. That was true until `mcp`, which is a stdio server and is
+        // nothing but a reader of it: with a null stdin it saw end-of-input at
+        // once and exited 0 without a byte of output, so the portable exe and
+        // the installer shipped 0.5.0's headline feature dead while the npm path
+        // was fine. ⭐ A handle no caller has ever used is a handle no one has
+        // ever tested.
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(dir) = &layout.box_dir {
@@ -175,6 +184,7 @@ fn run_command_line(args: &[String]) -> i32 {
         Ok(child) => child,
         Err(error) => return refuse(wants_json, "NODE_MISSING", &format!("起不了 Node:{error}")),
     };
+    feed(child.stdin.take());
     let out_done = carry(child.stdout.take(), false);
     let err_done = carry(child.stderr.take(), true);
     let code = match child.wait() {
@@ -227,6 +237,38 @@ fn stop_passing_our_handles_on() {
         }
         unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
     }
+}
+
+/// Copy our stdin into the command line's, on a thread of its own.
+///
+/// The mirror of `carry`, and it exists for the same reason: what the child is
+/// given is the read end of a pipe we created, never a handle handed to us, so
+/// the door `stop_passing_our_handles_on` closes stays closed.
+///
+/// ⛔ The end of our stdin must close the child's, which is what dropping the
+/// handle does. A stdio server reads until end-of-input; without that close it
+/// would wait for an input that can no longer arrive.
+///
+/// ⛔ Nothing waits for this thread. When our stdin is a console nobody types
+/// into, the read never returns — and a command that has already answered must
+/// not be held open by a reader that is still hoping.
+fn feed<W: Write + Send + 'static>(to: Option<W>) {
+    let Some(mut to) = to else { return };
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        let mut from = std::io::stdin();
+        loop {
+            match from.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    if to.write_all(&buffer[..read]).and_then(|()| to.flush()).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        drop(to);
+    });
 }
 
 /// Copy one of the command line's streams onto ours, on a thread of its own.

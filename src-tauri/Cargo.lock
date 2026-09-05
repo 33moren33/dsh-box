@@ -672,12 +672,13 @@ dependencies = [
 
 [[package]]
 name = "dsh-box-shell"
-version = "0.1.2"
+version = "0.5.1"
 dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
