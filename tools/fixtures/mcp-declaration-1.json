@@ -1,0 +1,1214 @@
+{
+  "top": [
+    "bindings",
+    "name",
+    "schemaVersion",
+    "tools",
+    "truncationHint",
+    "verdicts",
+    "version"
+  ],
+  "schemaVersion": 1,
+  "verdicts": {
+    "ok": {
+      "isError": false
+    },
+    "failed": {
+      "isError": false
+    },
+    "error": {
+      "isError": true
+    },
+    "partial": {
+      "isError": false
+    }
+  },
+  "tools": [
+    {
+      "name": "ls",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "ls"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_machine",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "ls",
+          "machine"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_plugin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {
+        "in": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "ls",
+          "plugin"
+        ],
+        "positional": [],
+        "flags": [
+          "in"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_sandbox",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "ls",
+          "sandbox"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_workspace",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [
+        "in"
+      ],
+      "properties": {
+        "in": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "ls",
+          "workspace"
+        ],
+        "positional": [],
+        "flags": [
+          "in"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_history",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {
+        "lines": [
+          "string",
+          null,
+          null
+        ],
+        "shape": [
+          "boolean",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "ls",
+          "history"
+        ],
+        "positional": [],
+        "flags": [
+          "lines",
+          "shape"
+        ],
+        "booleans": [
+          "shape"
+        ],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_memory",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "ls",
+          "memory"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "ls_setting",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "ls",
+          "setting"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "get_machine",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "get",
+          "machine"
+        ],
+        "positional": [
+          "version"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "get_plugin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "to"
+      ],
+      "properties": {
+        "source": [
+          "string",
+          null,
+          null
+        ],
+        "to": [
+          "string",
+          null,
+          null
+        ],
+        "from": [
+          "string",
+          null,
+          null
+        ],
+        "id": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "get",
+          "plugin"
+        ],
+        "positional": [
+          "source"
+        ],
+        "flags": [
+          "to",
+          "from",
+          "id"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "get_signin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "to"
+      ],
+      "properties": {
+        "to": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "get",
+          "signin"
+        ],
+        "positional": [],
+        "flags": [
+          "to"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "get_chat",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": [
+          "string",
+          null,
+          null
+        ],
+        "to": [
+          "string",
+          null,
+          null
+        ],
+        "force": [
+          "boolean",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "get",
+          "chat"
+        ],
+        "positional": [],
+        "flags": [
+          "from",
+          "to",
+          "force"
+        ],
+        "booleans": [
+          "force"
+        ],
+        "repeat": []
+      }
+    },
+    {
+      "name": "rm_machine",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "rm",
+          "machine"
+        ],
+        "positional": [
+          "version"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "rm_plugin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "target",
+        "from"
+      ],
+      "properties": {
+        "target": [
+          "string",
+          null,
+          null
+        ],
+        "from": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "rm",
+          "plugin"
+        ],
+        "positional": [
+          "target"
+        ],
+        "flags": [
+          "from"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "rm_sandbox",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "sandbox"
+      ],
+      "properties": {
+        "sandbox": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "rm",
+          "sandbox"
+        ],
+        "positional": [
+          "sandbox"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "rm_signin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "from"
+      ],
+      "properties": {
+        "from": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "rm",
+          "signin"
+        ],
+        "positional": [],
+        "flags": [
+          "from"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "rm_setting",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {},
+      "binding": {
+        "command": [
+          "rm",
+          "setting"
+        ],
+        "positional": [],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "start",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {
+        "sandbox": [
+          "string",
+          null,
+          null
+        ],
+        "new": [
+          "boolean",
+          null,
+          null
+        ],
+        "version": [
+          "string",
+          null,
+          null
+        ],
+        "plugin": [
+          "array",
+          "string",
+          null
+        ],
+        "unplug": [
+          "array",
+          "string",
+          null
+        ],
+        "no-sign-in": [
+          "boolean",
+          null,
+          null
+        ],
+        "sign-in": [
+          "boolean",
+          null,
+          null
+        ],
+        "sign-out": [
+          "boolean",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "start"
+        ],
+        "positional": [
+          "sandbox"
+        ],
+        "flags": [
+          "new",
+          "version",
+          "plugin",
+          "unplug",
+          "no-sign-in",
+          "sign-in",
+          "sign-out"
+        ],
+        "booleans": [
+          "new",
+          "no-sign-in",
+          "sign-in",
+          "sign-out"
+        ],
+        "repeat": [
+          "plugin",
+          "unplug"
+        ]
+      }
+    },
+    {
+      "name": "stop",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {
+        "sandbox": [
+          "string",
+          null,
+          null
+        ],
+        "all": [
+          "boolean",
+          null,
+          null
+        ],
+        "window": [
+          "boolean",
+          null,
+          null
+        ],
+        "download": [
+          "boolean",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "stop"
+        ],
+        "positional": [
+          "sandbox"
+        ],
+        "flags": [
+          "all",
+          "window",
+          "download"
+        ],
+        "booleans": [
+          "all",
+          "window",
+          "download"
+        ],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_plugin",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "in"
+      ],
+      "properties": {
+        "target": [
+          "string",
+          null,
+          null
+        ],
+        "state": [
+          "string",
+          null,
+          [
+            "on",
+            "off"
+          ]
+        ],
+        "undo": [
+          "boolean",
+          null,
+          null
+        ],
+        "in": [
+          "string",
+          null,
+          null
+        ],
+        "at": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "plugin"
+        ],
+        "positional": [
+          "target",
+          "state"
+        ],
+        "flags": [
+          "undo",
+          "in",
+          "at"
+        ],
+        "booleans": [
+          "undo"
+        ],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_workspace",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "path",
+        "in"
+      ],
+      "properties": {
+        "path": [
+          "string",
+          null,
+          null
+        ],
+        "in": [
+          "string",
+          null,
+          null
+        ],
+        "title": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "workspace"
+        ],
+        "positional": [
+          "path"
+        ],
+        "flags": [
+          "in",
+          "title"
+        ],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_source",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": [
+          "string",
+          null,
+          [
+            "auto",
+            "official",
+            "mirror"
+          ]
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "source"
+        ],
+        "positional": [
+          "value"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_lang",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": [
+          "string",
+          null,
+          [
+            "zh",
+            "en"
+          ]
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "lang"
+        ],
+        "positional": [
+          "value"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_ask-on-quit",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": [
+          "string",
+          null,
+          [
+            "on",
+            "off"
+          ]
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "ask-on-quit"
+        ],
+        "positional": [
+          "value"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_ask-on-daily",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": [
+          "string",
+          null,
+          [
+            "on",
+            "off"
+          ]
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "ask-on-daily"
+        ],
+        "positional": [
+          "value"
+        ],
+        "flags": [],
+        "booleans": [],
+        "repeat": []
+      }
+    },
+    {
+      "name": "set_path",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "required": [
+        "state"
+      ],
+      "properties": {
+        "state": [
+          "string",
+          null,
+          [
+            "on",
+            "off"
+          ]
+        ],
+        "force": [
+          "boolean",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "set",
+          "path"
+        ],
+        "positional": [
+          "state"
+        ],
+        "flags": [
+          "force"
+        ],
+        "booleans": [
+          "force"
+        ],
+        "repeat": []
+      }
+    },
+    {
+      "name": "logs",
+      "keys": [
+        "annotations",
+        "description",
+        "inputSchema",
+        "name",
+        "title"
+      ],
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "required": [],
+      "properties": {
+        "sandbox": [
+          "string",
+          null,
+          null
+        ],
+        "shape": [
+          "boolean",
+          null,
+          null
+        ],
+        "errors": [
+          "boolean",
+          null,
+          null
+        ],
+        "lines": [
+          "string",
+          null,
+          null
+        ],
+        "all": [
+          "boolean",
+          null,
+          null
+        ],
+        "version": [
+          "string",
+          null,
+          null
+        ],
+        "package": [
+          "string",
+          null,
+          null
+        ]
+      },
+      "binding": {
+        "command": [
+          "logs"
+        ],
+        "positional": [
+          "sandbox"
+        ],
+        "flags": [
+          "shape",
+          "errors",
+          "lines",
+          "all",
+          "version",
+          "package"
+        ],
+        "booleans": [
+          "shape",
+          "errors",
+          "all"
+        ],
+        "repeat": []
+      }
+    }
+  ]
+}

@@ -16,13 +16,15 @@
 //! two faces are handed the same directory by the same function, so they
 //! cannot disagree.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// Where the window tries to live. Same preference as the plain `ui`
@@ -41,6 +43,30 @@ const IDENTIFIER: &str = "com.dshbox.desktop";
 /// the resource targets in `tauri.conf.json` and to `DEFAULT_BOX_NAME` in
 /// `src/paths.js`.
 const BOX_FOLDER: &str = "dsh-box-files";
+
+/// What the shell asks the page when the window's X is pressed.
+///
+/// ⛔ Must stay equal to the name the page listens for, and
+/// `tools/check-window-seat.mjs` reads both files to make sure it does — a
+/// renamed event on one side alone is a close request nobody hears, which looks
+/// exactly like the bug this pair was added to fix.
+const CLOSE_REQUESTED: &str = "dsh-box://close-requested";
+
+/// What the page says back to mean "I have it from here".
+const CLOSE_TAKEN_OVER: &str = "dsh-box://close-taken-over";
+
+/// How long the shell waits for that answer before closing the plain way.
+///
+/// Not a budget for the shutdown — for the *answer*. It is one webview round
+/// trip over loopback, milliseconds when the page is alive; the seconds are
+/// there for the page not being alive yet. The boot below waits only until the
+/// service accepts connections, so an X pressed in the first moment can land
+/// before the page's script has run and registered its listener.
+///
+/// ⚠ The two ways of being wrong are not symmetric, which is why this is not
+/// bigger. Too short falls back to the close that already happens today; too
+/// long leaves somebody clicking an X on a window that will not go away.
+const PAGE_ANSWERS_WITHIN: Duration = Duration::from_secs(3);
 
 /// One booted Node service.
 struct Server {
@@ -102,11 +128,37 @@ fn run_command_line(args: &[String]) -> i32 {
         // and `path add` needs it: a script cannot work out that it is being
         // run by an exe, let alone which one.
         .envs(exe_hint(layout.box_dir.is_some()))
-        // Inherited, unlike the window's captured pipes: whoever typed the
-        // command is the one who should see the output, as it appears.
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        // ⛔⛔ Output is carried across rather than inherited, and the reason is
+        // not style. `Stdio::inherit` hands the caller's own pipe to Node **as
+        // an inheritable handle**; Node then spawns the sandbox with
+        // `bInheritHandles = TRUE`, so the detached dsh receives a copy of that
+        // handle no matter what the `stdio` mapping says. dsh outlives everyone
+        // here, the write end therefore never closes, and every caller that
+        // waits for end-of-pipe — `| Out-String`, `$(...)`, `subprocess.run`,
+        // and every agent's command runner — hangs forever on a command that
+        // finished in seconds.
+        //
+        // ⭐ Measured 2026-08-30, three runs: through this exe the two front
+        // processes were gone at 7s while the pipe was still open at 100s;
+        // killing the sandbox closed it 1.4s later; the bare Node command line
+        // — which never inherits anything — closed at the same instant it
+        // exited. So the leak lives here, not in `launch.js`.
+        //
+        // ⛔⛔ stdin is **not** inherited either, and that is not tidiness. On
+        // Windows `CreateProcess` carries `bInheritHandles = TRUE` whenever any
+        // handle is being passed, and that flag hands over *every* inheritable
+        // handle this process holds — including the caller's own stdout pipe,
+        // which arrived inheritable from whoever launched this exe. So leaving
+        // one of the three inherited keeps the whole door open, and the fix
+        // above does nothing. Measured: with stdout/stderr piped and stdin
+        // inherited, the pipe was still open after 90 seconds.
+        //
+        // Nothing here reads stdin — every question this tool asks is asked in
+        // the config window — and Ctrl+C arrives as a console control event to
+        // the process group, not down this handle.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(dir) = &layout.box_dir {
         // Only when the caller has not already chosen one. An explicit
         // `DSH_BOX_HOME` means someone deliberately pointed at another data
@@ -117,10 +169,98 @@ fn run_command_line(args: &[String]) -> i32 {
             command.env("DSH_BOX_HOME", dir);
         }
     }
-    match command.status() {
+    #[cfg(windows)]
+    stop_passing_our_handles_on();
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return refuse(wants_json, "NODE_MISSING", &format!("起不了 Node:{error}")),
+    };
+    let out_done = carry(child.stdout.take(), false);
+    let err_done = carry(child.stderr.take(), true);
+    let code = match child.wait() {
         Ok(status) => status.code().unwrap_or(1),
-        Err(error) => refuse(wants_json, "NODE_MISSING", &format!("起不了 Node:{error}")),
+        Err(error) => return refuse(wants_json, "NODE_MISSING", &format!("起不了 Node:{error}")),
+    };
+    // ⛔ Bounded on purpose. The command line has already exited, so whatever it
+    // wrote is sitting in the pipe and a carrier drains it in milliseconds; but
+    // if a detached grandchild is holding the write end, end-of-pipe never comes
+    // and joining would reintroduce the very hang this function exists to avoid.
+    // Waiting for the *process* is correct; waiting for the *pipe* is not.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline && !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst)) {
+        std::thread::sleep(Duration::from_millis(10));
     }
+    code
+}
+
+/// Take the inheritable mark off our own standard handles.
+///
+/// ⛔⛔ Without this, everything above is decoration. `CreateProcess` is called
+/// with `bInheritHandles = TRUE` whenever the child is handed any handle, and
+/// that flag does not mean "pass the handles named in `STARTUPINFO`" — it means
+/// **pass every inheritable handle this process holds**. The caller's stdout
+/// pipe is one of them: it arrived inheritable from whoever launched this exe.
+/// So it reached Node, Node's own spawn passed it on the same way, and the
+/// sandbox — which outlives all of us — ended up holding the write end of a pipe
+/// the caller was waiting to see closed.
+///
+/// ⭐ Measured, twice, and both measurements were needed. Redirecting the
+/// child's `stdout`/`stderr` away from the caller's pipe: **still open after 100
+/// seconds**. Also making `stdin` a null device: **still open after 75**. Only
+/// clearing the mark ends it, because the leak was never about which handles
+/// were being *given*.
+///
+/// ⚠️ Nothing here loses anything: the streams this process writes to are
+/// unaffected, and the child is handed pipes of our own making, which are
+/// marked inheritable by the machinery that creates them.
+#[cfg(windows)]
+fn stop_passing_our_handles_on() {
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // A face with no console has no such handle, and nothing is owed then.
+        let handle = unsafe { GetStdHandle(which) };
+        if handle.is_null() || handle as isize == -1 {
+            continue;
+        }
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
+    }
+}
+
+/// Copy one of the command line's streams onto ours, on a thread of its own.
+///
+/// The flag it returns is how the caller learns the stream reached its end,
+/// without being able to block on it.
+fn carry<R: Read + Send + 'static>(from: Option<R>, to_stderr: bool) -> Arc<AtomicBool> {
+    let done = Arc::new(AtomicBool::new(false));
+    let Some(mut from) = from else {
+        done.store(true, Ordering::SeqCst);
+        return done;
+    };
+    let flag = done.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 8192];
+        loop {
+            match from.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => {
+                    let slice = &buffer[..read];
+                    // Written straight through, unbuffered and unparsed: this
+                    // side is a courier, not an author. Ordering between the two
+                    // streams is whatever the writer chose, same as inheriting.
+                    let _ = if to_stderr {
+                        std::io::stderr().write_all(slice).and_then(|()| std::io::stderr().flush())
+                    } else {
+                        std::io::stdout().write_all(slice).and_then(|()| std::io::stdout().flush())
+                    };
+                }
+            }
+        }
+        flag.store(true, Ordering::SeqCst);
+    });
+    done
 }
 
 /// Say why nothing ran, in whichever form the caller asked for, and hand back
@@ -214,13 +354,17 @@ fn run_window() {
             match boot(app.handle()) {
                 Ok(server) => {
                     let address = server.url.clone();
-                    show_window(app, &address)?;
+                    let window = show_window(app, &address)?;
                     // ⭐ The window closes when the service does, and this is
                     // the arm that owns one: the page's own "quit" ends the
                     // service, and without this the shell went on living with a
                     // dead page in it — on screen, in the task list, and
                     // (before this) still called "closed" by the page.
                     watch_service(app.handle().clone(), &address);
+                    // ⭐⭐ And the other direction: the service ends when the
+                    // window does. Only on this arm, because only this arm owns
+                    // the service — see the note on the function.
+                    close_through_the_page(&window, app.handle());
                     app.manage(server);
                     Ok(())
                 }
@@ -465,13 +609,107 @@ fn refused_because_open(answered: &str) -> Option<(String, Option<String>)> {
 /// view of a service. Which process started that service is a question about
 /// ownership, answered above by whether a `Server` is managed — not by drawing
 /// a different window.
-fn show_window(app: &tauri::App, address: &str) -> Result<(), Box<dyn std::error::Error>> {
+///
+/// The window is handed back rather than dropped, because ownership decides one
+/// more thing now: whether closing this window shuts the program down.
+fn show_window(
+    app: &tauri::App,
+    address: &str,
+) -> Result<tauri::WebviewWindow, Box<dyn std::error::Error>> {
     let url: tauri::Url = address.parse()?;
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    Ok(WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
         .title("dsh 沙箱启动器")
         .inner_size(680.0, 780.0)
-        .build()?;
-    Ok(())
+        .build()?)
+}
+
+/// Make the window's X press the page's own quit button.
+///
+/// ⛔⛔ Closing the window has to do six things the plain close never did: stop
+/// each sandbox with its identity checked, forget the on-disk record of what was
+/// running, stop the daily cabinet's dsh through the approval gate, write the
+/// journal, end the service gracefully so the seat is let go, and — first —
+/// show the person which sandboxes are about to be stopped. All six already
+/// exist, once, behind the button at the bottom of the page.
+///
+/// ⛔⛔ So none of them is written here. **Two faces of one program drift**, and
+/// this repository has paid for that twice; a copy in Rust would start out
+/// identical and stop being so at the first change on the page. The list naming
+/// the sandboxes would be the first to go stale, and a dialog that names the
+/// wrong sandboxes is worse than no dialog. `set ask-on-quit` has promised this
+/// warning before closing the window since the day it was added — the promise
+/// was never wrong, the implementation was missing.
+///
+/// So the close is held, the page is asked, and the page clicks its own button.
+/// The window then goes the way it already goes when that button is used: the
+/// service ends itself and {@link watch_service} sees the port stop answering.
+///
+/// ⭐ Cancelling is a real answer. Someone who presses X, reads the list and
+/// says no keeps their window — exactly what pressing the button and then Cancel
+/// does. That is why the fallback waits for the page to *take the request over*
+/// and not for it to *finish*: a timer on the whole flow would overrule the
+/// person it had just asked.
+///
+/// ⛔ Attached only to a window that owns its service. The second double-click
+/// gets a window onto somebody else's service and manages no `Server`; closing a
+/// mere view must not shut down the world of whoever started it, which is the
+/// same rule that keeps `kill_tree` off that arm.
+fn close_through_the_page(window: &tauri::WebviewWindow, app: &tauri::AppHandle) {
+    let answered = Arc::new(AtomicBool::new(false));
+    let heard = answered.clone();
+    app.listen(CLOSE_TAKEN_OVER, move |_| heard.store(true, Ordering::SeqCst));
+
+    let giving_up = Arc::new(AtomicBool::new(false));
+    let page = window.clone();
+    window.on_window_event(move |event| {
+        let WindowEvent::CloseRequested { api, .. } = event else {
+            return;
+        };
+        // ⛔ The one close this must not hold is the one the fallback below
+        // asked for. Holding it would make an unclosable window out of the very
+        // guard against unclosable windows.
+        if giving_up.load(Ordering::SeqCst) {
+            return;
+        }
+        // Held, not refused: what happens next is the page's to decide.
+        api.prevent_close();
+        answered.store(false, Ordering::SeqCst);
+        let _ = page.emit(CLOSE_REQUESTED, ());
+
+        let heard = answered.clone();
+        let quit = giving_up.clone();
+        let window = page.clone();
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + PAGE_ANSWERS_WITHIN;
+            while Instant::now() < deadline {
+                if heard.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // ⛔ Nobody home — a script that died, or a service already gone.
+            // The one thing that must never happen is a window that cannot be
+            // closed, so the request is simply let through and the close goes
+            // the way it went before any of this existed.
+            //
+            // The same window is asked again rather than the app being torn
+            // down from the side with `AppHandle::exit`, so that there is one
+            // way out of this window and not two. Whatever that one way does or
+            // fails to do on the way down is unchanged by this arm.
+            //
+            // ⚠ And it does fail at something. Measured 2026-08-30 on the code
+            // as it stood before this function existed: close the window and
+            // `RunEvent::Exit` does fire with the `Server` still in state, yet
+            // the Node service it names — and the sandbox under it — were still
+            // running, and the seat still held, ten seconds later. That is the
+            // reported "closed the window and things were still in the
+            // background", and it is why the page has to be the one doing the
+            // stopping. This arm inherits that gap for the case where the page
+            // cannot be reached; closing it is a separate piece of work.
+            quit.store(true, Ordering::SeqCst);
+            let _ = window.close();
+        });
+    });
 }
 
 /// Close this window once the service it is showing is gone.

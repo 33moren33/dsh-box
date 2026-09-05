@@ -120,5 +120,40 @@ for (const name of [...tick].sort()) {
     refresh.has(name) ? '' : '只有轮询画它,人点一下反而看不到最新的')
 }
 
+/**
+ * 「上一次操作的结果」显示在哪儿 —— 这些格子里的话是有保质期的。
+ *
+ * ⭐⭐ 判词:**结果提示是有保质期的断言,状态一变就不再成立。** 判例(2026-08-30):
+ * 沙箱停掉之后按钮已经变回「启动沙箱」,而下面那条绿色横幅仍写着「已启动」并挂着
+ * 一个可点的地址 —— 那个地址此刻没人在听。⛔ 过期的真话比错话更难识破:它当时
+ * 确实是对的。
+ *
+ * ⛔ 这一条为什么不在上面那道题里:上面查的是**控件**跟不跟状态,而那次控件是
+ * 对的,错的是横幅。两道题形状相同、盯的东西不同,所以并排放着。
+ */
+const RESULT_BANNERS = ['startOut']
+
+console.log('')
+for (const id of RESULT_BANNERS) {
+  // 在哪个 draw* 里被作废的?那个 draw* 必须也在轮询里,否则「别的入口停掉了它」
+  // 这件事要等人点一下才看得见 —— 而那正是判例本身。
+  // ⛔⛔ 必须钉住「被清空的是**这个**元素」。这道守卫的第一版写成「函数体里出现过
+  //    这个 id,而且出现过 innerHTML = ''」,于是被同一个函数体里另一句清空运行列表
+  //    的 `host.innerHTML = ''` 骗过 —— 我把产品那句删掉,它照样报通过。
+  //    ⭐ 本仓的判词在这里又应验一次:**一道没被证明拦得住东西的守卫,和没有守卫
+  //    是一回事**;写完守卫要故意破坏一次,看它红不红。
+  const clearedIn = [...tick].filter((name) => {
+    const body = bodyAfter(page, `function ${name}(`)
+    // 要么直接清 `$('id').innerHTML = ''`,要么先绑给一个名字再清那个名字。
+    const direct = new RegExp(`\\$\\('${id}'\\)\\s*\\.innerHTML\\s*=\\s*''`)
+    if (direct.test(body)) return true
+    const bound = new RegExp(`(?:const|let|var)\\s+(\\w+)\\s*=\\s*\\$\\('${id}'\\)`).exec(body)
+    return bound !== null && new RegExp(`\\b${bound[1]}\\s*\\.innerHTML\\s*=\\s*''`).test(body)
+  })
+  check(`结果横幅 ${id} 会被某个进了轮询的 draw* 作废`, clearedIn.length > 0,
+    clearedIn.length > 0 ? clearedIn.join('、')
+      : '没有任何进了轮询的 draw* 清得掉它:状态变了它还会挂在那儿')
+}
+
 console.log(failures === 0 ? '\n全部通过\n' : `\n${failures} 项不通过\n`)
 process.exit(failures === 0 ? 0 : 1)

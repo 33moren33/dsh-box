@@ -338,6 +338,39 @@ check('重复跑是安全的,已有的跳过', again.ok === true && again.skippe
 const sameBoth = await cli('get', 'chat', '--from', 'w2', '--to', 'w2')
 check('从哪儿到哪儿是同一个工作区会被拦下', sameBoth.code === 'SAME_WORKSPACE', sameBoth.code)
 
+// 9b. ⛔⛔ 对话不是没有版本的东西,而这恰恰是这条命令唯一查不了的性质:会话日志头里
+//     带着格式版本,对面读到不认的就整份拒收;而且**加一个普通事件类型不会改那个
+//     版本号**,所以号一样也不保证收得下。日志还是压缩的,这个工具零依赖看不进去。
+//     ⭐ 所以答案里带的是「两边各跑的哪一版」和一句明说这是提醒不是判定 ——
+//     ⛔ 不许拿它去拦,拦就是拿一个判不了的事去挡人。
+check('⭐ 答案里带着两边各自跑的是哪一版',
+  Object.hasOwn(copied, 'fromVersion') && Object.hasOwn(copied, 'toVersion')
+  && Object.hasOwn(copied, 'sameVersion'),
+  `from=${copied.fromVersion} to=${copied.toVersion} same=${copied.sameVersion}`)
+// 这两台沙箱都没真启动过,所以两边都是「不知道」—— 而「不知道」必须是第三档,
+// ⛔ 不许被算成「一样」。这一格正是最容易被写成 `a === b` 而悄悄变绿的地方。
+check('⛔⛔ 有一边不知道时,答的是「不知道」而不是「一样」',
+  copied.sameVersion === null, String(copied.sameVersion))
+check('⭐ 而且日常柜那一边是推断出来的,标出来了',
+  Object.hasOwn(copied, 'versionGuessed'), String(copied.versionGuessed))
+
+// ⛔ 两边确实同版时要闭嘴:一句每次都印的提醒等于没有提醒,人会学着不看它。
+writeFileSync(join(layout.sandboxes, 'w1', 'sandbox.json'), JSON.stringify({ lastVersion: '9.9.9-stub' }))
+writeFileSync(join(layout.sandboxes, 'w2', 'sandbox.json'), JSON.stringify({ lastVersion: '9.9.9-stub' }))
+mkdirSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-2'), { recursive: true })
+writeFileSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-2', 'session.jsonl'), '{}\n')
+const sameVersion = await cli('get', 'chat', '--from', 'w2', '--to', 'w1')
+check('⭐ 两边同一版时:说一样,没什么可提醒的',
+  sameVersion.sameVersion === true, `${sameVersion.fromVersion} / ${sameVersion.toVersion}`)
+
+writeFileSync(join(layout.sandboxes, 'w1', 'sandbox.json'), JSON.stringify({ lastVersion: '9.9.7-guarded' }))
+mkdirSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-3'), { recursive: true })
+writeFileSync(join(layout.sandboxes, 'w2', 'home', 'sessions', 'group-a', 'session-3', 'session.jsonl'), '{}\n')
+const crossVersion = await cli('get', 'chat', '--from', 'w2', '--to', 'w1')
+check('⛔ 两边不同版时:答案里说得出不一样,而且照样把对话搬过去了(不拦)',
+  crossVersion.sameVersion === false && crossVersion.adopted === 1,
+  `${crossVersion.fromVersion} → ${crossVersion.toVersion},搬了 ${crossVersion.adopted}`)
+
 // 10. ⛔⛔ The one that used to be unrecoverable: another package already holds
 //     this name. The link is what does the damage — it replaces whatever is
 //     under that name without looking — so the refusal has to land above it.

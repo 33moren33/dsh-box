@@ -1,6 +1,6 @@
 [package]
 name = "dsh-box-shell"
-version = "0.4.0"
+version = "0.5.0"
 description = "dsh 沙箱启动器的桌面壳:开一个原生小窗,里面还是同一个 Node 服务"
 edition = "2021"
 rust-version = "1.77.2"
@@ -29,3 +29,13 @@ tauri-plugin-dialog = "2"
 # tauri, so it costs nothing to fetch and keeps this shell from re-deciding in
 # Rust what the command line has already decided.
 serde_json = "1"
+
+# ⛔ Windows only, and for exactly one call. `CreateProcess` carries
+# `bInheritHandles = TRUE` whenever a child is given any handle at all, and that
+# flag hands over **every inheritable handle the process holds** — including the
+# caller's own stdout pipe, which arrived that way from whoever launched this
+# exe. Redirecting the child's `stdio` does not stop it; measured twice. So the
+# inheritable mark has to be taken off our own standard handles before spawning,
+# and there is no way to say that in `std`. Already in the tree via tauri.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

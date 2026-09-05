@@ -18,7 +18,7 @@ import { t } from './messages.js'
 import { cleanPath, removeTree, sandboxPaths, versionDir } from './paths.js'
 import {
   claimStart, clearMainRunning, clearModuleFallback, clearRunning, noteBoot, noteMainRunning,
-  noteRunning, releaseStart, runningRecord, switchesEngine,
+  noteRunning, releaseStart, rememberedPort, runningRecord, switchesEngine,
 } from './sandbox.js'
 
 /** dsh's own default. Reserved for the user's real environment. */
@@ -135,9 +135,13 @@ function lstatSafe(path) {
 /**
  * @typedef {object} LaunchResult
  * @property {number} pid
+ * @property {number | null} pidBorn
  * @property {number} port
  * @property {string} url
  * @property {import('node:child_process').ChildProcess} child
+ * @property {'announced' | 'probed' | null} readyBy - which judge decided this
+ * dsh was up: dsh's own post-settle line, or our probe of the page. ⛔ Not the
+ * same instant, so anything reporting a duration has to say which one it timed.
  */
 
 /**
@@ -246,7 +250,16 @@ export async function launch({
 
     // 3080 belongs to the user's real dsh; sandboxes hunt from their own base
     // so an idle 3080 is never squatted by something that only looks like it.
-    let port = await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
+    //
+    // ⭐ A sandbox asks for its old number back first. Not to reserve it — if
+    // anything holds it now, the hunt below runs exactly as before — but so that
+    // the address handed to a person keeps pointing at the same cabinet across
+    // restarts. The reason is in `rememberedPort`: what a re-used port breaks is
+    // never the program, it is the link in someone's hand.
+    const wanted = direct ? null : rememberedPort(layout, sandbox)
+    let port = wanted !== null && await canBind(wanted)
+      ? wanted
+      : await findFreePort({ from: direct ? PREFERRED_PORT : SANDBOX_PORT })
 
     onLog?.(t('launch.starting', { version, port }))
     // ⭐ The key to the page dsh is about to serve, which only dsh knows. It is
@@ -254,16 +267,40 @@ export async function launch({
     // judge cannot see the finished page without it on a release that
     // authenticates. Kept once found: it does not change while this dsh runs.
     let token = null
+    // ⭐ Ports dsh has announced itself serving on, during this `start`. A set
+    // rather than a flag because a retry runs in the same log file on a
+    // different number, and "it said it is up" is only an answer about the
+    // attempt currently being waited on.
+    const announced = new Set()
     const notice = (text) => {
       if (token === null) token = tokenFromOutput(text)
+      for (const announcedPort of servingPortsFromOutput(text)) announced.add(announcedPort)
     }
     // ⛔ Read from **this launch's** log file, never from the sandbox's log
     // directory: every earlier launch left its own token in its own file, and
     // an old one would be offered forever while the current page kept refusing.
+    const reread = () => {
+      if (logFile !== undefined) notice(tailLines(logFile, 40).join('\n'))
+    }
     const readToken = () => {
-      if (token === null && logFile !== undefined) notice(tailLines(logFile, 40).join('\n'))
+      if (token === null) reread()
       return token
     }
+    // Asked on every poll until it answers yes, then never again — `port` is
+    // read at call time on purpose, because a retry changes it.
+    const readAnnounced = () => {
+      if (!announced.has(port)) reread()
+      return announced.has(port)
+    }
+
+    // ⭐ Which judge said yes, carried back out to the caller. Not decoration:
+    // the two judges answer at different instants — dsh's own line comes when
+    // its tree settled, the probe comes when a page happened to be complete on
+    // the poll that asked — so a caller reporting how long a start took is
+    // reporting two different measurements under one name unless it can tell
+    // them apart. It is also the only way a test can prove which road ran.
+    /** @type {'announced' | 'probed' | null} */
+    let readyBy = null
 
     // Output goes either to a caller watching live, or to a file. A pipe is
     // owned by this process, so a detached launch must not use one: the moment
@@ -336,7 +373,7 @@ export async function launch({
       }
 
       try {
-        await waitUntilServing(port, child, onLog, { readToken })
+        readyBy = await waitUntilServing(port, child, onLog, { readToken, readAnnounced })
       } catch (error) {
         await abandonStart(child, error, onLog)
         throw error
@@ -403,7 +440,7 @@ export async function launch({
       noteMainRunning(layout, { pid: child.pid, pidBorn, port, url, version, engine: engineRecord(engine), home })
       child.once('exit', () => clearMainRunning(layout, child.pid))
     } else {
-      noteBoot(layout, sandbox, engine)
+      noteBoot(layout, sandbox, engine, port)
       noteRunning(layout, sandbox, { pid: child.pid, pidBorn, port, url, version, engine: engineRecord(engine) })
       // Best-effort: when the launcher lives long enough to see dsh exit, the
       // ledger is cleared at once. A launcher killed outright leaves the entry
@@ -414,7 +451,7 @@ export async function launch({
     // Released only once the sandbox is genuinely up: until then this process
     // is still the one reporting whether the launch worked.
     if (detached) child.unref()
-    return { pid: child.pid, pidBorn, port, url, child }
+    return { pid: child.pid, pidBorn, port, url, child, readyBy }
   } finally {
     // After the ledger, never before: releasing any earlier would re-open the
     // very gap this closes.
@@ -455,14 +492,30 @@ export async function abandonStart(child, error, onLog) {
 /**
  * Wait until the sandbox is actually usable.
  *
- * An open port proves nothing: the web server starts listening the moment its
- * own fiber activates, while the rest of the plugin tree is still loading,
- * and until the frontend claims the fallback route every request is answered
- * 404. Even a 200 is not enough, because the page is only complete once the
- * client-modules plugin has injected the boot manifest into it. So readiness
- * is defined as: the index response carries the boot manifest, and the
- * process is still alive a moment later — a tree that fails late exits after
- * having served a page.
+ * ⭐⭐ Two judges, in this order, and the order is the whole point.
+ *
+ * **First: dsh's own announcement.** The host prints `dsh web: <url>` from a
+ * callback hung on the loader having settled — it is published *for* whoever
+ * started the process, and it knows something no outside observer can find
+ * out: that the entire plugin tree finished. Read it and the question is
+ * answered by the only party that can answer it. See `servingPortsFromOutput`.
+ *
+ * **Then, only if that never comes: the probe.** An open port proves nothing —
+ * the web server starts listening the moment its own fiber activates, while
+ * the rest of the tree is still loading, and until the frontend claims the
+ * fallback route every request is answered 404. Even a 200 is not enough,
+ * because the page is complete only once the client-modules plugin has
+ * injected the boot manifest. So the probe asks for the boot manifest.
+ *
+ * ⛔ The probe is kept because the announcement is a config field
+ * (`printUrl`), and a home whose overlay turns it off would otherwise never
+ * be seen as ready at all. It is a fallback, not a second opinion: it is
+ * weaker on its own terms, and it is the half of this function that has
+ * already broken once without anyone noticing.
+ *
+ * ⭐ Either way the process must still be alive a moment later — a tree that
+ * fails late exits *after* having served a page, and that is exactly the
+ * failure a port check reports as success.
  * @param {number} port
  * @param {import('node:child_process').ChildProcess} child
  * @param {(line: string) => void} [onLog]
@@ -470,28 +523,33 @@ export async function abandonStart(child, error, onLog) {
  * @param {number} [options.timeoutMs]
  * @param {() => string | null} [options.readToken] - the key dsh printed, asked
  * again on every attempt because it does not exist until dsh says it.
- * @returns {Promise<void>}
+ * @param {() => boolean} [options.readAnnounced] - whether dsh has by now said
+ * it is serving **on this port**. Asked rather than passed, for the same reason
+ * as the token: it does not exist until dsh says it.
+ * @returns {Promise<'announced' | 'probed'>} which judge answered. Callers that
+ * report timings care, because the two do not measure the same instant.
  */
-export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000, readToken } = {}) {
+export async function waitUntilServing(port, child, onLog, { timeoutMs = 120_000, readToken, readAnnounced } = {}) {
   const deadline = Date.now() + timeoutMs
   let exited = null
   child.once('exit', (code) => { exited = code ?? 0 })
+
+  /** @param {'announced' | 'probed'} judge */
+  const settle = async (judge) => {
+    await sleep(1500)
+    if (exited !== null) {
+      throw new BoxError('BOOT_EXITED_LATE', t('launch.bootExitedLate', { code: exited }), { exitCode: exited })
+    }
+    onLog?.(judge === 'announced' ? t('launch.readyAnnounced', { port }) : t('launch.readyProbed'))
+    return judge
+  }
 
   while (Date.now() < deadline) {
     if (exited !== null) {
       throw new BoxError('BOOT_EXITED', t('launch.bootExited', { code: exited }), { exitCode: exited })
     }
-    if (await servesBootManifest(port, readToken?.() ?? null)) {
-      // A plugin tree that throws during a later stage can take the process
-      // down after the page is already being served, which is exactly the
-      // failure a port check reports as success.
-      await sleep(1500)
-      if (exited !== null) {
-        throw new BoxError('BOOT_EXITED_LATE', t('launch.bootExitedLate', { code: exited }), { exitCode: exited })
-      }
-      onLog?.(t('launch.ready'))
-      return
-    }
+    if (readAnnounced?.() === true) return await settle('announced')
+    if (await servesBootManifest(port, readToken?.() ?? null)) return await settle('probed')
     await sleep(400)
   }
   throw new BoxError('BOOT_TIMEOUT', t('launch.bootTimeout', { seconds: Math.round(timeoutMs / 1000) }))
@@ -569,6 +627,64 @@ const TOKEN_PATTERN = /[?&]token=([A-Za-z0-9._~-]+)/
 export function tokenFromOutput(text) {
   const found = TOKEN_PATTERN.exec(text)
   return found === null ? null : found[1]
+}
+
+/**
+ * dsh's own readiness announcement.
+ *
+ * ⭐⭐ This is the signal the host publishes *for a supervising process*, and it
+ * is stronger than anything we can ask from outside: read from the installed
+ * `dsh-web-app`, the announcement is hung on `ctx.get('loader')?.await()` and
+ * re-checks that `webServer` is still there before printing — so the line only
+ * appears once the whole plugin tree has settled. An HTTP probe cannot learn
+ * that; it can only learn that some fiber is answering.
+ *
+ * ⛔ Why this used to be ignored: the line was read for its token and nothing
+ * else, while readiness was decided by a probe of our own. That probe is grown
+ * on somebody else's authentication shape, and it silently stopped working once
+ * that shape changed — see `servesBootManifest`, which still carries the scar.
+ * A judge that has to be repaired every time the host changes an unrelated part
+ * of itself is a judge that will be wrong again.
+ *
+ * ⛔ It is not enough to see the words. Two launches of one `start` share a log
+ * file (a retry appends to it), and a retry happens precisely because the first
+ * attempt lost a port race — so the number in the line is what tells this
+ * announcement apart from the previous one's. **Every caller must match the
+ * port**, never merely the phrase.
+ *
+ * ⚠️ Not always printed: the shipped `web` bundle pins `printUrl: true`, but it
+ * is a config field, so a home with its own overlay can turn it off. Absence
+ * therefore means "ask the other way", never "not ready" — which is why the
+ * probe below stays as the fallback rather than being deleted.
+ * @param {string} text - anything dsh has said so far.
+ * @returns {number[]} every port dsh has announced itself serving on, oldest
+ * first. Empty when it has not said it yet.
+ */
+export function servingPortsFromOutput(text) {
+  const ports = []
+  // ⛔ A fresh regex per call: a `g` pattern carries `lastIndex` between calls,
+  // and this one is asked repeatedly about a growing string.
+  const pattern = /dsh web:\s+(https?:\/\/\S+)/g
+  for (const [, href] of text.matchAll(pattern)) {
+    // The line can carry a LAN address after the canonical URL; `\S+` stops at
+    // the space before it, so only the local one is read. A trailing `?token=`
+    // is part of the URL and parses fine.
+    try {
+      const port = new URL(href).port
+      // No port in the URL means the scheme's own, which dsh never serves on.
+      if (port !== '') ports.push(Number(port))
+    } catch {
+      // Something shaped like a URL that is not one. Skipped rather than
+      // guessed at.
+    }
+    // ⚠️ The other line dsh prints here — "dsh web: opening the default
+    // browser; pass --no-open to disable" — never reaches this loop, because
+    // the pattern demands a URL. That is deliberate: it is published by the
+    // same post-settle callback and so is just as true, but it names no port,
+    // and a readiness signal that cannot be tied to a port cannot be told
+    // apart from the previous attempt's.
+  }
+  return ports
 }
 
 /**

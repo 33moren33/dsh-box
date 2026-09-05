@@ -15,11 +15,11 @@
  */
 
 import {
-  copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { BoxError } from './errors.js'
-import { engineRecord, sameEngine } from './host.js'
+import { engineRecord, resolveEngine, sameEngine } from './host.js'
 import { t } from './messages.js'
 import { cabinetPlugins } from './mounts.js'
 import {
@@ -58,7 +58,12 @@ export const HOME_PATCH_FILE = 'cordis.patch.yml'
  * which installation that was. Kept apart from the version because two
  * different installations can carry the same number.
  * @property {string | null} lastUsed - ISO timestamp of the last boot.
- * @property {boolean} hasCredentials
+ * @property {boolean} hasCredentials - whether this cabinet carries a provider
+ * key of its own. ⛔ Not "the credentials file exists": dsh writes that file
+ * itself to record browser sessions, so its presence says nothing.
+ * @property {'keys' | 'session-only' | 'none' | 'unreadable'} credentials - the
+ * same answer with its reason kept, because "no key" and "there is a document
+ * here that this tool could not read" must not look alike to a caller.
  * @property {number} sessionGroups - workspaces that have conversations here.
  * @property {number} sessions - conversations in this home, across all workspaces.
  * @property {RunningRecord | null} running - the live dsh on this home, if any.
@@ -77,6 +82,7 @@ export const HOME_PATCH_FILE = 'cordis.patch.yml'
 export function inspectSandbox(layout, name) {
   const paths = sandboxPaths(layout, name)
   const state = readState(paths.state)
+  const credentials = credentialsState(paths.home)
   return {
     name: paths.name,
     root: paths.root,
@@ -85,7 +91,11 @@ export function inspectSandbox(layout, name) {
     lastVersion: state.lastVersion ?? null,
     lastEngine: lastEngine(state),
     lastUsed: state.lastUsed ?? null,
-    hasCredentials: existsSync(join(paths.home, CREDENTIALS_FILE)),
+    // ⛔ One judge, asked once. This line used to carry its own copy of the
+    // rule (`existsSync`), which is how the machine face and the human face
+    // come to disagree without either of them being obviously wrong.
+    hasCredentials: credentials === 'keys',
+    credentials,
     sessionGroups: countSessionGroups(paths.home),
     sessions: countSessions(paths.home),
     running: runningRecord(layout, name),
@@ -339,6 +349,27 @@ export function liveClaim(file) {
  */
 export function approvedByWindow(layout) {
   if (process.env[APPROVAL_ENV] !== '1') return false
+  return startedByWindow(layout)
+}
+
+/**
+ * Whether this run is a child of the config window on the seat.
+ *
+ * ⭐⭐ Half of {@link approvedByWindow}, on its own because a second caller needs
+ * exactly this half and nothing else: the record of "a command is running right
+ * now" has to say whether the window itself started it, so the window does not
+ * stand aside for its own click (`src/journal.js` 的 noteCommand).
+ *
+ * ⛔ **Not** the same question as consent, and the two must not be merged back.
+ * Where a process came from is a fact about parentage; whether a person agreed
+ * is a decision recorded against one request, and `DSH_BOX_APPROVAL` is the mark
+ * of the second. Anything posted to `/api/command` is a child of the window and
+ * has no consent behind it — which is precisely why the approval test wants both
+ * and this one wants only the first.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {boolean}
+ */
+export function startedByWindow(layout) {
   const seat = liveClaim(uiSeatFile(layout))
   return seat !== null && seat.pid === process.ppid
 }
@@ -618,8 +649,16 @@ export function ensureSandbox(layout, name, { importSignIn = true, env = process
   const created = !existsSync(paths.home)
   mkdirSync(paths.home, { recursive: true })
   let signInImported = false
-  if (importSignIn && !existsSync(join(paths.home, CREDENTIALS_FILE))) {
-    signInImported = importCredentials(paths.home, env)
+  // ⛔⛔ `created &&` is the whole of a 2026-08-30 bug, and it is the rule this
+  // file already claimed above: what a cabinet holds is a fact about the
+  // cabinet, so a launch that asks for nothing must change nothing. Without it,
+  // reopening a sandbox that has no sign-in quietly put one in — and since the
+  // config window offers no way to say "not this time" for such a cabinet, a
+  // person who unticked the box watched it tick itself back on. Wanting one put
+  // in later is a thing you can say out loud: `--sign-in`, handled by the
+  // caller, which is also the only path that may touch the daily cabinet.
+  if (importSignIn && created && !existsSync(join(paths.home, CREDENTIALS_FILE))) {
+    signInImported = importCredentials(paths.home, env) !== null
   }
   return { info: inspectSandbox(layout, paths.name), created, signInImported }
 }
@@ -631,12 +670,180 @@ export function ensureSandbox(layout, name, { importSignIn = true, env = process
  * @returns {boolean} whether a file was copied.
  */
 /**
- * Whether this cabinet can talk to a model at all.
+ * What a cabinet's credentials document actually holds.
+ *
+ * ⛔⛔ This used to be `existsSync`, and that was wrong in a way that got worse
+ * over time rather than better. **dsh writes this file itself**: every time it
+ * serves the web UI it records the session grant it signed for that browser
+ * (`records: { 'client-connection/browser-session': { kind: grant } }`). So the
+ * file appears on its own, on a cabinet that has never been given a key —
+ * measured on this machine, a sandbox whose document holds one grant and
+ * nothing else. From that moment "the file is there" answers a question nobody
+ * asked, and the two places that leaned on it both said something false:
+ * `start` promised real billing, and `--sign-in` decided there was already a
+ * sign-in and quietly did nothing.
+ *
+ * ⭐ The real question is whether a **provider key** is in there, and dsh's own
+ * document format answers it exactly: `refs:` maps environment-variable names
+ * to values and is where a key lives; `records:` holds tagged entries, of which
+ * only `kind: api-key` is a key — `kind: grant` is a browser session, useless
+ * for talking to a model.
+ *
+ * ⚠️ Read by scanning, not by parsing: this tool has no runtime dependencies
+ * and a YAML library is a whole tree. The scan is therefore deliberately
+ * timid — anything it does not recognise comes back `unreadable` rather than
+ * being guessed at, because the one answer that must never be invented here is
+ * "no key" for a cabinet that has one.
+ *
+ * ⚠️ It describes the **cabinet**, not the launch. dsh also reads keys from the
+ * environment it inherits, which outranks this file, so `none` means "this
+ * cabinet carries none of its own", ⛔ not "this dsh will have none".
+ * @param {string} home
+ * @returns {'keys' | 'session-only' | 'none' | 'unreadable'}
+ */
+export function credentialsState(home) {
+  const file = join(home, CREDENTIALS_FILE)
+  if (!existsSync(file)) return 'none'
+  let text
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return 'unreadable'
+  }
+  return scanCredentials(text).state
+}
+
+/**
+ * Take a credentials document apart into "what it holds" and "whose it is".
+ *
+ * ⭐ One scanner for both questions asked of this file — what a cabinet has
+ * ({@link credentialsState}) and what may be carried into another one
+ * ({@link portableCredentials}). Two scanners would be two answers about the
+ * same bytes, which is the shape this file has already produced once.
+ * @param {string} text
+ * @returns {{
+ *   state: 'keys' | 'session-only' | 'none' | 'unreadable',
+ *   refs: string[],
+ *   apiKeys: string[],
+ *   grants: number,
+ * }} `refs` and `apiKeys` are the source lines verbatim, ready to be re-emitted
+ * under their own section; `grants` counts what was left behind.
+ */
+function scanCredentials(text) {
+  const nothing = { state: /** @type {const} */ ('unreadable'), refs: [], apiKeys: [], grants: 0 }
+  const lines = text.split(/\r?\n/)
+  // ⛔ More than one YAML document, or an anchor: out of scope, and saying so
+  // is the point. This tool has already been bitten once by a second document
+  // appearing where one was assumed.
+  if (lines.some((line) => /^(---|\.\.\.)\s*$/.test(line) || /^\s*<<:/.test(line))) return nothing
+
+  const meaningful = lines.filter((line) => line.trim() !== '' && !/^\s*#/.test(line))
+  const topLevel = meaningful.filter((line) => /^\S/.test(line))
+
+  // The pre-release flat layout: no `version`, every top-level entry a key.
+  // dsh does not reject it — it rewrites it in place, nesting exactly these
+  // lines under `refs:` — so for this question it is a document full of keys,
+  // and the lines are already exactly what a `refs:` section wants.
+  if (!topLevel.some((line) => /^version\s*:/.test(line))) {
+    const flat = topLevel.filter((line) => /^[A-Za-z_][A-Za-z0-9_]*\s*:\s*\S/.test(line))
+    return flat.length === 0 ? nothing : { state: 'keys', refs: flat, apiKeys: [], grants: 0 }
+  }
+  // dsh itself throws on any other top-level key, so meeting one means this
+  // scan is looking at something it was not written for.
+  if (topLevel.some((line) => !/^(version|refs|records)\s*:/.test(line))) return nothing
+
+  const refs = []
+  /** @type {string[][]} */
+  const records = []
+  let section = null
+  /** @type {string[] | null} */
+  let record = null
+  for (const line of meaningful) {
+    const top = /^(version|refs|records)\s*:/.exec(line)
+    if (top !== null) {
+      section = top[1]
+      record = null
+      continue
+    }
+    if (section === 'refs' && /^\s+[A-Za-z_][A-Za-z0-9_]*\s*:\s*\S/.test(line)) refs.push(line)
+    if (section !== 'records') continue
+    // A record is a two-space key with its body indented under it. Slicing by
+    // indentation rather than parsing is why anything unexpected upstream has
+    // already returned: this only runs on a document whose shape was admitted.
+    if (/^\s{2}\S.*:\s*$/.test(line)) {
+      record = [line]
+      records.push(record)
+      continue
+    }
+    record?.push(line)
+  }
+
+  const apiKeys = records.filter((one) => one.some((line) => /^\s+kind\s*:\s*['"]?api-key\b/.test(line)))
+  const grants = records.filter((one) => one.some((line) => /^\s+kind\s*:\s*['"]?grant\b/.test(line))).length
+  const state = refs.length > 0 || apiKeys.length > 0
+    ? /** @type {const} */ ('keys')
+    : grants > 0 ? /** @type {const} */ ('session-only') : /** @type {const} */ ('none')
+  return { state, refs, apiKeys: apiKeys.flat(), grants }
+}
+
+/**
+ * The part of one cabinet's sign-in that may be carried into another.
+ *
+ * ⛔⛔ Not the file. A credentials document holds two different kinds of thing
+ * and only one of them is the user's:
+ *
+ * - **content** — `refs:` (environment-variable name to value) and any
+ *   `kind: api-key` record. This is the key, and it is what a person means by
+ *   "sign this sandbox in".
+ * - **identity** — the `kind: grant` record, which is the secret dsh minted for
+ *   *that installation* to sign its own browser cookies with. Copying it hands
+ *   two cabinets one signing secret, so a cookie issued by either verifies on
+ *   both. It is also regenerated for free: a cabinet without one mints its own
+ *   at the next launch.
+ *
+ * ⭐ The rule is dsh's own, applied to a different file. Its `copy()` for agent
+ * presets copies the whole directory and then **rewrites the copy's metadata to
+ * drop the source's `name` and roster `order`, keeping only the description** —
+ * a copy must not inherit the original's identity. Same distinction, and it
+ * also tightens the copy's modes rather than inheriting them, and rolls the
+ * whole thing back rather than leaving half a copy.
+ * @param {string} sourceHome
+ * @returns {{text: string, refs: number, apiKeys: number, droppedGrants: number} | null}
+ * `null` when there is nothing to carry or the document cannot be read.
+ */
+export function portableCredentials(sourceHome) {
+  const file = join(sourceHome, CREDENTIALS_FILE)
+  if (!existsSync(file)) return null
+  let scan
+  try {
+    scan = scanCredentials(readFileSync(file, 'utf8'))
+  } catch {
+    return null
+  }
+  if (scan.state !== 'keys') return null
+
+  // Rendered, never spliced: what goes out is a document this tool wrote from
+  // the pieces it recognised, so a line it did not understand cannot ride along
+  // inside it. `version: 1` is the layout dsh reads — a flat source is carried
+  // across already migrated, exactly as dsh's own in-place upgrade would.
+  const parts = ['version: 1']
+  if (scan.refs.length > 0) parts.push('refs:', ...scan.refs.map((line) => `  ${line.trim()}`))
+  if (scan.apiKeys.length > 0) parts.push('records:', ...scan.apiKeys)
+  return {
+    text: `${parts.join('\n')}\n`,
+    refs: scan.refs.length,
+    apiKeys: scan.apiKeys.filter((line) => /^\s{2}\S.*:\s*$/.test(line)).length,
+    droppedGrants: scan.grants,
+  }
+}
+
+/**
+ * Whether this cabinet can talk to a model on credentials of its own.
  * @param {string} home
  * @returns {boolean}
  */
 export function hasCredentials(home) {
-  return existsSync(join(home, CREDENTIALS_FILE))
+  return credentialsState(home) === 'keys'
 }
 
 /**
@@ -658,16 +865,36 @@ export function removeCredentials(home) {
 }
 
 /**
- * Copy the user's real sign-in into a cabinet.
+ * Carry the user's sign-in into a cabinet — the key, not the document.
+ *
+ * ⛔ This was `copyFileSync`, and a whole-file copy is wrong here for the
+ * reason {@link portableCredentials} lays out: the document also holds the
+ * secret dsh minted for the source installation to sign its own browser
+ * cookies with, and handing that to a second cabinet gives two cabinets one
+ * signing secret. The key is content; the grant is identity.
+ *
+ * ⭐ Two more things taken from dsh's own preset copy rather than invented:
+ * the copy's mode is **set**, not inherited (dsh refuses to boot on a
+ * credentials file readable beyond its owner, so inheriting a loose mode
+ * carries the fault across too), and a failure leaves nothing behind.
  * @param {string} home
  * @param {NodeJS.ProcessEnv} [env]
- * @returns {boolean} whether a file was copied.
+ * @returns {{refs: number, apiKeys: number, droppedGrants: number} | null} what
+ * was carried, or `null` when there was no key to carry.
  */
 export function importCredentials(home, env = process.env) {
-  const source = join(userDshHome(env), CREDENTIALS_FILE)
-  if (!existsSync(source)) return false
-  copyFileSync(source, join(home, CREDENTIALS_FILE))
-  return true
+  const portable = portableCredentials(userDshHome(env))
+  if (portable === null) return null
+  const target = join(home, CREDENTIALS_FILE)
+  try {
+    writeFileSync(target, portable.text, { mode: 0o600 })
+  } catch (error) {
+    // Half a credentials file is worse than none: dsh fails activation on a
+    // document it cannot trust, and the cabinet then cannot start at all.
+    rmSync(target, { force: true })
+    throw error
+  }
+  return { refs: portable.refs, apiKeys: portable.apiKeys, droppedGrants: portable.droppedGrants }
 }
 
 /**
@@ -697,7 +924,7 @@ export function clearModuleFallback(home) {
  * @param {string} name
  * @param {import('./host.js').Engine} engine
  */
-export function noteBoot(layout, name, engine) {
+export function noteBoot(layout, name, engine, port = null) {
   const paths = sandboxPaths(layout, name)
   const state = readState(paths.state)
   writeFileSync(paths.state, `${JSON.stringify({
@@ -706,7 +933,36 @@ export function noteBoot(layout, name, engine) {
     lastVersion: engine.version ?? null,
     lastEngine: engineRecord(engine),
     lastUsed: instantNow(),
+    // ⭐ So the address a person was handed keeps meaning the same cabinet.
+    // See {@link rememberedPort}.
+    lastPort: port ?? state.lastPort ?? null,
   }, null, 2)}\n`)
+}
+
+/**
+ * The port this sandbox answered on last time, if it has one.
+ *
+ * ⛔⛔ Why a sandbox remembers a port at all. Ports used to be handed out by
+ * scanning upward from a base every single launch, so a port belonged to
+ * *this run* rather than to the cabinet — and a cabinet stopped at 10:49
+ * had its number picked up by a different cabinet at 10:53. Nothing collides
+ * (availability is still decided by binding), and that is exactly what made it
+ * hard to see: what breaks is not the program but **the address in someone's
+ * hand** — the link on the result banner, a browser tab, a note an agent wrote
+ * down. All three say where, none of them says which.
+ *
+ * Measured 2026-08-30: two sandboxes held 3092 within four minutes of each
+ * other while a browser sat re-trying it.
+ *
+ * ⭐ Preferred, never reserved: if something else holds the number now, the
+ * hunt runs as before. A remembered port is a courtesy, not a claim.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @param {string} name
+ * @returns {number | null}
+ */
+export function rememberedPort(layout, name) {
+  const port = readState(sandboxPaths(layout, name).state).lastPort
+  return Number.isInteger(port) && Number(port) > 0 ? Number(port) : null
 }
 
 /**
@@ -913,15 +1169,38 @@ export async function mainDshRunning(port = MAIN_DSH_PORT) {
  *
  * `null` names the user's own `~/.dsh`, a string names a sandbox — the same two
  * answers `--main` and `--sandbox` give everywhere else in this tool.
+ *
+ * ⭐ `version` is which dsh last had this cabinet open, and it is carried
+ * because conversations are not version-free: see {@link adoptSessions}. For a
+ * sandbox it is recorded; for the daily cabinet it is **inferred** from the dsh
+ * installed on this machine, because that is what typing `dsh` runs — so it is
+ * marked as an inference and not stated as a record.
  * @param {import('./paths.js').BoxLayout} layout
  * @param {string | null} which
  * @param {NodeJS.ProcessEnv} env
- * @returns {{label: string, home: string, sandbox: string | null}}
+ * @returns {{label: string, home: string, sandbox: string | null,
+ *   version: string | null, versionGuessed: boolean}}
  */
 function sessionSide(layout, which, env) {
-  if (which === null) return { label: t('cabinet.daily'), home: userDshHome(env), sandbox: null }
+  if (which === null) {
+    let version = null
+    try {
+      version = resolveEngine(layout, { env }).version ?? null
+    } catch {
+      // No dsh installed where this tool can see it. Unknown is an answer.
+    }
+    return {
+      label: t('cabinet.daily'), home: userDshHome(env), sandbox: null, version, versionGuessed: true,
+    }
+  }
   const paths = sandboxPaths(layout, which)
-  return { label: paths.name, home: paths.home, sandbox: paths.name }
+  return {
+    label: paths.name,
+    home: paths.home,
+    sandbox: paths.name,
+    version: readState(paths.state).lastVersion ?? null,
+    versionGuessed: false,
+  }
 }
 
 /**
@@ -935,6 +1214,23 @@ function sessionSide(layout, which, env) {
  * conversations by scanning `sessions/`, so nothing else needs to change hands —
  * no index is written, and the one failure mode left is a half-copied folder,
  * which dsh treats as one broken session rather than a broken home.
+ *
+ * ⛔⛔ **A conversation is not version-free, and this is the one thing the copy
+ * cannot check.** Every session log carries a format version in its header, and
+ * a dsh that reads a version it does not know refuses the whole log — upstream
+ * is explicit that the user must be told to upgrade rather than told the log is
+ * corrupt. Worse for guessing: adding an ordinary event type **does not bump
+ * that number**, and the generated known-event guard then makes an older
+ * runtime refuse a log containing a type it has never heard of. So equal
+ * version numbers do not promise acceptance either.
+ *
+ * ⛔ And this tool cannot look: the logs are zstd-compressed (measured — 61 of
+ * 61 on the machine this was written on), and reading one would mean taking a
+ * dependency, which is the one thing this tool trades on not having. So the
+ * answer carries **which dsh each side last ran** and says plainly that this is
+ * a heads-up, not a verdict. ⛔ Refusing on it would be worse: the versions
+ * being different does not mean the copy fails, and box would be blocking a
+ * thing it cannot judge.
  *
  * ⭐ Any direction, because there is no direction in the mechanism: a home is a
  * home. The window only ever offers sandbox → daily, which is the case people
@@ -1001,6 +1297,15 @@ export async function adoptSessions(layout, { from = null, to = null, force = fa
     home: destination.home,
     from: source.label,
     to: destination.label,
+    // ⭐ Stated, never acted on. `null` means one side is unknown, which is a
+    // third answer and not a quiet "fine" — the daily cabinet's is inferred
+    // from the installed dsh, and a machine with none leaves it unknown.
+    fromVersion: source.version,
+    toVersion: destination.version,
+    versionGuessed: source.versionGuessed || destination.versionGuessed,
+    sameVersion: source.version === null || destination.version === null
+      ? null
+      : source.version === destination.version,
     // The names as flags would spell them, so the recorded action can render a
     // line that says which direction it went instead of relying on a shorthand.
     fromSandbox: source.sandbox,

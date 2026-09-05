@@ -1,11 +1,17 @@
 /**
- * Prove the window is told the truth about who is driving it.
+ * Prove the window is told the truth about who is working in here.
  *
  * The blue frame is drawn from two files and nothing else, so what can be
  * checked mechanically is exactly that: does the window see what the command
  * line just did, at the moment it did it, and does it see the same thing the
  * `memory` command sees. Whether the frame *looks* right is not checkable here
  * and is not claimed to be — ⚠️ nothing in this repository drives the page.
+ *
+ * ⭐⭐ **Nothing here ever announces itself**, and that is what these assertions
+ * are for since 2026-08-30. `agent attach` / `agent detach` are gone: every
+ * command that changes something registers itself while it runs and the record
+ * dies with the process, so the window's picture cannot be made wrong by an
+ * agent that forgot a step — which is exactly how it went wrong twice.
  *
  * Uses the dsh stand-in from `make-test-box.mjs`, so it downloads nothing,
  * touches no real credentials and costs nothing to run.
@@ -16,10 +22,12 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { VALUE_FLAGS } from '../src/commands.js'
+import { finishCommand, noteCommand } from '../src/journal.js'
+import { boxLayout } from '../src/paths.js'
 import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -102,40 +110,39 @@ async function seen() {
   return response.json()
 }
 
-console.log('\n窗口看得见谁在驾驶\n')
+console.log('\n窗口看得见外面有人在动\n')
 
-// 1. Nothing has ever attached in a fresh box, so neither file exists. That is
-//    the ordinary state — the window draws itself normally — and reporting it
-//    as an error would make every first run look broken.
+// 1. Nothing has ever run in a fresh box, so neither file exists. That is the
+//    ordinary state — the window draws itself normally — and reporting it as an
+//    error would make every first run look broken.
 const quiet = await seen()
-check('没人接管时,窗口读到的是「没有」而不是出错',
+check('没人在动时,窗口读到的是「没有」而不是出错',
   quiet.agent === null && quiet.session === null,
   `agent=${quiet.agent} session=${quiet.session}`)
 
-// 2. Taking control shows up in the window immediately, under the same session
-//    id the command line just handed out. The window has no second opinion to
-//    consult: it reads the file the command wrote.
-const held = await cli('agent', 'attach')
-const driving = await seen()
-check('接管之后,窗口当场认得出是哪一次会话',
-  driving.agent?.session === held.session, driving.agent?.session)
-
-// 3. A read-only command moves the badge and nothing else. Conflating these two
-//    was a real mistake: making read-only commands leave no trace at all left
-//    the badge blank while an agent spent two minutes downloading, and letting
-//    them into the trail meant one `status` wiped the last run worth showing.
+// 2. ⛔ A read-only command leaves nothing anywhere. It changes nothing, so
+//    there is nothing for the window to stand aside from and nothing worth a
+//    line in the trail — and a `ls` that pushed the last real action off the
+//    screen would be the display working against itself.
 await cli('ls')
 const afterRead = await seen()
-check('只读命令进得了角标', afterRead.agent?.lastCommand?.name === 'ls',
-  afterRead.agent?.lastCommand?.name)
+check('⛔ 只读命令不登记,窗口不必为它让位',
+  afterRead.agent === null, `agent=${JSON.stringify(afterRead.agent)}`)
 check('只读命令进不了编号串', afterRead.session === null, `session=${afterRead.session}`)
 
-// 4. An action that changed something is numbered, from one.
+// 3. ⭐⭐ 这一条是这次改造的核心:**没有人敲过任何「我要接管」**,而改了状态的动作
+//    照样进了编号串。从前 record() 在没人接管时直接 return 0,于是两个忘了敲 attach
+//    的 agent 干的所有事,窗口一个字都看不到。
 await cli('start', 'a1', '--version', '9.9.9-stub', '--no-sign-in')
 const afterStart = await seen()
-check('改了状态的动作进编号串,序号从 1 起',
+check('⭐⭐ 没人声明过任何东西,改了状态的动作照样进编号串,序号从 1 起',
   afterStart.session?.actions?.length === 1 && afterStart.session.actions[0].seq === 1,
   `${afterStart.session?.actions?.length} 条`)
+// ⭐ 谁干的要记下来:多个 agent 同时在一个数据目录上干活时,一串分不出人的步骤
+//    正好答不出它存在的那个问题。
+check('⭐ 每一步都记得下是哪个进程干的(多 agent 要分得开)',
+  Number.isInteger(afterStart.session?.actions?.[0]?.by?.pid),
+  JSON.stringify(afterStart.session?.actions?.[0]?.by))
 
 // 5. ⭐ The rendered line is filled in, including the parts nobody typed. It is
 //    rebuilt from what the launch resolved to rather than from what was typed,
@@ -181,27 +188,56 @@ check('⛔ 串里没有任何一条命令行把旗标孤零零地留在末尾',
       && (tokens[at + 1] === undefined || tokens[at + 1].startsWith('--')))
   }), JSON.stringify((afterPluginRefusal.session?.actions ?? []).map((action) => action.line)))
 
-// 7. The one control that reaches through the glass. What it ends is the hold
-//    on the window, and the record says who ended it — an agent told "you
-//    finished" where it was actually stopped has been misinformed about the one
-//    thing it most needs to know.
-await cli('agent', 'detach', '--forced')
-const released = await seen()
-check('人按停止之后,窗口不再显示接管中', released.agent === null, `agent=${released.agent}`)
-check('记录说得出是被人收回的,不是自己交还的',
-  released.session?.endedBy === 'forced', released.session?.endedBy)
+// 7. ⭐⭐ 让位只管一条命令的执行期间,而且是自动的两头。
+//
+//    ⛔ 这里扮的正是「另一个终端里的 agent」:这个测试进程用命令行漏斗调的同一个
+//    函数登记一条「正在跑」的记录(bin/cli.js 的 noteCommand),它活着、又不是配置窗
+//    的子进程,所以窗口该让位;调 finishCommand 之后**没有人敲过任何交还**,窗口
+//    自己就松开了。这两头正是从前要人记得敲 attach / detach 的那两下。
+const layout = boxLayout(BOX)
+noteCommand(layout, 'start', { sandbox: '另一个终端' })
+const busy = await seen()
+check('⭐⭐ 外面一开始跑命令,窗口当场就看得见(没人声明过)',
+  busy.agent?.runs?.length === 1 && busy.agent.runs[0].command === 'start',
+  JSON.stringify(busy.agent))
+check('⭐ 看得见是哪个进程在跑', busy.agent?.runs?.[0]?.pid === process.pid,
+  `${busy.agent?.runs?.[0]?.pid} / ${process.pid}`)
+finishCommand(layout)
+const freed = await seen()
+check('⭐⭐ 那条命令一跑完,窗口自己就松开了(没有交还这个动作)',
+  freed.agent === null, JSON.stringify(freed.agent))
 
 // 8. The trail outlives the run: the frames go, the data stays, which is what
 //    the recall control opens. Someone who was not watching can still find out.
-check('交还之后记录还在,回忆控件有东西可点',
-  released.session?.actions?.length === 3, `${released.session?.actions?.length} 条`)
+check('跑完之后记录还在,回忆控件有东西可点',
+  freed.session?.actions?.length === 3, `${freed.session?.actions?.length} 条`)
 
 // 9. Both entrances read the same two files, so they cannot disagree.
 const memory = await cli('ls', 'memory')
 check('窗口与 ls memory 读的是同一份记录',
-  memory.session?.session === released.session?.session
-  && memory.session?.actions?.length === released.session?.actions?.length,
-  `${memory.session?.actions?.length} / ${released.session?.actions?.length}`)
+  memory.session?.session === freed.session?.session
+  && memory.session?.actions?.length === freed.session?.actions?.length,
+  `${memory.session?.actions?.length} / ${freed.session?.actions?.length}`)
+
+// 9b. ⛔⛔ 上面第 7 条是直接调那两个函数,证明的是**机制**;这一条证明的是**接线**:
+//     一条真的命令行命令,在它自己跑的那段时间里,窗口真的看得见。两者缺一不可 ——
+//     漏斗上少调一次 noteCommand,第 7 条照样全绿。
+const running = cli('start', 'a2', '--version', '9.9.9-stub', '--no-sign-in')
+let stillRunning = true
+running.then(() => { stillRunning = false })
+let caught = null
+// ⛔ 中间不睡:间隙越小越不容易错过,而 start 本身要跑好几百毫秒(它一直等到 dsh
+//    真的在服务才返回)。
+while (caught === null && stillRunning) {
+  const now = await seen()
+  caught = (now.agent?.runs ?? []).find((one) => one.command === 'start') ?? null
+}
+await running
+check('⛔⛔ 一条真的 start 在跑的时候,窗口看得见它(漏斗上真的接了线)',
+  caught !== null && caught.fromWindow !== true, JSON.stringify(caught))
+const afterRunning = await seen()
+check('⭐ 它一结束,窗口又空了(失败路径也一样会松,见 bin/cli.js 两个出口)',
+  afterRunning.agent === null, JSON.stringify(afterRunning.agent))
 
 // 10. ⛔⛔ 持久记录终于读得到了。
 //     它一直被定义成「持久 log,人排查时读」,而**没有任何命令或界面打得开它**,
@@ -236,8 +272,52 @@ check('⭐ 记下的都是改过状态的命令,只读的不占地方',
   && !everything.entries.some((entry) => entry.command === 'ls'),
   everything.entries.map((entry) => entry.command).join('、'))
 
+// 11. ⭐⭐ 同一个读者的另一半:窗口看得见外面在动,而**外面那个 agent 读到的答复
+//     本身也得是真的**。这三条查的是 `start --json` 上那两个字段名与那一个数字 ——
+//     它们是路过的 agent 拿去下判断的原料,而下面这一条判例正是从那里来的。
+//
+//     ⛔⛔ 从前这里叫 `plugins`,报的却是「这次 --plugin 传了什么」。同一台沙箱:
+//     带旗标那次 `[{"id":…}]`,不带那次 `[]`,而插件一直装着 —— 于是读的人判
+//     「没装上」而多做一步,或者判「装丢了」。**这正撞在这条命令自己那句说明的
+//     反面**:不写 --plugin 不是一个都不装,是什么都不改。说明写对了,机器答复
+//     把「没改动」印成了「空的」,而机器答复才是 agent 真正拿去用的那一份。
+const pluginDir = join(dirname(BOX), 'a-plugin')
+mkdirSync(join(pluginDir, 'lib'), { recursive: true })
+writeFileSync(join(pluginDir, 'package.json'), `${JSON.stringify({
+  name: 'view-plugin', version: '1.0.0', main: 'lib/index.js', dsh: { bundle: {} },
+}, null, 2)}\n`)
+writeFileSync(join(pluginDir, 'lib', 'index.js'), 'export default {}\n')
+
+const withFlag = await cli('start', 'a3', '--plugin', pluginDir, '--version', '9.9.9-stub', '--no-sign-in')
+await cli('stop', 'a3')
+const without = await cli('start', 'a3', '--version', '9.9.9-stub', '--no-sign-in')
+await cli('stop', 'a3')
+
+check('⛔⛔ 「这次改了什么」叫 pluginsChanged,而且不写 --plugin 时它是空的',
+  withFlag.pluginsChanged?.length === 1 && without.pluginsChanged?.length === 0
+  && withFlag.plugins === undefined && without.plugins === undefined,
+  `带旗标 ${JSON.stringify(withFlag.pluginsChanged)} / 不带 ${JSON.stringify(without.pluginsChanged)}`)
+// ⭐ 这一条才是判例本身:**同一台沙箱、没写 --plugin 的那一次**,答复里必须
+//    如实列出它现在装着什么。空的那个字段旁边没有这一份,读的人只能猜。
+check('⭐⭐ 不写 --plugin 的那一次,答复照样如实列出这个档案柜装着什么',
+  (without.cabinetPlugins?.ours ?? []).some((one) => one.package === 'view-plugin'),
+  JSON.stringify(without.cabinetPlugins))
+// ⭐ 从接到命令到 dsh 真在服务,只有 box 知道这个边界:外面掐表连 node 起进程、
+//   读这个文件的时间一起算了进去。help 里那两个约数是给人看的,agent 该读这个。
+check('⭐ 答复里有 elapsedMs,是这一次真花的毫秒数(不是 help 里那个约数)',
+  Number.isInteger(without.elapsedMs) && without.elapsedMs > 0 && without.elapsedMs < 120000,
+  `${without.elapsedMs}`)
+
+// 12. ⭐ 每轮醒来第一条命令就答得出「我在驱动的是哪一版」。另一个入口是
+//     `--help --json`(调用方还没有数据目录时读的那一份),守在 check-command-map。
+const version = await cli('ls')
+check('⭐ ls 报得出这个工具自己的版本号', typeof version.boxVersion === 'string' && version.boxVersion !== '',
+  `${version.boxVersion}`)
+
 await cli('stop', '--all')
 await cli('rm', 'sandbox', 'a1')
+await cli('rm', 'sandbox', 'a2')
+await cli('rm', 'sandbox', 'a3')
 ui.kill()
 
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)

@@ -81,6 +81,47 @@ createServer((request, response) => {
 })
 `
 
+/**
+ * Authenticates exactly like GUARDED, but never announces itself.
+ *
+ * ⭐⭐ This one exists to keep a path covered that would otherwise go dark.
+ * Readiness now believes dsh's own `dsh web:` line first, and GUARDED prints
+ * one — so from the moment that shortcut landed, GUARDED stopped proving the
+ * thing it was written for (401 → token → cookie → the finished page). The
+ * assertion would have kept passing, for a different reason, and nobody would
+ * have been told.
+ *
+ * ⛔ Its other half is `printUrl: false`, which is a real configuration a home
+ * can have. On such a release the probe is not a second opinion, it is the only
+ * road — so it has to keep working, and something has to keep driving it.
+ */
+const QUIET_GUARDED = `const { createServer } = require('node:http')
+const args = process.argv.slice(2)
+const port = Number(args[args.indexOf('--port') + 1])
+const token = 'stub-token-' + process.pid
+createServer((request, response) => {
+  const url = new URL(request.url, 'http://127.0.0.1')
+  if (url.searchParams.get('token') === token) {
+    response.writeHead(303, { location: '/', 'set-cookie': 'dsh-session=ok; Path=/' })
+    response.end()
+    return
+  }
+  if (!String(request.headers.cookie ?? '').includes('dsh-session=ok')) {
+    response.writeHead(401, { 'content-type': 'text/plain' })
+    response.end('stub dsh authentication required')
+    return
+  }
+  response.setHeader('content-type', 'text/html')
+  response.end('<html><body><script>window.__DSH_BOOT__={}</script></body></html>')
+}).listen(port, '127.0.0.1', () => {
+  // ⛔ The token still has to be said — it is the only place it exists — but
+  // NOT in the shape of the readiness line. This is what a home with
+  // printUrl turned off looks like to us.
+  console.log(\`stub dsh session key: ?token=\${token}\`)
+  setInterval(() => console.log('alive'), 5000)
+})
+`
+
 /** Listens forever and never finishes composing the page. */
 const SILENT = `const { createServer } = require('node:http')
 const args = process.argv.slice(2)
@@ -127,6 +168,7 @@ function plant(version, source) {
 const planted = [plant('9.9.9-stub', WORKING)]
 if (flags.includes('--broken')) planted.push(plant('9.9.8-broken', BROKEN))
 if (flags.includes('--guarded')) planted.push(plant('9.9.7-guarded', GUARDED))
+if (flags.includes('--guarded')) planted.push(plant('9.9.5-quiet', QUIET_GUARDED))
 if (flags.includes('--silent')) planted.push(plant('9.9.6-silent', SILENT))
 
 console.log(`\n  测试盒已建好: ${data}`)

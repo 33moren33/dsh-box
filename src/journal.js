@@ -7,34 +7,53 @@
  * The **journal** is the durable one. Every action that changed something
  * lands in it and stays, so a question asked next week still has an answer.
  *
- * The **session** is the throwaway one. It holds the actions of the current
- * run of agent control, numbered, and it exists so the window can show what
- * is being done to it — and, after the agent leaves, so the person can ask
- * what just happened. It is overwritten by the next run, which is the point:
- * it is a display, not a record.
+ * The **session** is the throwaway one. It holds the most recent actions,
+ * numbered, and it exists so the window can show what is being done to it —
+ * and afterwards, so the person can ask what just happened. It is trimmed from
+ * the front, which is the point: it is a display, not a record.
  *
- * The two are also separated because the session must survive a run that
- * changed nothing. An agent that attaches, reads the state and leaves has not
- * replaced anything worth showing, and wiping the previous session for it
- * would throw away the answer to "what did it do last time" in favour of
- * "nothing".
+ * ⛔⛔ Neither of them is opened by anybody declaring anything. There used to be
+ * an `agent attach` a caller had to type before the window would show a thing,
+ * and two agents in a row forgot it: the person sat in front of the panel while
+ * sandboxes were started, stopped and their PATH rewritten, and the panel said
+ * nothing. **Asking a caller to declare something the tool can already work out
+ * is redundancy**, and redundancy is where the two copies drift apart. What is
+ * written down now is written by the command itself, whoever ran it.
  */
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { instantNow } from './clock.js'
+import { mutates } from './commands.js'
+import { claimPath, liveClaim, releasePath, startedByWindow } from './sandbox.js'
 
 /** Directory holding the agent's own state, inside the data directory. */
 function agentDir(layout) {
   return join(layout.root, 'agent')
 }
 
-/** Marker saying an agent currently holds control. Verified against a pid. */
-function activeFile(layout) {
-  return join(agentDir(layout), 'active.json')
+/**
+ * One file per running command, named by the process running it.
+ *
+ * ⭐ A file each rather than one shared list, so two agents working at once
+ * never have to lock each other out of anything: each writes only its own name
+ * and reads everybody's. The old single-holder marker did the opposite — the
+ * second agent's `attach` overwrote the first's with no word to either.
+ */
+function runsDir(layout) {
+  return join(agentDir(layout), 'runs')
 }
 
-/** The session being displayed: the last run that changed anything. */
+/**
+ * This process's own row in that directory.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {string}
+ */
+function runFile(layout) {
+  return join(runsDir(layout), `${process.pid}.json`)
+}
+
+/** The trail being displayed: the most recent actions, whoever did them. */
 function sessionFile(layout) {
   return join(agentDir(layout), 'last-session.json')
 }
@@ -110,130 +129,109 @@ export function journalShape(layout) {
 }
 
 /**
- * @typedef {object} ActiveControl
+ * @typedef {object} RunRecord
+ * @property {number} pid - the process running the command.
+ * @property {number | null} pidBorn - the moment that process started.
  * @property {string} startedAt - ISO timestamp.
- * @property {string} session - id of the session this control opened.
+ * @property {string} command - the recorded command name, e.g. `get.plugin`.
+ * @property {Record<string, unknown>} flags - what it was asked to do.
+ * @property {boolean} fromWindow - whether the config window started it.
  */
 
 /**
- * Take control, announcing it on disk so the window can show it.
+ * Say that this process is running a command, for as long as it is.
  *
- * The marker does not expire. It was tempting to make it — an agent that
- * crashes never releases anything — but expiry means guessing whether an
- * agent is still there, and a wrong guess hands the window back while it is
- * still being driven. Nothing has to be guessed: while an agent drives, the
- * person's only action is to stop it, and that button is always there. A
- * forgotten release therefore costs one click, not a collision.
+ * ⭐⭐ **The scope is one command's execution and nothing longer.** A mark that
+ * outlives the process it describes has to be released by somebody, and the
+ * whole reason this exists is that somebody forgets. A mark that dies with the
+ * process cannot leak: the record names a pid and a birth moment, and when that
+ * pair stops matching it stops counting — no expiry to tune, no button to press.
+ * The other half of the same choice: a person typing in their own terminal never
+ * has to take the window back either, which matters because from here a person
+ * and an agent are indistinguishable, and this file admits it.
  *
- * The previous session's display is deliberately left alone: it is replaced
- * by the first action that changes something, not by the mere fact that
- * someone attached.
- * @param {import('./paths.js').BoxLayout} layout
- * @returns {ActiveControl}
- */
-export function attach(layout) {
-  mkdirSync(agentDir(layout), { recursive: true })
-  const record = {
-    startedAt: instantNow(),
-    session: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  }
-  writeFileSync(activeFile(layout), `${JSON.stringify(record, null, 2)}\n`)
-  return record
-}
-
-/**
- * Give control back.
- * @param {import('./paths.js').BoxLayout} layout
- * @param {string} [reason] - recorded on the session so the person can see
- * whether the agent finished or was stopped.
- * @returns {ActiveControl | null} what was released, or null if nothing was held.
- */
-export function detach(layout, reason = 'done') {
-  const held = activeControl(layout)
-  rmSync(activeFile(layout), { force: true })
-  if (held === null) return null
-  const session = readSession(layout)
-  if (session !== null && session.session === held.session) {
-    writeSession(layout, { ...session, endedAt: instantNow(), endedBy: reason })
-  }
-  return held
-}
-
-/**
- * Who holds control right now, or null.
- * @param {import('./paths.js').BoxLayout} layout
- * @returns {ActiveControl | null}
- */
-export function activeControl(layout) {
-  return readJson(activeFile(layout))
-}
-
-/**
- * Say what is being run, right now.
+ * ⛔ Only commands that change something. `ls` / `logs` / `help` leave nothing
+ * behind and so nothing has to stand aside for them; which commands those are is
+ * declared once, in `src/commands.js`, and read from there rather than listed
+ * again here.
  *
- * Two different questions are being answered by two different records, and
- * conflating them was a mistake worth naming: the numbered trail is *what
- * this session did* and only changes when something changes, while this is
- * *what is happening at this moment* and changes for every command, reading
- * ones included. Without it the window has nothing to put on the badge while
- * an agent spends two minutes downloading a release, or runs a command that
- * has no control to highlight.
- *
- * This writes on every command, which is what the deleted heartbeat did too —
- * but a heartbeat existed to guess whether the agent was still there, and
- * this exists to state what it is doing. One was inventing, this is
- * reporting.
+ * ⭐ The liveness proof is not invented here either: {@link claimPath} creates
+ * the file exclusively, writes the pid with its birth moment, and clears a dead
+ * record on the way — the same mechanism a launch and the window's own seat use.
  * @param {import('./paths.js').BoxLayout} layout
- * @param {string} name - the command as typed.
+ * @param {string} name - the recorded command name, e.g. `get.plugin`.
  * @param {Record<string, unknown>} [flags]
+ * @returns {boolean} whether a record was written.
  */
 export function noteCommand(layout, name, flags = {}) {
-  const held = activeControl(layout)
-  if (held === null) return
-  const lastCommand = { name, flags, at: instantNow(), finishedAt: null, ok: null }
-  writeFileSync(activeFile(layout), `${JSON.stringify({ ...held, lastCommand }, null, 2)}\n`)
+  if (!mutates(name)) return false
+  // ⚠️ Worked out once, here, and read back by {@link record} instead of asked
+  // again: on Windows the parentage question and the birth moment each cost a
+  // subprocess, and one command must not pay for them twice.
+  return claimPath(runFile(layout), {
+    command: name, flags, fromWindow: startedByWindow(layout),
+  })
 }
 
 /**
- * Close off the command {@link noteCommand} opened, so the badge can stop
- * saying something is in progress once it is not.
+ * Close off the record {@link noteCommand} opened.
+ *
+ * ⛔⛔ Must be reached on the failing path too. A record left behind by a command
+ * that threw would hold the window aside until that pid is reused — which is
+ * exactly the leak this design exists to make impossible, reintroduced by hand.
+ * Both exits of `bin/cli.js` call it for that reason.
  * @param {import('./paths.js').BoxLayout} layout
- * @param {boolean} ok
- * @param {string} [code] - failure code, when it failed.
  */
-export function finishCommand(layout, ok, code) {
-  const held = activeControl(layout)
-  if (held === null || held.lastCommand === undefined || held.lastCommand === null) return
-  const lastCommand = { ...held.lastCommand, finishedAt: instantNow(), ok, code: code ?? null }
-  writeFileSync(activeFile(layout), `${JSON.stringify({ ...held, lastCommand }, null, 2)}\n`)
+export function finishCommand(layout) {
+  releasePath(runFile(layout))
 }
 
 /**
- * Control, plus when it was last heard from.
+ * Every command running right now, whoever started it.
  *
- * The window reports this instead of deciding what it means. "Held since
- * 14:02, last action 45 minutes ago" is something a person can act on; "the
- * agent has gone" is a guess, and the honest-reporting rule this project runs
- * on says to show the fact and let the person judge.
+ * ⚠️ Costs one liveness question per record, and on Windows that is a
+ * subprocess. Affordable because the directory is empty whenever nothing is
+ * running, which is nearly always — the price is paid only while somebody is
+ * actually working.
  *
- * There is no separate heartbeat: the journal's last entry already says when
- * something happened, so recording the same thing twice would only create a
- * second place for it to be wrong.
+ * A record whose process is gone is deleted rather than reported: it is not a
+ * fact about anything any more, and leaving it would make the next reader pay
+ * for it again.
  * @param {import('./paths.js').BoxLayout} layout
- * @returns {{session: string, startedAt: string, lastCommand: object | null, lastActionAt: string | null, actions: number} | null}
+ * @returns {RunRecord[]}
  */
-export function controlStatus(layout) {
-  const held = activeControl(layout)
-  if (held === null) return null
-  const session = readSession(layout)
-  const mine = session !== null && session.session === held.session ? session : null
-  return {
-    session: held.session,
-    startedAt: held.startedAt,
-    lastCommand: held.lastCommand ?? null,
-    lastActionAt: mine?.actions.at(-1)?.at ?? null,
-    actions: mine?.actions.length ?? 0,
+export function runningCommands(layout) {
+  let names = []
+  try {
+    names = readdirSync(runsDir(layout))
+  } catch {
+    // Nothing has ever run here. Not a failure — it is the ordinary state.
+    return []
   }
+  const live = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const file = join(runsDir(layout), name)
+    const held = liveClaim(file)
+    if (held === null) rmSync(file, { force: true })
+    else live.push(/** @type {RunRecord} */ (held))
+  }
+  return live.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)))
+}
+
+/**
+ * The ones the config window has to stand aside for.
+ *
+ * ⭐ Its own children are excluded, and that is the whole of the distinction the
+ * caller used to have to declare: a command the window started is the window
+ * acting, and a window that locked itself out of its own click would be the
+ * feature working backwards. See `startedByWindow` in `src/sandbox.js` for why
+ * parentage answers this on its own.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {RunRecord[]}
+ */
+export function outsideCommands(layout) {
+  return runningCommands(layout).filter((run) => run.fromWindow !== true)
 }
 
 /**
@@ -246,34 +244,76 @@ export function controlStatus(layout) {
  */
 
 /**
+ * How many actions the display keeps. The journal keeps all of them.
+ *
+ * There has to be a number now that nothing closes the trail: it used to be
+ * emptied when the next agent took over, and nothing takes over any more. Fifty
+ * is one screen of scrolling — past that the panel stops being "what just
+ * happened to my settings" and becomes a log, which the journal already is.
+ */
+const TRAIL_LENGTH = 50
+
+/**
  * Write down one action that changed something.
  *
  * Read-only commands are not passed here at all: they belong to neither the
  * journal (nothing changed) nor the display (see the module note).
+ *
+ * ⛔⛔ Unconditional. It used to return here without writing anything unless an
+ * agent had announced itself first, so an agent that never typed `agent attach`
+ * — twice in a row, in practice — did all of its work behind a window that had
+ * nothing to show. Whether somebody said "watch me" is not a property of what
+ * happened.
+ *
+ * ⭐ Every entry names the process that did it, so two agents working at once
+ * are told apart in the trail rather than blurred into one column of steps.
  * @param {import('./paths.js').BoxLayout} layout
  * @param {ActionEntry} entry
- * @returns {number} the sequence number within the current session, or 0 when
- * no agent holds control.
+ * @returns {number} the sequence number within the current trail.
  */
 export function record(layout, entry) {
-  appendJournal(layout, entry)
-  const held = activeControl(layout)
-  if (held === null) return 0
-
+  // ⭐ Who did it belongs in the durable one as well, not only on the screen:
+  // "which of the two agents started that sandbox" is a question asked days
+  // later, and by then the display has scrolled past it.
+  const who = whoRan(layout)
+  appendJournal(layout, { by: who, ...entry })
   const previous = readSession(layout)
-  const session = previous !== null && previous.session === held.session
+  const session = previous !== null && Array.isArray(previous.actions)
     ? previous
-    : { session: held.session, startedAt: held.startedAt, endedAt: null, endedBy: null, actions: [] }
-  const seq = session.actions.length + 1
-  session.actions.push({ seq, at: instantNow(), ...entry })
+    : { session: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, startedAt: instantNow(), actions: [] }
+  // ⛔ Counted from the last number given out, not from the length: the trail is
+  // trimmed from the front, and numbering by length would start handing out
+  // numbers that are already on the screen against a different action.
+  const seq = (session.actions.at(-1)?.seq ?? 0) + 1
+  session.actions.push({ seq, at: instantNow(), by: who, ...entry })
+  session.actions = session.actions.slice(-TRAIL_LENGTH)
   writeSession(layout, session)
   return seq
 }
 
 /**
- * The session the window should be showing: the last run that did something.
+ * Who is doing this, as the running record already worked it out.
+ *
+ * Read back rather than asked again — {@link noteCommand} paid for the birth
+ * moment and the parentage at the start of this command, and both cost a
+ * subprocess on Windows.
  * @param {import('./paths.js').BoxLayout} layout
- * @returns {{session: string, startedAt: string, endedAt: string | null, endedBy: string | null, actions: object[]} | null}
+ * @returns {{pid: number, pidBorn: number | null, fromWindow: boolean}}
+ */
+function whoRan(layout) {
+  const mine = readJson(runFile(layout))
+  return {
+    pid: process.pid,
+    pidBorn: mine?.pidBorn ?? null,
+    fromWindow: mine?.fromWindow === true,
+  }
+}
+
+/**
+ * The trail the window should be showing: the most recent actions, whoever did
+ * them.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {{session: string, startedAt: string, actions: object[]} | null}
  */
 export function readSession(layout) {
   return readJson(sessionFile(layout))

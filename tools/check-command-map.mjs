@@ -1,5 +1,5 @@
 /**
- * 44 条瘦成 10 条:每一条旧能力,要么有新去处,要么写明为什么删得掉。
+ * 44 条瘦成 9 条:每一条旧能力,要么有新去处,要么写明为什么删得掉。
  *
  * ⭐⭐ 这份文件是那次改造的**契约**,而且是一份能跑的契约 —— 本仓吃过亏:只给
  * 文字规范,几个人各猜一套,最后全返工。下面这张表是数据不是散文,守卫拿它跟
@@ -33,16 +33,31 @@
  *   node tools/check-command-map.mjs
  */
 
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { COMMANDS } from '../src/commands.js'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { COMMANDS, VERSION, booleansOf, valuesOf } from '../src/commands.js'
 
 /**
- * 瘦身之后允许存在的动词,十个。
+ * 瘦身之后允许存在的动词,九个。
  *
- * ⛔ 加第十一个不是不行,但必须是一次明说的裁决 —— 这条上限存在的全部意义,
+ * ⛔ 加第十个不是不行,但必须是一次明说的裁决 —— 这条上限存在的全部意义,
  * 就是让「再加一条也没什么」这件事变得必须被人看见。
+ *
+ * ⭐ 2026-08-30 从十个变成九个:`agent` 底下只有 attach / detach 两条,而它们
+ * 要求调用方声明一件程序自己已经知道的事,整族删掉之后这个动词没有对象了。
+ * 上限往下走不需要裁决,往上走才需要。
+ *
+ * ⭐ 2026-09-05 加回第十个:`mcp`(CEO 09-04 裁决,B6)。它不是一条新能力,是同一张
+ * 命令表的**第三张脸** —— 与 `help` 同类:`help` 把表印给人,`mcp` 把表交给 agent。
+ * 所以它跟 `help` 一样不接任何旧能力(见第 6 条守卫的例外),也不许长出对象。
  */
-const VERBS = ['ls', 'get', 'rm', 'start', 'stop', 'set', 'logs', 'ui', 'agent', 'help']
+const VERBS = ['ls', 'get', 'rm', 'start', 'stop', 'set', 'logs', 'ui', 'help', 'mcp']
+
+/** 动词里只是「表的另一种投影」、不落任何旧能力的那几个。 */
+const FACES = ['help', 'mcp']
 
 /**
  * 日常档案柜在新形状里叫 `main`,而沙箱不许再叫这个名字(src/paths.js 的 DAILY_CABINET)。
@@ -191,8 +206,10 @@ const SHAPE = {
   // —— 剩下三个动词
   logs: { key: 'logs', booleans: ['shape', 'errors', 'all'], values: ['lines', 'version', 'package'] },
   ui: { key: 'ui', booleans: ['no-open'], values: ['port'] },
-  attach: { key: 'agent.attach', booleans: [], values: [] },
-  detach: { key: 'agent.detach', booleans: ['forced'], values: [] },
+  // ⭐ 第三张脸(09-05):没有旗标、没有对象。它吃的是 --box 那个全局旗标。
+  mcp: { key: 'mcp', booleans: [], values: [] },
+  // ⛔ attach / detach 不在这张目标表里了:它们在 2026-08-30 整族删掉,
+  //    交代写在下面 MAP 的同名两条上。
 }
 
 const MAP = {
@@ -301,9 +318,10 @@ const MAP = {
       + '✅ 已落地(9d4c8af):undo 消费掉栈顶且不再压新的,输出带「还可再退几步」;'
       + '守卫在 check-plugin-mounts,并已验证它在旧实现下真的会红。',
     done: true,
-    open: '⭐⭐ 这一条差点撑出第 11 个动词。放进 set 是「把插件配置设回上一个值」,'
-      + '读得通但有点绕;更直白的是单独一条 undo。三条出路:①认第 11 条 undo;'
-      + '②attach/detach 并进 set(set agent on|off)腾一格;③维持现在这样。CEO 未拍板。'
+    open: '⭐⭐ 这一条差点撑出一个新动词。放进 set 是「把插件配置设回上一个值」,'
+      + '读得通但有点绕;更直白的是单独一条 undo。两条出路:①认它当第 10 个动词;'
+      + '②维持现在这样。CEO 未拍板。⚠️ 原来还有第三条(attach/detach 并进 set 腾一格),'
+      + '08-30 那两条整族删掉之后不存在了。'
       + '⛔ 之所以先放进 set:一道设计上就永远红的守卫,会训练人忽略它。',
   },
   'plugins.backups.rm': { drop: '不给选哪一份,就没有哪一份可删;轮转已经是自动的。' },
@@ -375,8 +393,19 @@ const MAP = {
   // —— 窗口与接管
   ui: { to: 'ui' },
   'ui.stop': { to: 'stop --window' },
-  attach: { to: 'agent attach' },
-  detach: { to: 'agent detach' },
+  // ⛔⛔ 这两条是**被自动化掉的**,不是被换了个写法。它们要调用方声明两件这个程序
+  //    自己已经答得出的事:有没有命令正在跑(每条会改状态的命令自己登记,进程一死
+  //    记录自然失效),以及这条命令是不是配置窗自己起的(父进程是不是座位上那扇窗,
+  //    src/sandbox.js 的 startedByWindow)。判例:两个互不知情的 agent 先后都忘了敲,
+  //    人开着面板看着沙箱被起被停、PATH 被改,面板一个字没有。
+  attach: {
+    drop: '让调用方声明一件工具自己已经知道的事就是冗余;登记改由 src/journal.js 的 '
+      + 'noteCommand 在唯一漏斗上自动做,显示从此无条件,不依赖谁记得敲。',
+  },
+  detach: {
+    drop: '接管的作用域改成一条命令的执行期间,进程一死锁自然消失,没有可交还的东西;'
+      + '人在自己终端敲命令时也因此不必手动收回控制权。',
+  },
 }
 
 let failures = 0
@@ -432,28 +461,28 @@ check('每条要么给了新形状,要么给了删得掉的理由(不能既是�
 const unexplained = mapped.filter((name) => MAP[name].drop !== undefined && MAP[name].drop.length < 12)
 check('每个删掉的都写了为什么它可以不存在', unexplained.length === 0, unexplained.join('、'))
 
-// 5. ⛔ 新形状只许用申报过的那十个动词。这条是这份表的上限本身 ——
+// 5. ⛔ 新形状只许用申报过的那几个动词。这条是这份表的上限本身 ——
 //    没有它,瘦身会以「再加一条也没什么」的方式慢慢长回去。
 const strayVerbs = mapped
   .filter((name) => MAP[name].to !== undefined)
   .map((name) => ({ name, verb: MAP[name].to.split(' ')[0] }))
   .filter((row) => !VERBS.includes(row.verb))
-check(`新形状只用申报过的十个动词(${VERBS.join(' ')})`,
+check(`新形状只用申报过的 ${VERBS.length} 个动词(${VERBS.join(' ')})`,
   strayVerbs.length === 0, strayVerbs.map((row) => `${row.name}→${row.verb}`).join('、'))
 
-// 6. 十个动词每个都得真的用得上。一个没有任何旧能力落到它头上的动词,
+// 6. 每个动词都得真的用得上。一个没有任何旧能力落到它头上的动词,
 //    要么是忘了映射,要么它根本不该在名单里。
 const usedVerbs = new Set(mapped
   .filter((name) => MAP[name].to !== undefined)
   .map((name) => MAP[name].to.split(' ')[0]))
-const idleVerbs = VERBS.filter((verb) => verb !== 'help' && !usedVerbs.has(verb))
-check('申报的动词都真的接住了东西(help 除外)', idleVerbs.length === 0, idleVerbs.join('、'))
+const idleVerbs = VERBS.filter((verb) => !FACES.includes(verb) && !usedVerbs.has(verb))
+check(`申报的动词都真的接住了东西(${FACES.join(' / ')} 除外:它们是表的投影,不落旧能力)`, idleVerbs.length === 0, idleVerbs.join('、'))
 
 // 7. ⛔ 补回来的场景也受同一条上限管。这道守卫的全部意义:「盖不住的场景」是瘦身
 //    唯一会真正伤到人的地方,而修补它最省事的做法永远是新加一条命令 ——
 //    那样瘦身就在自己的补丁里长回去了,而且是以「这是必要的」的名义。
 const strayComposed = Object.keys(COMPOSED).filter((shape) => !VERBS.includes(shape.split(' ')[0]))
-check('补回来的场景也只用那十个动词,没有为它新开一条', strayComposed.length === 0, strayComposed.join('、'))
+check('补回来的场景也只用那几个动词,没有为它新开一条', strayComposed.length === 0, strayComposed.join('、'))
 
 // 8. 每个补回来的场景都要说清「旧形状里这件事是怎么做的」。⭐ 没有这一句就分不清
 //    它是**瘦身补回来的**还是**顺手加的新功能** —— 后者不属于这一刀。
@@ -521,8 +550,8 @@ if (old.every((name) => want.has(name))) {
   for (const [key, shape] of want) {
     const real = COMMANDS[key]
     if (real === undefined) { wrong.push(`${key} 不见了`); continue }
-    const gap = [...[...shape.booleans].filter((f) => !(real.booleans ?? []).includes(f)),
-      ...[...shape.values].filter((f) => !(real.values ?? []).includes(f))]
+    const gap = [...[...shape.booleans].filter((f) => !booleansOf(real).includes(f)),
+      ...[...shape.values].filter((f) => !valuesOf(real).includes(f))]
     if (gap.length > 0) wrong.push(`${key} 少了 ${gap.join(' ')}`)
   }
   const extra = Object.keys(COMMANDS).filter((k) => !want.has(k) && k !== 'help')
@@ -548,6 +577,78 @@ const emitted = [...dispatcher.matchAll(/action: '([^']+)'/g)].map((one) => one[
 const strayAction = [...new Set(emitted)].filter((name) => !(name in COMMANDS) && name !== 'help')
 check('⭐⭐ --json 里的每个 action 都是命令表上真有的键(不是某条已经删掉的命令的名字)',
   strayAction.length === 0, strayAction.join('、'))
+
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 13-15. ⭐⭐ 上面查的是「表里写了什么」,下面查的是「敲进去问得出什么」。
+//
+// ⛔ 这一段真的把命令行跑起来,而它仍然是静态的:`--help` 在任何数据目录被打开
+//    **之前**就返回(bin/cli.js 的 showHelp),所以这里一个文件夹都不会造。
+//    ⚠️ DSH_HOME 指向一个不存在的路径,既是隔离(check-suite-isolation 要求会驱动
+//    命令行的验收把日常柜指到别处),也是断言的一部分:问用法不许去读任何人的家。
+const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'cli.js')
+const NOWHERE = join(tmpdir(), 'dsh-box-help-reads-nothing')
+
+/**
+ * 敲一条 `--json` 命令,把那一行读回来。
+ * @param {...string} argv
+ * @returns {Record<string, any>}
+ */
+function ask(...argv) {
+  const result = spawnSync(process.execPath, [CLI, ...argv, '--json'], {
+    encoding: 'utf8', windowsHide: true, env: { ...process.env, DSH_HOME: NOWHERE },
+  })
+  const line = `${result.stdout ?? ''}`.trim().split('\n').filter((one) => one.trim() !== '').at(-1)
+  try {
+    return JSON.parse(line ?? '')
+  } catch {
+    return { ok: false, code: 'NO_OUTPUT', message: `${result.stdout}${result.stderr}` }
+  }
+}
+
+// 13. ⭐⭐ 这个工具答得出自己是哪一版。
+//     ⛔ `--version` 这个旗标早被另一根轴占走了(它说的是「用哪台 dsh」),于是
+//     **全仓没有任何一处读过自己的 package.json** —— 回环测试里「我装的是不是刚发
+//     的那一版」只能靠比文件时间戳,而那不是机器能拿去做判断的答案。
+//     ⭐ 两个入口都要:`--help --json` 是调用方**还没有数据目录**时读的那一份,
+//     `ls` 是它每一轮醒来都会敲的那一条。少一个,就有一条路上的人问不出来。
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+const helpJson = ask('--help')
+check('⭐ --help --json 报得出这个工具自己的版本号,且与 package.json 一致',
+  helpJson.boxVersion === manifest.version && typeof manifest.version === 'string',
+  `help 说 ${helpJson.boxVersion},package.json 写 ${manifest.version}`)
+check('⛔ 那个版本号是读出来的,不是编出来的(读不到就报 null,不许猜一个)',
+  VERSION === manifest.version, `${VERSION} / ${manifest.version}`)
+
+// 14. ⭐⭐ 十个动词里有三个只当第一个词用(get / rm / set),它们本身不是命令 ——
+//     于是 `help set` 从前答的是「没有叫 set 的命令」。⛔ 而**路过的 agent 第一下
+//     一定是敲裸动词**:命令表是「动词＋对象」两段式,第二个词正是它来问的东西。
+//     知道第二个词的人根本不需要 help。
+//     ⚠️ `ls` 是同一批里的例外,而且是对的:它**自己就是一条命令**(裸敲 `ls` 是
+//     那张全景),所以 `help ls` 早就答得出东西 —— 有页面的不必再长一张家族页。
+//     判据因此是「答不答得出」,不是「长什么样」:自己是命令的给自己那页,
+//     不是命令的必须给一张完整的家族名单,一条都不许少。
+const bare = [...new Set(Object.keys(COMMANDS)
+  .filter((name) => name.includes('.'))
+  .map((name) => name.split('.')[0]))]
+const speechlessVerbs = bare.filter((verb) => {
+  const answer = ask('help', verb)
+  if (answer.ok !== true) return true
+  if (COMMANDS[verb] !== undefined) return false
+  const under = Object.keys(COMMANDS).filter((name) => name.startsWith(`${verb}.`))
+  // 一条不落:那个动词底下有几条,答复里就得列出几条。
+  return (answer.commands ?? []).length !== under.length
+})
+check(`⭐⭐ 每个裸动词 help 都答得出它底下有哪些命令(共 ${bare.length} 个)`,
+  speechlessVerbs.length === 0, speechlessVerbs.join('、'))
+
+// 15. ⭐ 同族的小坑:命令名带空格时要加引号,而 shell 会把整条当**一个**词递进来。
+//     从前的查表按 argv 分词后直接用 `.` 连接,词内的空格原封不动留在名字里,
+//     于是 `help "set ask-on-quit"` 报「没有这条命令」—— 而它就在列表上。
+const quoted = ask('help', 'set ask-on-quit')
+check('⭐ 带引号的两段式名字也查得到(help "set ask-on-quit")',
+  quoted.ok === true && quoted.command?.name === 'set.ask-on-quit',
+  quoted.command?.name ?? quoted.code)
 
 console.log(failures === 0 ? '\n全部通过\n' : `\n${failures} 项不通过\n`)
 process.exit(failures === 0 ? 0 : 1)

@@ -18,7 +18,7 @@ import {
   closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import process from 'node:process'
 import {
   backupDir, boxLayout, DAILY_CABINET, ensureBox, pickFreeBoxDir, resolveBoxDir, sandboxPaths, uiSeatFile,
@@ -46,15 +46,16 @@ import {
 } from '../src/config.js'
 import { everyCabinet, derivedRoster, partitionRoster } from '../src/roster.js'
 import {
-  BOOLEAN_FLAGS, COMMANDS, commandLine, describeCommand, describeCommands, helpLines, HISTORY_LINES,
-  PROGRAM, VALUE_FLAGS,
+  BOOLEAN_FLAGS, COMMANDS, commandLine, describeCommand, describeCommands, describeParam, GLOBAL_PARAMS, helpLines, HISTORY_LINES, JSON_SCHEMA_DEFAULT, JSON_SCHEMAS,
+  PROGRAM, VALUE_FLAGS, VERSION,
 } from '../src/commands.js'
-import { BoxError, errorCode, errorDetails } from '../src/errors.js'
+import { BoxError, errorCode, errorDetails, VERDICT_EXIT, verdictOf } from '../src/errors.js'
+import { serve as serveMcp } from '../src/mcp.js'
 import { setLang, systemLang, t } from '../src/messages.js'
 import { detectHostDsh, engineLabel, engineRecord, resolveEngine } from '../src/host.js'
 import { looksLikePath } from '../src/engine-path.js'
 import {
-  attach, controlStatus, detach, finishCommand, journalShape, noteCommand, readJournal, readSession, record,
+  finishCommand, journalShape, noteCommand, readJournal, readSession, record, runningCommands,
 } from '../src/journal.js'
 import {
   appendLog, latestLog, listLogs, logShape, newLaunchLog, newPackageLog, newVersionLog, packageLog, readTail,
@@ -70,10 +71,33 @@ import {
 } from '../src/approval.js'
 import {
   adoptSessions, APPROVAL_ENV, approvedByWindow, claimPath, clearMainRunning, clearRunning, createNewSandbox,
-  deleteSandbox, describeClaim, ensureSandbox, forgetEngine, hasCredentials, importCredentials, listSandboxes,
-  liveClaim, mainDshRunning, mainRunningRecord, releasePath, removeCredentials, runningRecord,
-  runningSandboxes,
+  credentialsState, deleteSandbox, describeClaim, ensureSandbox, forgetEngine,
+  importCredentials, listSandboxes, liveClaim, mainDshRunning, mainRunningRecord, releasePath,
+  removeCredentials, runningRecord, runningSandboxes,
 } from '../src/sandbox.js'
+
+/**
+ * The four answers about a cabinet's sign-in, in the two places they are said.
+ *
+ * ⭐ A table rather than a chain of ternaries, and one table per face, because
+ * the failure this whole change is repairing was a missing answer: two states
+ * were being squeezed into a yes/no, and the one that got lost — a document
+ * holding nothing but the browser session dsh signed for itself — was reported
+ * as "signed in". A table makes a new state impossible to forget: it comes out
+ * `undefined` here rather than silently landing in whichever branch was `else`.
+ */
+const CREDENTIALS_LABEL = {
+  keys: 'sandboxes.signedIn',
+  'session-only': 'sandboxes.sessionOnly',
+  none: 'sandboxes.notSignedIn',
+  unreadable: 'sandboxes.credsUnreadable',
+}
+const CREDENTIALS_SENTENCE = {
+  keys: 'launch.realKey',
+  'session-only': 'launch.sessionOnlyKey',
+  none: 'launch.noKey',
+  unreadable: 'launch.unreadableKey',
+}
 import { launch, linkPlugins, stop } from '../src/launch.js'
 import { deleteVersion, downloadedVersions } from '../src/versions.js'
 
@@ -88,8 +112,15 @@ import { deleteVersion, downloadedVersions } from '../src/versions.js'
  */
 function usageText() {
   const lines = helpLines()
-  const column = Math.max(...lines.map((entry) => cellWidth(entry.usage))) + 2
-  const list = lines.map((entry) => `  ${padWide(entry.usage, column)}${entry.summary}`)
+  // ⭐ The column is set by the longest usage that still fits; a usage wider
+  //    than that gets its summary on the next line instead of pushing every
+  //    other summary off the right edge. Generated usage lines are honest about
+  //    every writing, so a few of them are long.
+  const cap = 56
+  const column = Math.min(cap, Math.max(...lines.map((entry) => cellWidth(entry.usage)))) + 2
+  const list = lines.map((entry) => (cellWidth(entry.usage) > cap
+    ? `  ${entry.usage}\n  ${' '.repeat(column)}${entry.summary}`
+    : `  ${padWide(entry.usage, column)}${entry.summary}`))
   return `${t('help.title')}
 
 ${list.join('\n')}
@@ -108,11 +139,20 @@ ${t('help.common')}
  */
 function commandHelpText(described) {
   const lines = [`\n  ${described.usage}`, `  ${described.summary}`, '']
-  const flags = [
-    ...described.booleans.map((flag) => `--${flag}`),
-    ...described.values.map((flag) => `--${flag} <${t('help.valuePlaceholder')}>`),
-  ]
-  if (flags.length > 0) lines.push(`  ${t('help.flags')}  ${flags.join('  ')}`)
+  // ⭐ One row per parameter, from the declaration: what to write, what it
+  //    means, whether it may be left out. The listing above says `[选项]` for
+  //    the common ones; this is where they are spelled out — so a reader who
+  //    reached this page has every argument in front of them, with a sentence
+  //    each, and nothing is only in the source.
+  const rows = described.params.map((one) => {
+    const value = one.enum !== undefined ? `<${one.enum.join('|')}>` : one.valueWord === undefined ? '' : `<${one.valueWord}>`
+    const head = one.at === undefined ? `--${one.name}${value === '' ? '' : ` ${value}`}` : value
+    return { head: `${head}${one.repeat === true ? ' ...' : ''}`, tail: `${one.required ? `${t('help.required')}  ` : ''}${one.description}` }
+  })
+  if (rows.length > 0) {
+    const column = Math.max(...rows.map((row) => cellWidth(row.head))) + 2
+    lines.push(`  ${t('help.flags')}`, ...rows.map((row) => `    ${padWide(row.head, column)}${row.tail}`), '')
+  }
   // ⭐ Above the read/write line and above the notes, because it is the part a
   // caller acts on. A reader who stops here should still know whether to wait,
   // what now exists, and what to type next.
@@ -143,13 +183,37 @@ function commandHelpText(described) {
  * @returns {string | undefined}
  */
 function topicOf(words) {
-  const given = words.filter((word) => word !== undefined)
+  // ⛔ Split on whitespace before joining, because a shell hands `help "set
+  // ask-on-quit"` across as **one** word. Joining the argv tokens with a dot
+  // then produced `set ask-on-quit` — a name no table has — and the reader was
+  // told there is no such command while looking straight at it in the listing.
+  // Quoting a two-word topic is the natural thing to do, so it has to work.
+  const given = words
+    .filter((word) => word !== undefined)
+    .flatMap((word) => String(word).split(/\s+/))
+    .filter((word) => word !== '')
   if (given.length === 0) return undefined
   for (let take = given.length; take > 0; take -= 1) {
     const name = given.slice(0, take).join('.')
     if (COMMANDS[name] !== undefined) return name
   }
   return given.join('.')
+}
+
+/**
+ * Every command sitting under one bare verb, e.g. `set` → `set.plugin`, ….
+ *
+ * ⭐⭐ The table is verb + object in two words, so the first thing anyone types
+ * is `help set` — and `set` is not itself a command, so that used to answer
+ * "there is no command called set". Three of the nine verbs (`get` / `rm` /
+ * `set`) exist only as a first word, which means a third of the interface had
+ * no way in but knowing the second word already. ⛔ A caller who knew the
+ * second word did not need the help.
+ * @param {string} topic
+ * @returns {string[]}
+ */
+function familyOf(topic) {
+  return Object.keys(COMMANDS).filter((name) => name.startsWith(`${topic}.`))
 }
 
 /**
@@ -161,29 +225,73 @@ function showHelp(topic, opts) {
   if (topic === undefined) {
     if (json) {
       return void console.log(JSON.stringify({
-        box: null, ok: true, action: 'help', program: PROGRAM, commands: describeCommands(),
+        // ⭐ Which build is answering. Here because `--help --json` is the one
+        // request a caller makes before it has decided anything, and "am I
+        // talking to the copy I just installed" has to be answerable then.
+        schema: jsonSchema, box: null, ok: true, verdict: 'ok', action: 'help', program: PROGRAM, boxVersion: VERSION,
+        // ⭐ The flags every command takes, described the same way each
+        //    command's own are — so a tool schema can be built without knowing
+        //    that `--box` exists.
+        globals: GLOBAL_PARAMS.map((one) => describeParam(null, one)),
+        // ⭐ The four verdicts and the exit code each projects to, as data —
+        //    the same table a tool face maps onto `isError`.
+        verdicts: VERDICT_EXIT,
+        commands: describeCommands(),
       }))
     }
     return void process.stdout.write(usageText())
   }
   const described = describeCommand(topic)
   if (described === null) {
-    throw new BoxError('UNKNOWN_COMMAND', t('help.noSuchTopic', { topic }), {
-      commands: Object.keys(COMMANDS),
-    })
+    // ⭐ A bare verb is not an unknown command, it is an incomplete one — so it
+    // gets the short list of what can follow it rather than a refusal.
+    const family = familyOf(topic)
+    if (family.length === 0) {
+      throw new BoxError('UNKNOWN_COMMAND', t('help.noSuchTopic', { topic }), {
+        commands: Object.keys(COMMANDS),
+      })
+    }
+    const under = family.map((name) => describeCommand(name))
+    if (json) {
+      return void console.log(JSON.stringify({
+        schema: jsonSchema, box: null, ok: true, verdict: 'ok', action: 'help', topic, commands: under,
+      }))
+    }
+    return void process.stdout.write(familyHelpText(topic, under))
   }
   if (json) {
-    return void console.log(JSON.stringify({ box: null, ok: true, action: 'help', command: described }))
+    return void console.log(JSON.stringify({ schema: jsonSchema, box: null, ok: true, verdict: 'ok', action: 'help', command: described }))
   }
   process.stdout.write(commandHelpText(described))
+}
+
+/**
+ * The listing for one verb, laid out like the full listing it is a slice of.
+ * @param {string} topic
+ * @param {object[]} under - from {@link describeCommand}, one per sub-command.
+ * @returns {string}
+ */
+function familyHelpText(topic, under) {
+  const column = Math.max(...under.map((one) => cellWidth(one.usage))) + 2
+  const list = under.map((one) => `    ${padWide(one.usage, column)}${one.summary}`)
+  return `\n  ${t('help.familyTitle', { verb: topic, count: under.length })}\n\n${list.join('\n')}\n\n  ${t('help.perCommand')}\n`
 }
 
 const argv = process.argv.slice(2)
 // Read before parsing, because how a parse failure should be reported depends
 // on it.
-const wantsJson = argv.includes('--json')
+const wantsJson = argv.some((token) => token === '--json' || token.startsWith('--json='))
+/** Which shape of machine answer was asked for; set by `parseArgs`. */
+let jsonSchema = JSON_SCHEMA_DEFAULT
 /** @type {import('../src/paths.js').BoxLayout | null} */
 let layout = null
+
+/**
+ * The data directory the caller named, when it could not be used and another
+ * one was substituted. `null` on every ordinary run.
+ * @type {string | null}
+ */
+let boxAsked = null
 
 /**
  * What is about to be written down, kept so a failure can be recorded too.
@@ -217,12 +325,38 @@ async function main(positional, opts) {
     const asked = command === 'help' ? rest : [command, ...rest]
     return void showHelp(topicOf(asked), opts)
   }
+  // ⛔ Before the data directory is opened and before anything is recorded: a
+  //    refused request — unknown verb, somebody else's flag — must leave
+  //    nothing behind. `bogus` used to create the data directory and then say
+  //    it did not know the word.
+  if (!Object.keys(COMMANDS).some((name) => name === command || name.startsWith(`${command}.`))) {
+    throw new BoxError('UNKNOWN_COMMAND', t('help.unknownCommand', { command }))
+  }
+  checkFlagsBelong(topicOf([command, ...rest]) ?? command, opts)
+
+  // ⭐ The tool face does not open the data directory itself and writes nothing
+  //    down: every call it receives runs this same program as a child, and that
+  //    child opens, records and closes exactly as a typed command does. The
+  //    directory is resolved here once so every call in the session is about
+  //    the same world, whatever the working directory does meanwhile.
+  if (command === 'mcp') {
+    const maxChars = opts['max-chars'] === undefined ? undefined : Number(opts['max-chars'])
+    if (maxChars !== undefined && !(Number.isInteger(maxChars) && maxChars > 0)) {
+      throw new BoxError('BAD_FLAG', t('flag.needsPositiveInteger', { flag: 'max-chars', given: String(opts['max-chars']) }), { flag: 'max-chars' })
+    }
+    return void await serveMcp({ box: resolveBoxDir({ dir: typeof opts.box === 'string' ? opts.box : undefined }), maxChars })
+  }
 
   layout = openBox(opts)
   pending = describeAction(command, rest, opts)
-  // Every command, reading ones included: the badge answers "what is being
-  // done right now", which the numbered trail deliberately does not.
-  noteCommand(layout, command, { ...opts, json: undefined })
+  // ⭐⭐ The one funnel every command passes through, which is why the answer to
+  // "is anything being done to this data directory right now" is written here
+  // and nowhere else. Nobody has to declare it: the record is opened by the
+  // command and closed when the process leaves, both exits below.
+  // ⛔ The recorded name (`get.plugin`), not the verb — that is the key the
+  // command table declares `mutates` against, and only mutating commands leave
+  // a record at all.
+  noteCommand(layout, pending?.command ?? command, { ...opts, json: undefined })
 
   switch (command) {
     case 'ls': return look(layout, rest, opts)
@@ -233,7 +367,6 @@ async function main(positional, opts) {
     case 'stop': return halt(layout, rest[0], opts)
     case 'logs': return showLogs(layout, rest[0], opts)
     case 'ui': return openUi(layout, opts)
-    case 'agent': return agentControl(layout, rest, opts)
     default: throw new BoxError('UNKNOWN_COMMAND', t('help.unknownCommand', { command }))
   }
 }
@@ -321,18 +454,6 @@ function change(layout, rest, opts) {
   // rather than listed here: a setting added to `SETTINGS` is one this verb can
   // already change, which is the whole reason that table exists.
   return changeSetting(layout, what, value, opts)
-}
-
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {string[]} rest
- * @param {Record<string, unknown>} opts
- */
-function agentControl(layout, rest, opts) {
-  const [what] = rest
-  if (what === 'attach') return takeControl(layout, opts)
-  if (what === 'detach') return releaseControl(layout, opts)
-  return noSuchObject('agent', what)
 }
 
 /**
@@ -444,7 +565,18 @@ async function showStatus(layout, opts) {
   const boxes = listSandboxes(layout)
   const { live, missing } = partitionRoster(derivedRoster(layout))
   const status = {
-    agent: controlStatus(layout),
+    // ⭐ Which build is answering. `ls` is the command an agent runs first in
+    // every turn, so it is the one place a version has to be for the question
+    // "am I driving the copy I just installed" to be answerable without
+    // comparing file timestamps. The other entrance is `--help --json`, which
+    // is what a caller reads before it has a data directory at all.
+    boxVersion: VERSION,
+    // ⭐ Every command running against this data directory at this instant,
+    // including this reader's own siblings in another terminal. No longer "has
+    // somebody announced themselves": nobody has to, so an agent that reads this
+    // first thing in a turn finds out it is not alone whether or not the other
+    // one was polite about it.
+    runningCommands: runningCommands(layout),
     // The machine axis: the dsh the user installed themselves, which is what
     // a launch uses unless `--version` names one of the downloads below.
     host: detectHostDsh(),
@@ -477,13 +609,39 @@ async function showStatus(layout, opts) {
     // that cannot has no way to know the question exists.
     onPath: reachableByName(),
   }
-  if (opts.json === true) return void emit(status)
+  // ⭐⭐ The machine answer is the overview, not the dump. Measured on a real
+  //    ledger: 16 sandboxes came to 30 KB, of which 21 KB was the sandboxes —
+  //    each carrying every absolute path and the full list of platform packages
+  //    (136 on one of them). A caller that reads `ls` first thing in every turn
+  //    was paying ten thousand tokens for a question whose answer is a table
+  //    with one line per sandbox. So containers give counts here; the paths are
+  //    on `ls sandbox`, and what one cabinet holds is on `ls plugin --in <柜>`.
+  //    The human face below has always been shaped this way.
+  if (opts.json === true) {
+    return void emit({
+      ...status,
+      sandboxes: boxes.map((box) => sandboxRow(box)),
+      plugins: live.map(pluginRow),
+      missingPlugins: missing.map(pluginRow),
+      mainPlugins: pluginCounts(status.mainPlugins),
+    })
+  }
 
   // The label column is measured in terminal cells, not characters, because
   // these labels are Chinese and a Chinese character takes two of them.
   const label = (text) => padWide(text, 12)
-  console.log(`\n  ${label(t('status.labelDataDir'))}${layout.root}`)
-  console.log(`  ${label(t('status.labelAgent'))}${status.agent === null ? t('status.agentNone') : t('status.agentSince', { at: showInstant(status.agent.startedAt) })}`)
+  console.log(`\n  ${label(t('status.labelBoxVersion'))}${status.boxVersion ?? t('status.none')}`)
+  console.log(`  ${label(t('status.labelDataDir'))}${layout.root}`)
+  // ⛔ Reads `runningCommands`, which is the field that replaced `agent` when
+  // `agent attach` / `agent detach` were deleted. This line was still asking for
+  // `status.agent` — undefined rather than null, so the `=== null` test missed
+  // and the whole human `ls` died on "Cannot read properties of undefined". Only
+  // the `--json` face was covered, and it does not go through here.
+  console.log(`  ${label(t('status.labelAgent'))}${status.runningCommands.length === 0
+    ? t('status.agentNone')
+    : status.runningCommands
+      .map((run) => t('memory.runningNow', { command: run.command, pid: run.pid, at: showInstant(run.startedAt) }))
+      .join('  ')}`)
   console.log(`  ${label(t('status.labelHost'))}${hostLine(status.host)}`)
   console.log(`  ${label(t('status.labelDownloaded'))}${status.downloaded.map((v) => v.version).join('、') || t('status.none')}  ${t('status.downloadedHint')}`)
   console.log(`  ${label(t('status.labelPlugins'))}${live.map((p) => p.id).join('、') || t('status.none')}${missing.length > 0 ? `  ${t('status.foldersGone', { count: missing.length })}` : ''}`)
@@ -501,6 +659,54 @@ async function showStatus(layout, opts) {
     console.log(`    ${padWide(box.name, 24)} ${(box.lastVersion ?? t('sandbox.neverStarted')).padEnd(14)} ${where}`)
   }
   console.log()
+}
+
+/**
+ * A sandbox as one row of a listing: what it is, whether it runs, and what it
+ * holds **by count**. The full inspection is what the window and the launch
+ * path read; this is the view a caller reads to decide which sandbox to ask
+ * about next.
+ *
+ * `running` keeps its full shape: it is the field other tools already read off
+ * this answer, and it is small. Paths are given only when asked (`ls sandbox`),
+ * never in the overview — every one of them is derivable from the data
+ * directory and the name.
+ * @param {ReturnType<typeof listSandboxes>[number]} box
+ * @param {{paths?: boolean}} [options]
+ */
+function sandboxRow(box, { paths = false } = {}) {
+  const { root, home, lastEngine, plugins, ...rest } = box
+  return {
+    ...rest,
+    engine: lastEngine === null || lastEngine === undefined ? null : lastEngine.kind,
+    ...(paths ? { root, home, lastEngine, patchFile: plugins.patchFile } : {}),
+    plugins: pluginCounts(plugins),
+  }
+}
+
+/**
+ * What a cabinet holds, as three numbers and whether it could be read.
+ *
+ * The platform list is dsh's own — over a hundred names on a full profile —
+ * and is the same in every cabinet of the same version; listing it per sandbox
+ * was most of the overview's weight. `ls plugin --in <柜>` still gives the
+ * names.
+ * @param {{ours: unknown[], theirs: unknown[], platform: unknown[], readable: boolean}} plugins
+ */
+function pluginCounts(plugins) {
+  return { ours: plugins.ours.length, theirs: plugins.theirs.length, platform: plugins.platform.length, readable: plugins.readable }
+}
+
+/**
+ * A machine-wide plugin as one row: where it lives, and **which** cabinets have
+ * it, by name. The daily cabinet is named as {@link DAILY_CABINET}, the same
+ * value every `--in` / `--to` takes, so a row can be turned into a command
+ * without a second lookup.
+ * @param {{cabinets: {main: boolean, sandbox: string | null}[]}} plugin
+ */
+function pluginRow(plugin) {
+  const { cabinets, ...rest } = plugin
+  return { ...rest, cabinets: cabinets.map((one) => (one.main ? DAILY_CABINET : one.sandbox)) }
 }
 
 /**
@@ -650,50 +856,24 @@ function logTarget(layout, name, opts) {
  * @param {import('../src/paths.js').BoxLayout} layout
  * @param {Record<string, unknown>} opts
  */
-function takeControl(layout, opts) {
-  const held = attach(layout)
-  if (opts.json === true) return void emit({ action: 'agent.attach', ...held })
-  console.log(`\n  ${t('attach.done')}`)
-  console.log(`  ${t('attach.session', { session: held.session })}\n`)
-}
-
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {Record<string, unknown>} opts
- */
-function releaseControl(layout, opts) {
-  // Who ended it is part of the record, not decoration: an agent that reads
-  // back "I finished" where it was actually stopped has been told the one thing
-  // it most needs to know is not true.
-  const released = detach(layout, opts.forced === true ? 'forced' : 'done')
-  if (opts.json === true) return void emit({ action: 'agent.detach', released })
-  if (released === null) console.log(`\n  ${t('detach.nobody')}\n`)
-  else if (opts.forced === true) console.log(`\n  ${t('detach.forced')}\n`)
-  else console.log(`\n  ${t('detach.done')}\n`)
-}
-
-/** How a session ended, said in words rather than in its recorded token. */
-function endedWords(reason) {
-  if (reason === 'forced') return t('session.endedForced')
-  if (reason === 'done') return t('session.endedDone')
-  return String(reason)
-}
-
-/**
- * @param {import('../src/paths.js').BoxLayout} layout
- * @param {Record<string, unknown>} opts
- */
 function showMemory(layout, opts) {
   const session = readSession(layout)
-  const holding = controlStatus(layout)
-  if (opts.json === true) return void emit({ session, active: holding })
+  // ⭐ What is running right now rides along, because the first question an
+  // agent waking up has is not only "what was done" but "is somebody else in
+  // here at this moment" — and under the automatic scheme that is a thing it can
+  // now be told without anybody having announced themselves.
+  const running = runningCommands(layout)
+  if (opts.json === true) return void emit({ session, running })
   if (session === null) return void console.log(`\n  ${t('memory.none')}\n`)
   console.log(`\n  ${t('memory.header', { session: session.session, at: showInstant(session.startedAt) })}`)
-  console.log(`  ${session.endedAt === null ? t('memory.stillOpen') : t('memory.endedAt', { at: session.endedAt, how: endedWords(session.endedBy) })}`)
   for (const entry of session.actions) {
     const how = entry.ok ? t('memory.ok') : t('memory.refused', { code: entry.code })
-    console.log(`    ${String(entry.seq).padEnd(3)} ${entry.command.padEnd(14)} ${how}`)
+    const who = entry.by === undefined || entry.by === null ? '' : `  ${t('run.byProcess', { pid: entry.by.pid })}`
+    console.log(`    ${String(entry.seq).padEnd(3)} ${entry.command.padEnd(14)} ${how}${who}`)
     if (!entry.ok) console.log(`        ${entry.message}`)
+  }
+  for (const run of running) {
+    console.log(`  ${t('memory.runningNow', { command: run.command, pid: run.pid, at: showInstant(run.startedAt) })}`)
   }
   console.log()
 }
@@ -709,7 +889,20 @@ function showMemory(layout, opts) {
  * @param {Record<string, unknown>} payload
  */
 function emit(payload) {
-  console.log(JSON.stringify({ box: layout?.root ?? null, ok: true, ...payload }))
+  console.log(JSON.stringify({ schema: jsonSchema, box: layout?.root ?? null, ...boxSwap(), ok: true, verdict: 'ok', ...payload }))
+}
+
+/**
+ * Where the caller pointed, when that is not where the answer is about.
+ *
+ * ⛔ Only present when the two differ. A field that is always there says
+ * nothing on the ordinary run and would be read past; a field that appears only
+ * when a substitution happened is the substitution, stated. `box` remains what
+ * it always was — the directory actually used.
+ * @returns {{boxAsked?: string}}
+ */
+function boxSwap() {
+  return boxAsked === null ? {} : { boxAsked }
 }
 
 /**
@@ -743,13 +936,31 @@ function chooseLang(opts) {
  * @returns {import('../src/paths.js').BoxLayout}
  */
 function openBox(opts) {
+  // ⛔ `--box A --box B` is refused before this runs (`checkFlagsBelong`): a
+  //    repeated flag arrives as an array, `typeof … === 'string'` read that as
+  //    "not given", and the command once acted on the default directory —
+  //    neither of the two named — in silence, exit code 0.
   const requested = resolveBoxDir({ dir: typeof opts.box === 'string' ? opts.box : undefined })
   try {
     return ensureBox(requested)
   } catch (error) {
     // Someone already owns a folder by that name. Taking it over silently is
     // the one failure mode that loses data belonging to another program.
-    const free = pickFreeBoxDir(process.cwd())
+    //
+    // ⛔⛔ Beside the folder that was **asked for**, never beside the working
+    // directory. It used to be `pickFreeBoxDir(process.cwd())`, which throws the
+    // `--box` value away entirely and rebuilds a path from the default name —
+    // and that read as "it used the data folder under the one I named" only
+    // because the default name happens to end in `data` and the caller happened
+    // to be standing in the parent. From anywhere else the same command lands in
+    // an unrelated directory, quietly, and still exits 0.
+    const near = basename(requested)
+    const free = near === '' ? pickFreeBoxDir(requested) : pickFreeBoxDir(dirname(requested), near)
+    // ⭐ Kept so the answer can say it. The red line below goes to stderr and
+    // `--json` promises one parseable line on stdout — so to a caller reading
+    // the JSON this substitution did not exist, and the command it just ran was
+    // reported against a directory it never asked for.
+    boxAsked = requested
     console.error(`  ${error.message}`)
     console.error(`  ${t('box.usingInstead', { dir: free })}\n`)
     return ensureBox(free)
@@ -1072,7 +1283,7 @@ function showPlugins(layout, opts) {
   // is where the truth about the version lives. `null` prints as nothing — a
   // folder without a readable version is not a fact worth a placeholder.
   const rows = live.map((plugin) => ({ ...plugin, version: pluginVersion(plugin.path) }))
-  if (opts.json === true) return void emit({ plugins: rows, missingPlugins: missing })
+  if (opts.json === true) return void emit({ plugins: rows.map(pluginRow), missingPlugins: missing.map(pluginRow) })
   console.log(`\n  ${t('plugins.registryHeader')}`)
   if (rows.length === 0 && missing.length === 0) console.log(`    ${t('plugins.registryEmpty')}`)
   for (const plugin of rows) {
@@ -1113,9 +1324,14 @@ function pluginPlaces(layout, id, name) {
 async function installPlugin(layout, source, opts) {
   const from = typeof opts.from === 'string' && opts.from !== '' ? opts.from : null
   // ⭐⭐ The positional is optional **only** when a cabinet is named to take
-  // from, and that is the whole of "copy a whole cabinet". CEO 2026-08-28:
-  // "给了 id 搬那一个,不给就搬整柜" — so the two are one command read two ways
-  // rather than two commands, and nothing in here has to know about directions.
+  // from, and that is the whole of "copy a whole cabinet": name one and that one
+  // moves, name none and the cabinet's contents do. Two readings of one command
+  // rather than two commands, so nothing in here has to know about directions.
+  // ⛔ Whether the help says so is a separate fact from whether it works, and
+  // for a while only the second was true — the usage line showed the positional
+  // as required, so the whole-cabinet form existed and was unreachable by
+  // anybody reading `--help`. A capability that cannot be discovered is, to
+  // everything that only reads the help, not there.
   if (source === undefined) {
     if (from === null) throw new BoxError('MISSING_ARGUMENT', t('plugins.installWhich'))
     return copyCabinet(layout, from, opts)
@@ -2232,14 +2448,16 @@ function sweepUnusedDownloads(layout, candidates) {
  */
 function showSandboxes(layout, opts = {}) {
   const all = listSandboxes(layout)
-  if (opts.json === true) return void emit({ sandboxes: all })
+  // The list with its paths, one row each; plugins still by count — the
+  // names of one cabinet are `ls plugin --in <柜>`.
+  if (opts.json === true) return void emit({ sandboxes: all.map((box) => sandboxRow(box, { paths: true })) })
   console.log(`\n  ${t('sandboxes.header')}`)
   if (all.length === 0) console.log(`    ${t('sandboxes.none')}`)
   for (const box of all) {
     const bits = [
       box.lastVersion ?? t('sandbox.neverStarted'),
       t('sessions.count', { count: box.sessions }),
-      box.hasCredentials ? t('sandboxes.signedIn') : t('sandboxes.notSignedIn'),
+      t(CREDENTIALS_LABEL[box.credentials]),
     ]
     if (box.running !== null) bits.unshift(t('sandboxes.runningAt', { url: box.running.url }))
     console.log(`    ${padWide(box.name, 24)} ${bits.join('  ·  ')}`)
@@ -2322,7 +2540,19 @@ async function adopt(layout, opts) {
   if (opts.json === true) return void emit({ action: 'get.chat', ...result })
   console.log(`\n  ${t('adopt.copied', { from: result.from, to: result.to, adopted: result.adopted, skipped: result.skipped })}`)
   console.log(`  ${t('adopt.originalsStay', { from: result.from })}`)
-  console.log(`  ${t('adopt.visibleNextStart', { to: result.to })}\n`)
+  console.log(`  ${t('adopt.visibleNextStart', { to: result.to })}`)
+  // ⛔ Only when there is something to say about, and never as a verdict: this
+  // is the one property of the copy that cannot be checked from here, so it is
+  // reported when the two sides are known to differ or when one is unknown, and
+  // stays quiet when they are known to agree.
+  if (result.sameVersion === false) {
+    console.log(`  ${t('adopt.versionDiffers', {
+      from: result.from, fromVersion: result.fromVersion, to: result.to, toVersion: result.toVersion,
+    })}`)
+  } else if (result.sameVersion === null) {
+    console.log(`  ${t('adopt.versionUnknown')}`)
+  }
+  console.log()
 }
 
 /**
@@ -2364,6 +2594,12 @@ function pinReport(pin) {
  * @param {Record<string, unknown>} opts
  */
 async function start(layout, name, opts) {
+  // ⭐⭐ The clock starts here, at the moment the command was received, and stops
+  // when dsh is answering. Nobody outside can measure that span: a caller timing
+  // the child process also times node starting up and this file being read, and
+  // one that times its own turn also times itself. So the only place the real
+  // boundary is known is inside, and it costs one field to say it.
+  const began = Date.now()
   const config = readConfig(layout)
   const last = config.last
 
@@ -2411,12 +2647,16 @@ async function start(layout, name, opts) {
 
   const importSignIn = opts['no-sign-in'] !== true
   let boxName = t('cabinet.daily')
-  // Whether the cabinet about to be opened actually holds a sign-in, which is
-  // what decides whether the launch can spend money. The real home always does;
-  // a sandbox only does if one was imported now or by an earlier launch.
+  // What the cabinet about to be opened actually holds, which is what decides
+  // whether this launch can spend money.
   // ⛔ Not the same as `importSignIn`: `--no-sign-in` on a sandbox that was
   // signed in yesterday still opens a cabinet with a key in it.
-  let hasCredentials = true
+  // ⛔ And not "is there a credentials file": dsh writes that file itself to
+  // keep the browser session it signed, so a cabinet that never had a key ends
+  // up with one after its first launch. Four answers, not two — `session-only`
+  // is exactly that case, and it used to be reported as signed in.
+  /** @type {'keys' | 'session-only' | 'none' | 'unreadable'} */
+  let credState = 'keys'
   if (main) {
     // ⭐ The gate, and the only one in this tool. Checked before anything else
     // about the world, so that the refusal is the same answer every time and
@@ -2447,6 +2687,11 @@ async function start(layout, name, opts) {
     if (await mainDshRunning()) {
       throw new BoxError('MAIN_DSH_RUNNING', t('start.mainAlreadyRunning'))
     }
+    // ⭐ Asked, not assumed. This used to be hardcoded to "the real home always
+    // has one", which is true of every real home anybody has met and still is
+    // not something this tool knows — and the cost of being wrong is the one
+    // sentence a person acts on before spending money.
+    credState = credentialsState(userDshHome())
     say(`\n  ${t('start.notSandbox')}`)
     if (engine.kind !== 'host') {
       say(`  ${t('start.releaseOnMain')}`)
@@ -2459,7 +2704,7 @@ async function start(layout, name, opts) {
       ? createNewSandbox(layout, { importSignIn })
       : ensureSandbox(layout, String(name ?? ''), { importSignIn })
     boxName = info.name
-    hasCredentials = info.hasCredentials
+    credState = info.credentials
     say(`\n  ${t(created ? 'sandbox.created' : 'sandbox.reused', { name: info.name })}${signInImported ? t('start.signInSuffix') : ''}`)
     if (!created) say(`  ${t('sandbox.ownConversations')}`)
   }
@@ -2472,14 +2717,25 @@ async function start(layout, name, opts) {
       throw new BoxError('NEEDS_APPROVAL', t('signOut.mainNeedsApproval'), { main: true })
     }
     if (removeCredentials(cabinetHome)) {
-      hasCredentials = false
+      credState = 'none'
       say(`  ${t('signOut.done', { name: boxName })}`)
     }
-  } else if (opts['sign-in'] === true && !hasCredentials) {
+  } else if (opts['sign-in'] === true && credState !== 'keys') {
     if (main) throw new BoxError('MAIN_IS_THE_SOURCE', t('signIn.mainIsSource'))
-    if (importCredentials(cabinetHome)) {
-      hasCredentials = true
+    // ⭐ Reachable now in a way it was not before. While "has credentials" meant
+    // "the file is there", a cabinet that had ever served a page was treated as
+    // signed in, so this branch never ran on one and never met an existing
+    // document. It does now — and the import writes the whole file, so what was
+    // in it goes. That is survivable (dsh mints a new browser secret next
+    // launch, at the price of logging out the tabs holding the old one) but it
+    // is not something to do without saying so.
+    const replaced = credState !== 'none'
+    const carried = importCredentials(cabinetHome)
+    if (carried !== null) {
+      credState = 'keys'
       say(`  ${t('signIn.done', { name: boxName })}`)
+      if (replaced) say(`  ${t('signIn.replacedSession')}`)
+      if (carried.droppedGrants > 0) say(`  ${t('signIn.grantNotCarried', { count: carried.droppedGrants })}`)
     }
   }
   say(`  ${t('start.usingEngine', { engine: engineLabel(engine) })}`)
@@ -2598,14 +2854,37 @@ async function start(layout, name, opts) {
       url: result.url,
       pid: result.pid,
       port: result.port,
-      plugins: chosen.map((p) => ({ id: p.id, package: p.package })),
+      // ⛔⛔ `pluginsChanged`, not `plugins`. Under the old name this field said
+      // "what `--plugin` asked for this time" while reading as "what this
+      // cabinet holds" — so the same sandbox answered `[{"id":"dsh-lab"}]` on
+      // the run that carried the flag and `[]` on the next one, with the plugin
+      // installed the whole time. That is the exact inverse of the rule this
+      // command's own help states: saying no `--plugin` is **not** "load none",
+      // it is "change nothing". The prose had it right and the machine answer
+      // printed "unchanged" as "empty", which is the copy an agent acts on.
+      pluginsChanged: chosen.map((p) => ({ id: p.id, package: p.package })),
+      // ⭐ And the question the old field looked like it was answering, answered
+      // for real. The listing was already being read a few lines above — the
+      // `--json` face simply threw it away, because `say` is a no-op here.
+      cabinetPlugins: mounted,
       missingPlugins: gone,
       logFile,
       detached: !follow,
+      // ⭐ How long the wait actually was, so the caller does not have to guess
+      // a timeout from a sentence in the help.
+      elapsedMs: Date.now() - began,
+      // ⭐⭐ And what that duration is a duration *of*. Two judges can end the
+      // wait: `announced` means dsh said so itself, from a callback that runs
+      // only once its whole plugin tree has settled; `probed` means it never
+      // said so — its `printUrl` is off — and we asked its page instead. They
+      // do not fire at the same instant, so a caller comparing `elapsedMs`
+      // across runs is comparing two different measurements unless it can see
+      // which one it got.
+      readyBy: result.readyBy,
     })
   } else {
     console.log(`\n  ${t('launch.open', { url: result.url })}`)
-    console.log(`  ${t(hasCredentials ? 'launch.realKey' : 'launch.noKey')}`)
+    console.log(`  ${t(CREDENTIALS_SENTENCE[credState])}`)
     console.log(`  ${t('launch.logAt', { file: logFile })}`)
     if (follow) console.log(`  ${t('launch.followStop', { pid: result.pid })}\n`)
     else console.log(`  ${t('launch.detached', { pid: result.pid, name: boxName })}\n`)
@@ -2695,16 +2974,39 @@ function signIn(layout, opts) {
   if (target === '') throw new BoxError('MISSING_ARGUMENT', t('signIn.which'))
   const home = sandboxPaths(layout, target).home
   if (!existsSync(home)) throw new BoxError('NO_SUCH_SANDBOX', t('sandbox.noSuch', { name: target }), { sandbox: target })
-  if (hasCredentials(home)) {
-    if (opts.json === true) return void emit({ action: 'get.signin', sandbox: target, imported: false })
+  const before = credentialsState(home)
+  if (before === 'keys') {
+    if (opts.json === true) return void emit({ action: 'get.signin', sandbox: target, imported: false, credentials: before })
     return void console.log(`\n  ${t('signIn.already', { name: target })}\n`)
   }
-  if (!importCredentials(home)) {
+  // ⛔ The import writes the whole document, so anything already in it goes.
+  // Reachable only since "has a sign-in" stopped meaning "the file exists" —
+  // before that, a cabinet dsh had written a browser session into looked signed
+  // in and this line was never reached with a document present.
+  const replaced = before !== 'none'
+  const carried = importCredentials(home)
+  if (carried === null) {
     throw new BoxError('NO_SIGN_IN_TO_COPY', t('signIn.nothingToCopy'), { sandbox: target })
   }
   recordResolved({ sandbox: target })
-  if (opts.json === true) return void emit({ action: 'get.signin', sandbox: target, imported: true })
-  console.log(`\n  ${t('signIn.done', { name: target })}\n`)
+  if (opts.json === true) {
+    return void emit({
+      action: 'get.signin',
+      sandbox: target,
+      imported: true,
+      replacedSession: replaced,
+      // ⭐ What was carried and what was deliberately left behind, because
+      // "copied the sign-in" is now a smaller claim than it used to be and a
+      // caller comparing the two files would otherwise find them different
+      // with nothing to say why.
+      carried: { refs: carried.refs, apiKeys: carried.apiKeys },
+      droppedGrants: carried.droppedGrants,
+    })
+  }
+  console.log(`\n  ${t('signIn.done', { name: target })}`)
+  if (replaced) console.log(`  ${t('signIn.replacedSession')}`)
+  if (carried.droppedGrants > 0) console.log(`  ${t('signIn.grantNotCarried', { count: carried.droppedGrants })}`)
+  console.log()
 }
 
 /**
@@ -3070,9 +3372,11 @@ async function quit(layout, opts) {
       // bare names on the other means a caller reading `.sandbox` off a string
       // — and this is the path reached less often, so it is the one that would
       // be found in the wild rather than in a test.
+      // ⭐ Half done when any sandbox went down before the gate: the verdict
+      //    says so (exit 3), and `stopped` is the half.
       throw new BoxError('NEEDS_APPROVAL', t('quit.mainNeedsApproval', {
         count: stopped.length,
-      }), { main: true, stopped, stale })
+      }), { main: true, stopped, stale }, { partial: stopped.length > 0 })
     }
     const killed = await stop(held.pid, held.pidBorn)
     clearMainRunning(layout, held.pid)
@@ -3211,6 +3515,19 @@ function parseArgs(argv) {
     }
     const equals = token.indexOf('=')
     const key = equals === -1 ? token.slice(2) : token.slice(2, equals)
+    // ⭐ `--json` is the one boolean that may carry a number: which shape of
+    //    machine answer is wanted. Bare means the first shape, for good.
+    if (key === 'json') {
+      const asked = equals === -1 ? JSON_SCHEMA_DEFAULT : Number(token.slice(equals + 1))
+      if (!JSON_SCHEMAS.includes(asked)) {
+        throw new BoxError('JSON_SCHEMA_UNKNOWN', t('flag.jsonSchema', {
+          asked: token.slice(equals + 1), known: JSON_SCHEMAS.join('、'),
+        }), { asked: token.slice(equals + 1), known: JSON_SCHEMAS })
+      }
+      flags.json = true
+      jsonSchema = asked
+      continue
+    }
     if (BOOLEAN_FLAGS.has(key)) {
       if (equals !== -1) throw new BoxError('BAD_FLAG', t('flag.noValue', { flag: key }))
       flags[key] = true
@@ -3231,6 +3548,47 @@ function parseArgs(argv) {
     i += 1
   }
   return { positional, flags }
+}
+
+/**
+ * Every flag given belongs to this command, and none was given twice.
+ *
+ * ⛔ `parseArgs` above can only say "nobody's flag": it runs before the command
+ * is known, against the union of every command's flags. So for a long time any
+ * flag parsed anywhere and was dropped in silence where it meant nothing —
+ * `ls --force`, `stop --version 1.2` — which is a typo producing a plausible
+ * run. This is the half that knows which command it is.
+ *
+ * ⭐ A flag that belongs to another command is refused **by name**, saying
+ * whose it is: the caller mis-remembered where the flag lives, and "unknown"
+ * would send them to the wrong page. A value flag given twice is refused
+ * unless the declaration says `repeat`: first-wins and last-wins are both
+ * guesses, and this tool's whole job is knowing which cabinet it is acting on.
+ * @param {string} name - the command as the table keys it, e.g. `get.plugin`.
+ * @param {Record<string, string | boolean | string[]>} flags
+ */
+function checkFlagsBelong(name, flags) {
+  const shape = COMMANDS[name]
+  if (shape === undefined) return
+  const own = new Map(shape.params.filter((one) => one.at === undefined).map((one) => [one.name, one]))
+  const globals = new Set(GLOBAL_PARAMS.map((one) => one.name))
+  const spoken = name.split('.').join(' ')
+  for (const [key, value] of Object.entries(flags)) {
+    const param = globals.has(key) ? GLOBAL_PARAMS.find((one) => one.name === key) : own.get(key)
+    if (param === undefined) {
+      const owners = Object.entries(COMMANDS)
+        .filter(([, other]) => other.params.some((one) => one.at === undefined && one.name === key))
+        .map(([other]) => other.split('.').join(' '))
+      throw new BoxError('FLAG_NOT_HERE', t('flag.notHere', { flag: key, command: spoken, owners: owners.join(' / ') }), {
+        flag: key, command: name, belongsTo: owners,
+      })
+    }
+    if (Array.isArray(value) && param.repeat !== true) {
+      throw new BoxError('FLAG_TWICE', t('flag.twice', { flag: key, count: value.length, list: value.join('、') }), {
+        flag: key, given: value,
+      })
+    }
+  }
 }
 
 /**
@@ -3413,7 +3771,7 @@ try {
   if (pending !== null && !alreadyRecorded && layout !== null) {
     record(layout, { command: pending.command, args: pending.args, ok: true })
   }
-  if (layout !== null) finishCommand(layout, true)
+  if (layout !== null) finishCommand(layout)
 } catch (error) {
   // A refused action is worth writing down precisely because it was refused:
   // an agent that cannot see where it was stopped walks into the same wall
@@ -3427,11 +3785,21 @@ try {
       message: error.message,
     })
   }
-  if (layout !== null) finishCommand(layout, false, errorCode(error))
+  // ⛔⛔ On the failing path too, and this is the line that keeps the automatic
+  // lock from leaking: a command that threw would otherwise leave its "running"
+  // record behind, and the window would stand aside for a process that is gone.
+  if (layout !== null) finishCommand(layout)
+  // ⭐ The verdict travels with the answer; the exit code below is its
+  //    projection. `partial` is still `ok:false` — the command did not do all
+  //    of what was asked — but its details name what was done.
+  const verdict = verdictOf(error)
   if (wantsJson) {
     console.log(JSON.stringify({
+      schema: jsonSchema,
       box: layout?.root ?? null,
+      ...boxSwap(),
       ok: false,
+      verdict,
       code: errorCode(error),
       message: error.message,
       ...errorDetails(error),
@@ -3451,5 +3819,5 @@ try {
     }
     console.error()
   }
-  process.exit(1)
+  process.exit(VERDICT_EXIT[verdict])
 }

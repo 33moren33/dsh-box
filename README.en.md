@@ -34,6 +34,16 @@
 
 ---
 
+**0.5.0: the agent's face — `dsh-box mcp` — and a verdict on every answer.**
+
+The one command table grows a third face: `dsh-box mcp` starts an MCP server in which every command is a tool of the same name, so an agent knows what exists and what it takes without reading a page of docs. Behind every tool call is still the command line you can type yourself.
+
+Every JSON line now carries a `verdict`: `ok` answered / `failed` a judgement about the thing you asked about / `error` the request or this tool / `partial` half done. Exit codes 0/1/2/3 are only its projection. The machine answer of `ls` is now an overview — one row per sandbox, plugins as counts — and you ask further for detail.
+
+⛔ The old `agent attach / detach` is gone: taking over needs no announcement; a state-changing command registers itself, and the window shows it as before.
+
+---
+
 **0.4.0: forty-five commands became ten verbs, and `--version` now takes a folder.**
 
 The ten are `ls`, `get`, `rm`, `start`, `stop`, `set`, `logs`, `ui`, `agent`, `help`; what used to be a command of its own is now an argument. ⛔ Not one old name is kept.
@@ -94,20 +104,33 @@ From source it is `node bin/cli.js ui`.
 
 The command line was built for this: it has `--help`, and `--json` on any command answers in JSON. **A failure is JSON too, and carries a `code` that never changes.** So there is no long-running HTTP API here.
 
-MCP is on the table, to make wiring this in easier. It answers a different question — not "can an agent use it" but "**how would an agent know it exists**" — and it will be another face of the same command declaration, not a second implementation.
+**MCP is another face of the same command table, not a second implementation.** Hooking it into Claude Code or a similar client is one line:
 
-What is new is taking over:
+```json
+{"mcpServers":{"dsh-box":{"command":"npx","args":["dsh-box","mcp","--box","<data directory>"]}}}
+```
+
+After that every command is a tool of the same name (`ls_sandbox`, `get_plugin`, `start`, `stop`) and the arguments are the flags without their `--`; behind every call is still that command line, and the answer is its one JSON line. ⛔ The only two things not in the tool table are the two that never return: `ui` (it serves for as long as it is open) and `mcp` itself.
+
+**Every JSON line carries a verdict, and the exit code is only its projection:**
+
+| verdict | exit code | meaning |
+|---|---|---|
+| `ok` | 0 | answered |
+| `failed` | 1 | a judgement about the thing you asked about: the sandbox is not there, dsh did not boot, the gate refused. The request was fine; the world said no |
+| `error` | 2 | the request or this tool: an unknown command, another command's flag, a crash |
+| `partial` | 3 | half done, then refused; the answer says which half |
+
+Over MCP only `error` is marked as a tool error; `failed` and `partial` are answers, not faults.
+
+**Taking over needs no announcement.** A state-changing command registers itself, and the config window can see who is at work: a blue band across the top, a number on every control that gets touched, and a **trail of commands** unfolding below — each step rendered as a line you could re-run. What was done, what was refused, and why, are all on it.
 
 ```bash
-npx dsh-box agent attach    # I am driving
-npx dsh-box agent detach    # hand it back
 npx dsh-box ls memory       # what the last takeover did, refusals included
 npx dsh-box ls history      # everything ever done in this data directory
 ```
 
-After `attach`, a blue band appears across the top of the config window, every control about to be touched gets a number, and a **trail of commands** unfolds below — each step rendered as a line you could re-run. What was done, what was refused, and why, are all on it.
-
-**The lock is in the server, not on the page.** While an agent drives, every command the window sends is refused outright; only "stop and take back control" gets through. The greying-out on the page is therefore pure decoration: label a control wrongly and the worst case is that it looks clickable and says something when clicked. **It can no longer become damage.**
+**The lock is in the server, not on the page.** For the few seconds an agent's command is running, every command the window sends is refused outright; when the command ends the lock lifts by itself — there is no "take back" step, because nothing is being held. The greying-out on the page is therefore pure decoration: label a control wrongly and the worst case is that it looks clickable and says something when clicked. **It can no longer become damage.**
 
 One test says it all: **close the window, open it again, and nothing is lost.**
 
@@ -153,7 +176,7 @@ stop  <cabinet> | --all | --window | --download
 set   <key> <value>             plugin - workspace - source - lang - path - two reminders
 logs  <cabinet> | --version <release> | --package <name>
 ui                              open the config window (close it with stop --window)
-agent attach | detach           take over, hand back
+mcp                             start an MCP server; every command becomes a tool of the same name
 help                            three layers of detail; the more you ask, the finer it gets
 ```
 

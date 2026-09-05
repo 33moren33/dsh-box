@@ -98,12 +98,14 @@ function cli(argv, { asWindow = false } = {}) {
     let out = ''
     child.stdout.on('data', (chunk) => { out += chunk })
     child.stderr.resume()
-    child.once('close', () => {
+    child.once('close', (status) => {
       const line = out.trim().split('\n').filter((text) => text.trim() !== '').at(-1)
       try {
-        done(JSON.parse(line ?? ''))
+        // `exitCode` rides along so the verdict's projection can be asserted
+        // beside the verdict itself.
+        done({ ...JSON.parse(line ?? ''), exitCode: status })
       } catch {
-        done({ ok: false, code: 'NO_OUTPUT', message: out })
+        done({ ok: false, code: 'NO_OUTPUT', message: out, exitCode: status })
       }
     })
   })
@@ -202,12 +204,18 @@ check('⭐⭐ 拒绝里写明了已经停掉哪几台,而且形状和成功时�
   JSON.stringify(all.stopped ?? null))
 check('⛔ 日常柜那台还活着',
   processStartedAt(daily.pid) !== null && processStartedAt(daily.pid) === daily.pidBorn)
+// ⭐ 做了一半的判词是 partial,退出码 3 —— 不是 1:拿 `== 1` 判「被拒」的调用方
+//   会把「沙箱都停了」读成「什么都没停」。
+check('⭐⭐ 判词是 partial,退出码 3(做了一半,不是没做)',
+  all.verdict === 'partial' && all.exitCode === 3, `verdict=${all.verdict} exit=${all.exitCode}`)
 
 // ── ⛔⛔ 那个旗标必须真的不存在 ────────────────────────────────────────────
 
 const flagAlone = await cli(['get', 'plugin', source, '--to', 'main', '--approved'])
 check('⛔⛔ --approved 已经不是这个程序认识的词了(不留这个参数的后门)',
   flagAlone.ok === false && flagAlone.code === 'UNKNOWN_FLAG', flagAlone.code)
+check('⭐ 请求本身的错是 error 档,退出码 2(不是关于任何沙箱的判定)',
+  flagAlone.verdict === 'error' && flagAlone.exitCode === 2, `verdict=${flagAlone.verdict} exit=${flagAlone.exitCode}`)
 
 // ── 读:一律不拦 ────────────────────────────────────────────────────────────
 

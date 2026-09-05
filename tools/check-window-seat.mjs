@@ -17,6 +17,14 @@
  * ⚠️ 08-28 之后 `--all` 的范围含日常档案柜了,但这套验收的盒子里从来没有起过
  * 日常那一台,所以它走不到那道闸门,断言的语义没变。
  *
+ * ⭐⭐ 第〇组是「关」的另一半,而且只能静态地查。关窗必须**等于**按面板底部那个
+ * 「退出 dsh-box」——同一条代码,不是两条走出同样结果的代码。真机上按下窗口的 X
+ * 这套脚本做不到(那是窗口管理器的事),但它做得到的那件事恰恰是这条改动唯一会
+ * 坏掉的方式:**外壳与页面各写各的**。两头的事件名对不上,关窗就没人接;页面接了
+ * 之后自己去发 `stop --all` 而不按那个按钮,确认弹窗、要停哪几台的清单、日常柜
+ * 那道闸门就全绕过去了 —— 而两边看上去都还「能跑」。所以下面查的是这条线还连着,
+ * 不是它跑得动。
+ *
  * ⭐⭐ 第四组是必然会输的对照组:座位上写一个**活着但已经不是它**的进程号
  * (号码对、出生时刻不对,＝号码被回收)。`stop --window` 必须**不杀它**。这一条一旦
  * 不通过,就是这条命令会杀掉用户机器上一棵与我们无关的进程树。
@@ -148,7 +156,72 @@ function bystander() {
   })
 }
 
+/** 一个函数从签名到配对右花括号的那一段。 */
+function bodyOf(source, signature) {
+  const at = source.indexOf(signature)
+  if (at === -1) return null
+  const opens = source.indexOf('{', at)
+  if (opens === -1) return null
+  let depth = 0
+  for (let i = opens; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1
+    else if (source[i] === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(at, i + 1)
+    }
+  }
+  return null
+}
+
+/** 一份源码里出现过的 `dsh-box://…` 事件名,去重排序。 */
+const wireNames = (source) => [...new Set(source.match(/dsh-box:\/\/[\w-]+/g) ?? [])].sort()
+
 console.log('\n配置窗有开,也得有关\n')
+
+// —— 〇、关窗＝按那个按钮。静态的一组:只读两个文件的字。
+const shellSource = readFileSync(join(HERE, '..', 'src-tauri', 'src', 'lib.rs'), 'utf8')
+const pageSource = readFileSync(join(HERE, '..', 'src', 'ui', 'index.html'), 'utf8')
+const handOff = bodyOf(shellSource, 'fn close_through_the_page')
+// 页面上接手关窗的那一小段:从监听开始到它那个块的右花括号。
+const takesOver = bodyOf(pageSource, "shell?.listen('dsh-box://")
+
+// ⚠️ 「拦」这一条要看真的那一行,不能只看字面出现过 —— 第一版查的是包含
+//    `prevent_close()`,而把那行注释掉照样通过,于是它什么都没拦住。
+check('⭐⭐ 外壳把关窗请求拦下来了(不拦就轮不到页面)',
+  handOff !== null && handOff.includes('CloseRequested')
+  && /^\s*api\.prevent_close\(\);/m.test(handOff),
+  handOff === null ? '找不到 close_through_the_page' : '')
+
+check('⛔⛔ 外壳与页面用的是同一对事件名(对不上＝关窗没人接,而两边都还「能跑」)',
+  wireNames(shellSource).length === 2
+  && wireNames(shellSource).join() === wireNames(pageSource).join(),
+  `外壳 ${wireNames(shellSource).join('、')} / 页面 ${wireNames(pageSource).join('、')}`)
+
+// ⛔⛔ 这一条是整组的要害。页面接手之后必须去按**那个按钮**,不许自己发 `stop --all`,
+//    也不许直接调 quitNow() —— 那两条都跳过确认弹窗与它列的那份清单,于是「关窗」
+//    和「按退出」当天一模一样、往后各走各的。两套门面必漂。
+check('⛔⛔ 页面接手之后按的是退出按钮本身,不是另抄一条退出',
+  takesOver !== null && takesOver.includes("$('quitBtn')") && takesOver.includes('.click()')
+  && !takesOver.includes('quitNow(') && !takesOver.includes("'--all'"),
+  takesOver === null ? '找不到页面上接手关窗的那一段' : '')
+
+// ⛔ 第二次双击开的那扇窗不接管服务,关它不该动别人的东西 —— 所以开窗有两处,挂钩
+//    只有一处。数字变了就说明有人给观察窗也挂上了。
+check('⛔ 只有拥有服务的那扇窗挂了这个钩(观察窗不挂)',
+  (shellSource.match(/close_through_the_page\(/g) ?? []).length === 2
+  && (shellSource.match(/show_window\(/g) ?? []).length === 3,
+  `挂钩 ${(shellSource.match(/close_through_the_page\(/g) ?? []).length} 处 / 开窗 ${(shellSource.match(/show_window\(/g) ?? []).length} 处`)
+
+// ⛔ 页面没反应时窗口必须还关得掉,而且等的那个数要有上限 —— 没有兜底就是把
+//    「关不掉的窗口」从一种情况换到另一种情况。
+const budget = shellSource.match(/const PAGE_ANSWERS_WITHIN: Duration = Duration::from_secs\((\d+)\)/)
+// ⚠️ 放行那一行同上,看的是真的那一行 —— 注释掉也算「出现过」的话,这条就拦不住
+//    「等满之后什么都不做」。
+check('⛔ 页面没反应时有兜底,而且等的时间有上限',
+  budget !== null && Number(budget[1]) <= 10
+  && handOff !== null && handOff.includes('PAGE_ANSWERS_WITHIN')
+  && /^\s*let _ = window\.close\(\);/m.test(handOff),
+  budget === null ? '找不到 PAGE_ANSWERS_WITHIN' : `${budget[1]} 秒`)
 
 // —— 一、什么都没开的时候,如实说没有,而不是假装停掉了什么。
 const nothing = await cli('stop', '--window')

@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { boxLayout, ensureBox, removeTree } from '../src/paths.js'
+import { boxLayout, DEFAULT_BOX_NAME, ensureBox, removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -209,6 +209,63 @@ await cli('set', 'lang', 'zh')
 //    ⭐ 原则本身没有作废,只是它的题目搬去了别处:现在要逐行认领的是档案柜自己的
 //    cordis.patch.yml,而守那件事的是 check-inventory 与 check-patch-file。
 //    ⚠️ 哪天设置文件里再长出一个数组字段,把这一节按同样的形状加回来。
+
+// 6. ⛔⛔ 同一个病往上一层:不是配置文件被弄丢,是**整个数据目录落到了别处**。
+//
+//    `--box <目录>` 指到一个「已存在、非空、又不是本工具建的」文件夹时,工具会
+//    报一句红字然后**改用另一个目录、照常把结果打出来、退出码 0**。那句红字只去
+//    stderr,而 `--json` 承诺 stdout 上一行可解析 —— 于是对读 JSON 的调用方来说
+//    这次替换**根本不存在**,它拿到的每个答案都是关于另一个数据目录的。
+//
+//    ⭐⭐ 而红字底下藏着的才是真缺陷:兜底目录原来是拿**当前工作目录**算出来的
+//    (`pickFreeBoxDir(process.cwd())`),`--box` 指的位置整个被扔掉。它看着像
+//    「自动改用你指的那个下面的 data 子目录」,只因为默认名恰好以 data 结尾、
+//    而人恰好站在上一级 —— 换个工作目录,同一条命令就落到毫不相干的地方。
+//    ⛔ 所以下面必须查**两件**,缺一不可:替换说得出来,以及替换落在你指的旁边。
+const occupied = join(root, '别人的文件夹')
+mkdirSync(occupied, { recursive: true })
+writeFileSync(join(occupied, '不是我们的.txt'), '别人的东西\n')
+// ⛔ 从一个第三方目录里发这条命令,而不是从仓库根。旧写法会在**当前工作目录**下
+//    造出 dsh-box-files/data —— 站在仓库里跑就是往仓库里拉屎,而且这套验收的
+//    removeTree(root) 收不到它。站在这儿,旧写法的产物也落在 root 底下。
+const elsewhere = join(root, '别处')
+mkdirSync(elsewhere, { recursive: true })
+
+/** 只这一节用:`--box` 由调用方给,所以不能走上面那个固定 --box 的 cli()。 */
+function pointAt(dir) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [CLI, 'ls', '--box', dir, '--json'], {
+      cwd: elsewhere,
+      windowsHide: true,
+      env: { ...process.env, DSH_HOME: fakeDaily, DSH_BOX_NO_PANEL: '1' },
+    })
+    let out = ''
+    child.stdout.on('data', (chunk) => { out += chunk })
+    child.stderr.resume()
+    child.once('close', () => {
+      const line = out.trim().split('\n').filter((text) => text.trim() !== '').at(-1)
+      try {
+        done(JSON.parse(line))
+      } catch {
+        done({ ok: false, code: 'NO_OUTPUT', message: out })
+      }
+    })
+  })
+}
+
+const swapped = await pointAt(occupied)
+check('⛔⛔ 换了个数据目录这件事,读 JSON 的人看得见(红字只在 stderr,它读不到)',
+  swapped.boxAsked === occupied && swapped.box !== occupied,
+  `要的是 ${swapped.boxAsked}\n              用的是 ${swapped.box}`)
+check('⭐⭐ 兜底落在你指的那个位置旁边,不是当前工作目录底下',
+  typeof swapped.box === 'string' && dirname(swapped.box) === dirname(occupied),
+  `${swapped.box}`)
+// ⚠ 对照:旧写法算出来的正是这个路径。它哪天又等于答案,说明有人把基准换回了
+//   cwd —— 而上面那条断言在「人恰好站在上一级」时是拦不住它的。
+check('⚠ 对照:落点确实不是旧写法(cwd 底下的默认名)算出来的那一个',
+  swapped.box !== resolve(elsewhere, DEFAULT_BOX_NAME), resolve(elsewhere, DEFAULT_BOX_NAME))
+check('⛔ 那个不是我们的文件夹一个字节都没动',
+  readdirSync(occupied).join('、') === '不是我们的.txt', readdirSync(occupied).join('、'))
 
 removeTree(root)
 console.log(`\n${failures === 0 ? '全部通过' : `${failures} 项不通过`}\n`)

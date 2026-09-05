@@ -19,7 +19,7 @@
  */
 
 import { COMMANDS } from '../src/commands.js'
-import { DEFAULT_LANG, LANGS, messagesFor } from '../src/messages.js'
+import { DEFAULT_LANG, LANGS, messageKeys, messagesFor } from '../src/messages.js'
 
 let failures = 0
 const check = (what, passed, detail = '') => {
@@ -100,12 +100,13 @@ function rawTable(lang) {
 //    not fail, it just shows up in the help list with a blank beside it. That
 //    is the failure mode this whole arrangement introduced, so it gets its own
 //    check rather than an eye.
-const speechless = Object.keys(COMMANDS).filter((name) => {
-  const table = messagesFor(DEFAULT_LANG)
-  return table[`cmd.${name}.usage`] === undefined || table[`cmd.${name}.summary`] === undefined
-})
-check('每条命令都有 usage 与 summary(表里已经不存文本,少一条就是屏幕上一片空白)',
+//    ⛔ `usage` is not looked for: that line is generated from the declaration
+//    (`usageOf`), and a stored one beside it would be the second copy.
+const speechless = Object.keys(COMMANDS).filter((name) => messagesFor(DEFAULT_LANG)[`cmd.${name}.summary`] === undefined)
+check('每条命令都有 summary(表里已经不存文本,少一条就是屏幕上一片空白)',
   speechless.length === 0, speechless.join('、'))
+const strayUsage = messageKeys().filter((key) => /^cmd\..+\.usage$/.test(key))
+check('表里没有手写的 usage(那行由声明生成,存一份就是第二份真相)', strayUsage.length === 0, strayUsage.join('、'))
 
 // 7. ⭐⭐ 每条命令都答得出「做完之后我处在什么状态」。
 //    不是文档洁癖,是产品要求:`--help` 是路过的 agent 的唯一入口,只写在 md 里

@@ -43,7 +43,7 @@ import { readConfig, SETTINGS } from './config.js'
 import { derivedRoster, partitionRoster } from './roster.js'
 import { BoxError } from './errors.js'
 import { detectHostDsh } from './host.js'
-import { controlStatus, readSession } from './journal.js'
+import { outsideCommands, readSession } from './journal.js'
 import { readTail } from './logs.js'
 import { LANGS, messagesFor, setLang, systemLang, t } from './messages.js'
 import { cabinetPlugins } from './mounts.js'
@@ -410,11 +410,16 @@ async function snapshot(layout) {
     // in the page is a copy that drifts, and the drift shows up as the window
     // accepting a name the launcher then refuses.
     nameRule: nameRule(),
-    // The two files the blue frame is drawn from. Both are usually absent —
-    // `agent/` does not exist until something attaches — and that is the
-    // ordinary state, not a failure: it means nobody is driving and there is no
-    // history. Neither is reported as an error.
-    agent: controlStatus(layout),
+    // The two things the blue frame is drawn from. Both are usually absent —
+    // `agent/` does not exist until something has run — and that is the ordinary
+    // state, not a failure: it means nothing is happening out there and nothing
+    // has happened yet. Neither is reported as an error.
+    //
+    // ⭐⭐ `agent` is now the commands running *outside this window* at this
+    // instant, not somebody's declaration that they are driving. The window's own
+    // children are left out on purpose (see `outsideCommands`), so a person's
+    // click never makes the page stand aside from itself.
+    agent: outsideDriving(layout),
     session: agentSession(layout),
   }
 }
@@ -445,6 +450,20 @@ function describeDownload(layout) {
 
 function withVersions(mounted) {
   return { ...mounted, ours: (mounted.ours ?? []).map((entry) => ({ ...entry, version: pluginVersion(entry.path ?? '') })) }
+}
+
+/**
+ * What is being done to this data directory from outside the window, or null.
+ *
+ * Null rather than an empty list when there is nothing: "nobody is out there"
+ * is the ordinary state and the page tests it once, the same way it did when
+ * this was a takeover marker.
+ * @param {import('./paths.js').BoxLayout} layout
+ * @returns {{runs: object[]} | null}
+ */
+function outsideDriving(layout) {
+  const runs = outsideCommands(layout)
+  return runs.length === 0 ? null : { runs }
 }
 
 /**
@@ -499,15 +518,7 @@ async function command(layout, argv) {
 }
 
 /**
- * The commands this window may still send while an agent is driving it.
- *
- * Only the way out. `detach` is the person taking the wheel back, and refusing
- * that would be refusing the one control that has to keep working.
- */
-const RELEASE_COMMANDS = new Set(['agent.detach'])
-
-/**
- * Refuse a window command while an agent holds this data directory, or null.
+ * Refuse a window command while something outside is running one, or null.
  *
  * ⛔ **The lock used to exist only on the page**, as `<main>.inert`. Nothing
  * here asked whether an agent was driving, so anything that reached this
@@ -520,24 +531,31 @@ const RELEASE_COMMANDS = new Set(['agent.detach'])
  * command table exists: a rule that has to be repeated per control is a rule
  * that will be missed by the next control. This one is inherited for free.
  *
- * ⚠️ It refuses **the window**, not the command line. An agent's own commands
- * come from its own process and never pass through here, which is what lets
- * this be a flat refusal instead of a judgement about who is asking.
+ * ⭐⭐ What it asks changed on 2026-08-30 and the change is the whole point:
+ * **not** "has anybody announced a takeover" but "is a command running right
+ * now that this window did not start". Nothing has to be declared, so nothing
+ * can be forgotten — and because the record dies with the process that wrote it,
+ * the refusal lasts exactly as long as the command does. There is nothing to
+ * hand back, which is why the button that used to do so is gone.
+ *
+ * ⚠️ It refuses **the window**, not the command line. Another process's commands
+ * never pass through here, which is what lets this be a flat refusal instead of
+ * a judgement about who is asking.
  * @param {import('./paths.js').BoxLayout} layout
  * @param {string[]} argv
  * @returns {Record<string, unknown> | null}
  */
 function heldAgainst(layout, argv) {
-  if (RELEASE_COMMANDS.has(`${argv[0]}.${argv[1]}`)) return null
   if (!mutates(argv[0]) && !mutates(`${argv[0]}.${argv[1]}`)) return null
-  const held = controlStatus(layout)
-  if (held === null) return null
+  const [busy] = outsideCommands(layout)
+  if (busy === undefined) return null
   return {
     ok: false,
     code: 'AGENT_HOLDS_WINDOW',
     message: t('window.agentHolds'),
-    session: held.session,
-    since: held.startedAt,
+    running: busy.command,
+    pid: busy.pid,
+    since: busy.startedAt,
   }
 }
 

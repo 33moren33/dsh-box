@@ -11,7 +11,14 @@
  *
  * ⭐⭐ And why the id is optional rather than there being a second command:
  * `get plugin <id> --from … --to …` moves one, `get plugin --from … --to …`
- * moves the lot. CEO 2026-08-28: 给了 id 搬那一个,不给就搬整柜.
+ * moves the lot. One command read two ways.
+ *
+ * ⛔⛔ For a long time everything below passed while the whole-cabinet form was
+ * **unreachable by anybody reading `--help`**: the usage line printed the
+ * positional as required and never mentioned `--from`. Behaviour guarded,
+ * documentation not, and the two are different facts. A capability that cannot
+ * be discovered is, to every reader who only has the help, not there — so the
+ * last section here holds the help to the same standard as the code.
  *
  * ⛔ This is the one place that proves deleting the stored registry was not
  * optional. The plugins in another cabinet are nameable **only** because the
@@ -172,6 +179,27 @@ check('⛔ 整柜搬进日常档案柜:一样要人点头',
 const fromDaily = await cli(['ls', 'plugin', '--in', 'main'])
 check('⭐ 而从日常柜**读**不用点头 —— 否则「日常→沙箱」这条路根本走不通',
   fromDaily.ok !== false, fromDaily.code ?? 'ok')
+
+// ── ⑦ ⛔⛔ help 得承认上面这些是做得到的 ─────────────────────────────────────
+// 上面每一条都通过、而 help 把位置参数印成必填、`--from` 一个字不提 —— 这个状态
+// 真的存在过。**行为有守卫,说明没有,而它们是两件事。**
+// ⭐ 判据不是「help 里有没有这几个字」,是**照 help 印出来的形状真的跑一遍**:
+//    字面量没有任何东西给它背书,而它恰恰是承诺的最强形式。
+
+const page = await cli(['help', 'get', 'plugin'])
+const usage = String(page.command?.usage ?? '')
+check('⭐ usage 把「不点名」这条读法印出来了(位置参数是可选的)',
+  /\[.*\]/.test(usage) && usage.includes('--from'), usage)
+
+// ⛔ 照着 usage 里那两种形状各跑一次。help 说得出、跑不通,和跑得通、help 不说,
+//    是同一种病的两面。
+const bothCabinets = await cli(['get', 'plugin', '--from', 'left', '--to', 'right'])
+check('⛔⛔ help 印的「--from 柜A --to 柜B」真的跑得通',
+  bothCabinets.ok === true, bothCabinets.code ?? 'ok')
+
+const notes = String(page.command?.notes?.join('\n') ?? '')
+check('⭐ 细则里说清了方向是参数不是功能(否则「推回日常柜」会被当成还没做)',
+  notes.includes('--from') && /全搬|whole|everything/.test(notes), `notes ${notes.length} 字`)
 
 removeTree(root)
 console.log(failures === 0 ? '\n全部通过\n' : `\n${failures} 项不通过\n`)

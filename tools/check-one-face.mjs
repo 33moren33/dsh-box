@@ -18,6 +18,8 @@ import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { finishCommand, noteCommand, readSession } from '../src/journal.js'
+import { boxLayout } from '../src/paths.js'
 import { useFakeDaily } from './fake-daily.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -60,6 +62,11 @@ function readJournal() {
   return readFileSync(file, 'utf8').split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line))
+}
+
+/** The numbered trail as both entrances read it, re-read from disk each time. */
+function readJournalSession() {
+  return readSession(boxLayout(BOX))
 }
 
 /** Run the command line and return its one JSON line. */
@@ -139,6 +146,20 @@ const seenByCli = await cli('ls')
 check('窗口起的沙箱,命令行看得见',
   seenByCli.running.some((entry) => entry.sandbox === 'w2'),
   seenByCli.running.map((entry) => entry.sandbox).join('、'))
+// ⭐ 渐进式披露:`ls` 的机器答案是总览 —— 每台沙箱一行、插件只给数目、不带路径;
+//    路径在 `ls sandbox`,某一柜装了什么在 `ls plugin --in`。判例:真账本上 16 台
+//    沙箱的 `ls --json` 有 30KB,其中 21KB 是每台沙箱重复的绝对路径与上百个平台包名。
+check('ls 的每台沙箱:插件只给数目、不带路径',
+  seenByCli.sandboxes.length > 0 && seenByCli.sandboxes.every((box) => typeof box.plugins?.ours === 'number'
+    && typeof box.plugins?.platform === 'number' && box.root === undefined && box.home === undefined && typeof box.engine !== 'object'),
+  JSON.stringify(seenByCli.sandboxes[0]))
+check('ls 的插件名单:装在哪些柜子只给名字', seenByCli.plugins.every((plugin) => Array.isArray(plugin.cabinets) && plugin.cabinets.every((one) => typeof one === 'string')))
+check('ls 的日常柜插件只给数目', typeof seenByCli.mainPlugins?.ours === 'number')
+const listed = await cli('ls', 'sandbox')
+check('ls sandbox 的每台带路径,插件仍只给数目',
+  listed.sandboxes.every((box) => typeof box.root === 'string' && typeof box.home === 'string' && typeof box.plugins?.ours === 'number'))
+const detail = await cli('ls', 'plugin', '--in', 'w2')
+check('ls plugin --in 才展开名单', Array.isArray(detail.ours) && Array.isArray(detail.platform))
 const seenByWindow = await window_('/api/state')
 check('命令行起的沙箱,窗口看得见',
   seenByWindow.running.some((entry) => entry.sandbox === 'w1'),
@@ -173,27 +194,39 @@ await run('set', 'source', 'mirror')
 const afterSet = await cli('ls', 'setting')
 check('窗口改的设置,命令行读得到', afterSet.settings.source === 'mirror', afterSet.settings.source)
 
-// 7b. ⛔⛔ 有人在开车时,窗口发出的命令一律不执行。
+// 7b. ⛔⛔ 外面有命令在跑时,窗口发出的命令一律不执行。
 //     从前这把锁只存在于页面上(<main>.inert),服务端一句都没问过 —— 那个保证
 //     因此是「页面写对了」的推论,不是程序的性质:页面漏掉哪个控件,那个控件就
-//     会在 agent 开车时照样写盘,而且不报错。⭐ 现在判断在服务端,一处规则,新
-//     控件白白继承;页面上的置灰退化成装饰,标错也变不成损害。
-await cli('agent', 'attach')
+//     会在别人开车时照样写盘,而且不报错。⭐ 现在判断在服务端,一处规则,新控件
+//     白白继承;页面上的置灰退化成装饰,标错也变不成损害。
+//
+//     ⭐⭐ 2026-08-30 起判据不再是「谁声明了接管」,而是「此刻有没有一条不是这扇窗
+//     起的命令在跑」。这个测试进程扮的正是另一个终端里的 agent:它用命令行漏斗调的
+//     同一个函数登记(src/journal.js 的 noteCommand),自己活着、又不是窗口的子进程。
+const layout = boxLayout(BOX)
+noteCommand(layout, 'start', { sandbox: '另一个终端' })
 const blocked = await run('set', 'source', 'official')
-check('⛔⛔ agent 接管时,窗口发的命令被服务端挡下',
+check('⛔⛔ 外面有命令在跑时,窗口发的命令被服务端挡下',
   blocked.ok === false && blocked.code === 'AGENT_HOLDS_WINDOW', blocked.code)
 const untouched = await cli('ls', 'setting')
 check('⛔ 挡下来时是真的什么都没做', untouched.settings.source === 'mirror', untouched.settings.source)
 
-// ⭐ 唯一还放行的是交还那条:拦住它就等于拦住了人夺回控制权的唯一开关。
-// ⚠️ 服务端那张放行名单也换成了点号键(src/server.js 的 RELEASE_COMMANDS = agent.detach),
-//    所以这里必须两个词一起发,只发 `detach` 既不在名单里也不是命令。
-const release = await run('agent', 'detach', '--forced')
-check('⭐ 但「停止并收回」照样发得出去', release.ok === true, release.code ?? 'ok')
+// ⭐⭐ 而松开是自动的:没有任何「交还」这个动作,那条命令跑完窗口就又能用了。
+//     这正是删掉 agent detach 的理由 —— 进程一死锁自然消失,永不泄漏。
+finishCommand(layout)
 const freed = await run('set', 'source', 'official')
-check('收回之后窗口又能用了', freed.ok === true, freed.code ?? 'ok')
+check('⭐⭐ 那条命令跑完,窗口自己就松开了(没有人敲过交还)', freed.ok === true, freed.code ?? 'ok')
 
-await cli('set', 'source', 'auto')
+// ⭐ 另一半:窗口**自己**起的命令不算「外面」,否则一按按钮就把自己锁在外面。
+//    判据是父进程是不是座位上那扇窗(src/sandbox.js 的 startedByWindow),记在
+//    每一步的 by 上,所以这里查得到。
+const mine = readJournalSession()?.actions?.at(-1) ?? null
+check('⭐ 窗口自己起的那一条,记账上标着 fromWindow', mine?.by?.fromWindow === true,
+  JSON.stringify(mine?.by))
+const typed = await cli('set', 'source', 'auto')
+check('⛔ 命令行敲的那一条,标的不是 fromWindow',
+  typed.ok === true && readJournalSession()?.actions?.at(-1)?.by?.fromWindow === false,
+  JSON.stringify(readJournalSession()?.actions?.at(-1)?.by))
 
 // 8. Quitting stops every sandbox, whichever entrance started it, and the
 //    window stops serving afterwards.

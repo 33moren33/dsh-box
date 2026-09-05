@@ -93,6 +93,7 @@
   .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; padding: 12px 14px; border-radius: 8px; margin-top: 12px; }
   .ok a { color: #065f46; font-weight: 700; }
   .err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 14px; border-radius: 8px; margin-top: 12px; white-space: pre-wrap; }
+  .partial { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; padding: 12px 14px; border-radius: 8px; margin-top: 12px; white-space: pre-wrap; }
   .path { color: var(--dim); font-size: 12px; word-break: break-all; margin: 12px 0 0; }
   .quitrow { display: flex; justify-content: center; margin-top: 4px; }
   /*
@@ -157,9 +158,6 @@
     background: #1d4ed8; color: #fff; padding: 10px 16px; font-size: 13px;
   }
   #badge b { font-weight: 600; }
-  #badge button { font: inherit; font-weight: 600; border: 0; border-radius: 6px; padding: 6px 13px; background: #fff; color: #1d4ed8; cursor: pointer; }
-  #badge button:disabled { opacity: .6; cursor: default; }
-  #badge .bad { background: #fff1f2; color: #9f1239; border-radius: 6px; padding: 3px 9px; }
   /*
     A frame is a footprint — "command ① touched this" — never a claim about what
     the control says now. That is why it is not cleared when a value changes,
@@ -375,15 +373,16 @@
 </main>
 
 <!--
-  Outside <main>, fixed to the top, because the one control that must go on
-  working while an agent drives is the one that takes control back — so it is
-  never scrolled away from and never dimmed. `detach` is also the single command
-  the service still accepts from this window during a run; nothing here ever
-  lets the agent continue.
+  Outside <main>, fixed to the top, so what is being done to this data directory
+  from elsewhere is never scrolled away from.
+
+  ⛔ There used to be a "stop and take back control" button here, and it is gone
+  with the takeover it ended: the window now stands aside only while a command is
+  actually running, and that ends by itself when the command does. A button whose
+  whole job is to undo something that undoes itself is one more thing to explain.
 -->
 <div id="badge">
   <span id="badgeText"></span>
-  <button id="stopAgentBtn" data-i18n="ui.stopAgent"></button>
 </div>
 
 <!--
@@ -718,7 +717,10 @@ async function refresh() {
   // of them while the tick the user had just made looked like the culprit.
   const known = new Set([...state.plugins, ...state.missingPlugins].map((plugin) => plugin.id))
   for (const id of [...picked]) if (!known.has(id)) picked.delete(id)
-  $('importSignIn').checked = state.last.importSignIn !== false
+  // ⛔ The sign-in tick used to be seeded here from `last`, contradicting the
+  // paragraph above in the same breath. It was harmless only by accident —
+  // `drawSignIn` overwrites it one line below — but it is exactly the shape a
+  // person reports as "it ticks itself on", so it is gone rather than explained.
   $('boxPath').textContent = t('ui.boxPath', { box: state.box })
   drawVersions(); drawPlugins(); drawRunning(); drawWorkspaces(); drawStartButton(); drawDownload(); drawApprovals()
   // Last, because the frames are drawn onto the controls the lines above just
@@ -744,6 +746,21 @@ function drawRunning() {
     ...list,
   ]
   $('runningCard').hidden = rows.length === 0
+  // ⛔⛔ 上一次启动的那条绿色横幅,在它说的那台不再运行时必须当场作废。
+  //
+  // ⭐ 判词:**结果提示是有保质期的断言,状态一变就不再成立。** 实测撞到过——
+  // 沙箱停掉之后按钮已经变回「启动沙箱」(控件是对的),而下面那条横幅仍写着
+  // 「已启动」并挂着一个 `打开 http://127.0.0.1:3090` 的链接,那个地址此刻没人在听。
+  // ⛔ 这一条正踩在两道页面守卫的盲区上:它们查的是**控件**跟不跟状态,而这里
+  // 控件是对的,错的是**结果横幅**。所以清除写在这儿——和画列表同一个漏斗,
+  // 新增的横幅白白继承,不必谁记得再加一次。
+  const banner = $('startOut')
+  const about = banner.dataset.about
+  if (about !== undefined && about !== ''
+    && !rows.some((r) => (r.isMain === true ? 'main' : r.sandbox) === about)) {
+    banner.innerHTML = ''
+    delete banner.dataset.about
+  }
   const host = $('running')
   host.innerHTML = ''
   for (const r of rows) {
@@ -1337,10 +1354,16 @@ function seqMark(seq) {
 }
 
 /**
- * Everything about an agent holding the window, drawn from the two files.
+ * Everything about somebody else working in here, drawn from the two files.
  *
- * Both absent is the common case and means "nobody is driving, no history" —
- * the ordinary state, drawn as the ordinary window.
+ * Both absent is the common case and means "nothing is running out there, and
+ * nothing has happened yet" — the ordinary state, drawn as the ordinary window.
+ *
+ * ⭐⭐ `state.agent` is no longer a declaration somebody made. It is the set of
+ * commands running against this data directory at this instant that this window
+ * did not start, so the frame appears whether or not whoever is working was
+ * polite enough to announce themselves — and disappears on its own when their
+ * command ends, because the record is the process.
  */
 function drawAgent() {
   const held = state?.agent ?? null
@@ -1368,11 +1391,14 @@ function drawAgent() {
   // ⭐ Recall first, because whether the panel is open is what decides whether
   // there are frames to draw at all.
   drawRecall(held, session)
-  const live = held !== null && session?.session === held.session
+  // ⭐ "Something is happening right now" is the whole test — there is no session
+  // id to match against any more, because the trail is one rolling record of this
+  // data directory rather than one agent's run.
+  const live = held !== null
   // ⭐⭐ Reviewing draws frames too (CEO 2026-08-23: 「记忆就是为了看蓝框」). It is
   // not a replay — the page is still now, and a control's *value* is today's
   // value. A frame says "this step happened here", never "here is what it
-  // looked like". While an agent drives, everything so far is lit at once,
+  // looked like". While something is running, everything so far is lit at once,
   // which is what a person watching sees; in review, clicking a step limits the
   // frames to that step and everything before it.
   const reviewing = held === null && session !== null && recallFolded === false
@@ -1406,8 +1432,8 @@ let reviewUpTo = null
  * person did to a different one.
  */
 function drawRecall(held, session) {
-  const live = held !== null && session?.session === held.session
-  const shown = live ? session : (held === null ? session : null)
+  const live = held !== null
+  const shown = session
   const steps = shown?.actions ?? []
   if (steps.length === 0) {
     recallFolded = null
@@ -1447,6 +1473,13 @@ function recallRows(session, live) {
     const refused = action.ok === false
       ? `<div class="err" style="margin:6px 0 0">${t('ui.refusedLine', { code: escape(action.code ?? ''), message: escape(action.message ?? '') })}</div>`
       : ''
+    // ⭐ Who did it, on every step. With no takeover to open and close, two
+    // agents and the person at this window all write into the same trail, and a
+    // trail that cannot say which of them did a step is one column short of
+    // answering the question it exists for.
+    const who = action.by === undefined || action.by === null
+      ? ''
+      : ` <em style="display:inline">${escape(t('run.byProcess', { pid: action.by.pid }))}</em>`
     // The line is the record's own rendering, filled in from what the action
     // resolved to — so it runs to the same result whenever it is run, which the
     // line the agent typed would not.
@@ -1455,27 +1488,27 @@ function recallRows(session, live) {
     const picked = !live && reviewUpTo === action.seq
     const step = live ? '' : ` data-step="${action.seq}"`
     return `<div class="item step${picked ? ' picked' : ''}"${step} style="display:block">
-      <b>#${seqMark(action.seq)}</b> <em style="display:inline">${escape(clock(action.at))}</em>
+      <b>#${seqMark(action.seq)}</b> <em style="display:inline">${escape(clock(action.at))}</em>${who}
       <pre>${escape(action.line ?? action.command)}</pre>${refused}</div>`
   })
-  const ended = session.endedAt === null
-    ? t('ui.notHandedBack')
-    : t('ui.endedAtLine', { at: escape(clock(session.endedAt)), how: escape(endedWords(session.endedBy)) })
-  return `<p class="sub" style="margin:0 0 4px">${t('ui.tookOver', { at: escape(clock(session.startedAt)) })}${ended}</p>${rows.join('')}`
+  return `<p class="sub" style="margin:0 0 4px">${t('ui.trailHead', { count: session.actions.length })}</p>${rows.join('')}`
 }
 
 /** What is happening at this moment — including the commands that leave no frame. */
 function drawBadge(held) {
   if (held === null) return
-  const last = held.lastCommand ?? null
-  const doing = last === null ? t('ui.noActionYet')
-    : last.finishedAt === null ? t('ui.doingNow', { name: escape(last.name) })
-      : last.ok === false ? t('ui.badgeRefused', { name: escape(last.name), code: escape(last.code ?? '') })
-        : t('ui.badgeDone', { name: escape(last.name) })
-  // Reported, not interpreted: "last action 40 minutes ago" is something a
-  // person can act on, "the agent has gone" would be a guess.
-  const when = last === null ? t('ui.tookOverAt', { at: clock(held.startedAt) }) : ago(last.at)
-  $('badgeText').innerHTML = `<b>${t('ui.agentDriving')}</b>　${doing}　${escape(when)}　${t('ui.stepsSoFar', { count: held.actions })}`
+  // Reported, not interpreted: every command running out there, with the process
+  // that is running it and how long it has been at it. "Started 40 seconds ago"
+  // is something a person can act on; "the agent is stuck" would be a guess.
+  //
+  // ⭐ All of them, not the newest one. Two agents at once is the case this whole
+  // change is about, and a badge that showed one of them would be answering a
+  // different question than the one being asked.
+  const runs = held.runs ?? []
+  const lines = runs.map((run) => t('ui.outsideRun', {
+    pid: escape(run.pid), name: escape(run.command), ago: escape(ago(run.startedAt)),
+  }))
+  $('badgeText').innerHTML = `<b>${t('ui.outsideBusy')}</b>　${lines.join('　')}`
 }
 
 /**
@@ -1571,38 +1604,6 @@ function ago(at) {
 /** @param {string} at ISO timestamp. */
 function clock(at) {
   return new Date(at).toLocaleTimeString()
-}
-
-/** How a session ended, in words rather than in the token it was recorded as. */
-function endedWords(reason) {
-  if (reason === 'forced') return t('ui.endedForced')
-  if (reason === 'done') return t('session.endedDone')
-  return String(reason ?? '')
-}
-
-// The one control that reaches through the glass. It ends the agent's hold on
-// the window; it does not kill whatever the agent is otherwise doing, and it
-// says so, because a button that promised more than it does would be worse than
-// no button.
-$('stopAgentBtn').onclick = async () => {
-  $('stopAgentBtn').disabled = true
-  try {
-    await run(['agent', 'detach', '--forced'])
-    await refresh()
-  } catch (error) {
-    // ⛔ Never just "could not take it back". This button is the person's one
-    // guarantee, so a bare failure here reads as "the agent will not let go" —
-    // and the failure that actually happened was nothing of the sort: the tab
-    // was left over from a previous run of the window, so the *window* refused
-    // the *page* and the command line was never reached. ⭐ Measured on CEO's
-    // own window. Recognised by its code, which no language switch moves.
-    const stale = error.result?.code === 'STALE_PASS'
-    $('badgeText').innerHTML = stale
-      ? `<span class="bad">${t('ui.staleRetry')}</span>`
-      : `<span class="bad">${t('ui.detachFailed', { error: escape(error.message) })}</span>`
-  } finally {
-    $('stopAgentBtn').disabled = false
-  }
 }
 
 $('recallToggle').onclick = () => {
@@ -2017,9 +2018,8 @@ $('startBtn').onclick = async () => {
       if (signInPlan === false) argv.push('--no-sign-in')
     } else if (signInPlan === true) argv.push('--sign-in')
     else if (signInPlan === false) argv.push('--sign-out')
-    // ⛔ 这里原来还有一句 `argv.push('--approved')`。那个旗标已经从命令行里彻底删掉:
-    // 页面加得上的「同意」就是任何人都打得出的「同意」。现在这条命令照发,撞上闸门
-    // 之后由待批弹窗接手。
+    // ⛔ 页面不发任何「同意」旗标:页面加得上的「同意」就是任何人都打得出的「同意」。
+    // 这条命令照发,撞上闸门之后由待批弹窗接手。
     const result = await watchLog(out, ['logs', chosenCabinet()], t('ui.startingHead'), run(argv))
     const where = main ? escape(t('ui.dailyCabinet')) : t('ui.sandboxQuoted', { name: escape(result.sandbox) })
     out.innerHTML = `<div class="ok">${t('ui.startedMsg', {
@@ -2028,6 +2028,11 @@ $('startBtn').onclick = async () => {
       version: escape(result.version ?? ''),
     })}
       <a href="${result.url}" target="_blank" rel="noreferrer">${t('ui.openUrl', { url: escape(result.url) })}</a></div>`
+    // ⭐⭐ 这条横幅说的是「刚才发生了什么」,而按钮说的是「你现在能做什么」——
+    // 两者保质期不同。写下它说的是哪一台,`drawRunning` 才有办法在那一台不在了
+    // 的时候把它作废。⛔ 尤其因为它带着一个可点的链接:过期之后那个地址已经没人
+    // 在听,而**过期的真话比错话更难识破**,它当时确实是对的。
+    out.dataset.about = main ? 'main' : String(result.sandbox ?? '')
     $('nameHint').hidden = true
     // The pending changes just became real, and the refresh below reads them
     // back off disk. Leaving them ticked would show the same intention twice —
@@ -2038,6 +2043,9 @@ $('startBtn').onclick = async () => {
     await refresh()
   } catch (error) {
     out.innerHTML = `<div class="err">${escape(error.message)}</div>`
+    // 失败没有「那一台还在不在」可言,所以直接摘掉保质期标记 —— 留着会让下一次
+    // 刷新把这条失败原因也当成过期的成功横幅抹掉,而失败原因正是此刻最该留住的字。
+    delete out.dataset.about
     // The rule appears now, next to the box being typed in, and comes from the
     // refusal rather than from a copy kept here.
     const rule = error.result?.code === 'BAD_SANDBOX_NAME' ? error.result.rule : null
@@ -2114,8 +2122,38 @@ async function quitNow() {
     document.body.innerHTML = `<main><section class="card"><h2>${t('ui.quitDoneTitle')}</h2>`
       + `<p>${t('ui.quitDoneBody', { count: result.stopped.length, alsoMain })}</p></section></main>`
   } catch (error) {
-    $('startOut').innerHTML = `<div class="err">${escape(error.message)}</div>`
+    // ⭐ 做了一半不是失败:沙箱已经停了、只剩日常柜那台被闸门拦下。按失败的红框画,
+    //    人会以为什么都没停、再按一次 —— 而第二次才是那个像 bug 的。
+    const partial = error.result?.verdict === 'partial'
+    const done = partial ? (error.result.stopped ?? []).map((one) => escape(one.sandbox)).join('、') : ''
+    $('startOut').innerHTML = partial
+      ? `<div class="partial">${escape(error.message)}<br>${t('ui.partialStopped', { names: done })}</div>`
+      : `<div class="err">${escape(error.message)}</div>`
   }
+}
+
+// ⛔⛔ 关窗＝按下面那个按钮,一个字都不在别处再写一遍。外壳收到关闭请求会先拦下来,
+// 发这一句过来问;这里回一声「接手了」,然后让**按钮本身**响。
+//
+// ⛔ 不是调 quitNow(),更不是外壳自己在 Rust 里收尾:确认弹窗、要停哪几台的清单、
+// 日常柜那道闸门、记账 —— 六件事全长在按钮那条链路上。抄一份到别处,今天一模一样,
+// 明天就不是了;**两套门面必漂**,这个仓在 pitun_lab 和 box 上各栽过一次。而最先走样的
+// 一定是那张清单,一个报错了沙箱名字的弹窗比没有弹窗更坏。
+//
+// ⭐ 回声必须先发。确认弹窗会一直挂着等人点,而外壳那头只等这一声 ——「接手了」不等于
+// 「关成了」。人点「取消」窗口就该留着,那和按了按钮再取消是同一件事。
+//
+// ⚠️ 浏览器里没有外壳,`window.__TAURI__` 不存在,这一整段自然不存在。
+{
+  const shell = window.__TAURI__?.event
+  shell?.listen('dsh-box://close-requested', () => {
+    // 已经退过一次了(页面只剩那张「已退出」),没有按钮可按,也没有什么可接手的 ——
+    // 不回声,让外壳按原路把窗口关掉。
+    const button = $('quitBtn')
+    if (button === null) return
+    shell.emit('dsh-box://close-taken-over').catch(() => {})
+    button.click()
+  })
 }
 
 function escape(value) {

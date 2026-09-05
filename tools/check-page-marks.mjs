@@ -43,8 +43,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { COMMANDS } from '../src/commands.js'
-import { DEFAULT_LANG, messagesFor } from '../src/messages.js'
+import { COMMANDS, GLOBAL_PARAMS, booleansOf, positionalsOf, valuesOf } from '../src/commands.js'
 import { DAILY_CABINET, removeTree } from '../src/paths.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -163,6 +162,7 @@ const DECISIONS = {
   // 在这里」,从来不是「这里有个按钮」。
   'set.plugin.@': { offPage: '窗口的插件表列的是「我们装的」,单独开关一行(以及撤销)还没有控件' },
   'set.plugin.#1': { mark: 'plugin:' },
+  'set.plugin.#2': { offPage: '同上:on|off 那一格就是那个还没有的控件' },
   'set.plugin.in': { mark: 'cabinet:' },
   'set.plugin.undo': { offPage: '窗口上没有撤销这个动作,命令行独有' },
   'set.plugin.at': { offPage: '连按几次退几步,选时间戳更是命令行的事' },
@@ -185,40 +185,31 @@ const DECISIONS = {
   // 窗口是数据目录的脸,把改环境的开关摆在那儿,人会以为它跟别的设置一样跟着数据
   // 目录走。而且 npm 装的那份根本没有可登记的目录,窗口却分不出自己是哪一种。
   'set.path.@': { offPage: '改的是这台电脑的 PATH,不是这个数据目录;窗口上没有这个动作' },
+  'set.path.#1': { offPage: '同上' },
   'set.path.force': { offPage: '同上' },
 }
 
 const page = readFileSync(PAGE, 'utf8')
-const usages = messagesFor(DEFAULT_LANG)
 
 /**
  * The choices a command takes that are not flags.
  *
- * ⛔ Found while writing this file: `COMMANDS` registers flags and nothing
- * else, so `pull <版本号>` and `stop <沙箱名>` — the values people actually pick
- * on the page — were invisible to the first version of this check. A check that
- * misses a whole class of argument is the very thing it was written against.
+ * ⛔ Found while writing this file: the first version of `COMMANDS` registered
+ * flags and nothing else, so `pull <版本号>` and `stop <沙箱名>` — the values
+ * people actually pick on the page — were invisible to the first version of
+ * this check. A check that misses a whole class of argument is the very thing
+ * it was written against.
  *
- * They are read off the usage line instead, positionally, skipping any `<…>`
- * that follows a flag because those are already covered. Keyed by position
- * rather than by name so that rewording the help cannot silently retire a
- * decision.
+ * For a while they were read back out of the hand-written usage sentence, and
+ * that broke the day `get plugin` admitted its positional is optional: two
+ * structures reading one string. Now the declaration says where every
+ * positional is, and this reads that. Keyed by position rather than by name so
+ * that renaming a parameter cannot silently retire a decision.
  * @param {string} name
  * @returns {string[]} one entry per positional, in order.
  */
 function positionals(name) {
-  const usage = usages[`cmd.${name}.usage`] ?? ''
-  const tokens = usage.split(/\s+/)
-  const found = []
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (!tokens[i].startsWith('<')) continue
-    // `[--version <版本号>]` — the bracket belongs to the notation, not to the
-    // flag, and leaving it on made an optional flag's value look positional.
-    const before = (tokens[i - 1] ?? '').replace(/^[[(]+/, '')
-    if (before.startsWith('--')) continue
-    found.push(tokens[i])
-  }
-  return found
+  return positionalsOf(COMMANDS[name]).map((one) => one.name)
 }
 
 // ---- markKeys, lifted out of the page ---------------------------------------
@@ -282,8 +273,8 @@ const keysOf = (command) => (markKeys === null ? [] : markKeys({ command, args: 
 const argumentsOf = (name, shape) => [
   '@',
   ...positionals(name).map((_, index) => `#${index + 1}`),
-  ...(shape.booleans ?? []),
-  ...(shape.values ?? []),
+  ...booleansOf(shape),
+  ...valuesOf(shape),
 ]
 
 // 1. Every argument of every recorded command has been decided about.
@@ -357,7 +348,9 @@ check('页面上的静态标记,都有命令点得亮', neverLit.length === 0, n
  * belongs here will be added by somebody in a hurry.
  */
 const NEVER_GREYED = {
-  stopAgentBtn: '收回控制权的那一个。它要是也灰了,人就没有出口了',
+  // ⛔ stopAgentBtn 曾经在这里(「收回控制权的那一个」),2026-08-30 随 agent detach
+  //   一起删掉:让位改成只管一条命令的执行期间,跑完自己就松,没有要收回的东西。
+  //   豁免条目留着比控件留着更坏 —— 它会替一个将来同名的新控件白白免掉这道题。
   quitConfirm: '弹窗里的确定。弹窗只会由人点出来,灰掉它等于让弹窗没法回答',
   // ⛔ 闸门那两个按钮(approveAllow / approveDeny)不在这张表里,因为它们根本不发命令
   // ——「允许」是 POST /api/approve,由**服务端**去跑那条 argv。这正是它们必须不带
@@ -474,6 +467,34 @@ if (scriptAt === -1 || scriptEnd === -1) {
   }
   check('页面发出去的命令名,命令表里都有(改名那一刀漏掉页面,就是这里红)',
     strange.length === 0, [...new Set(strange)].join('、'))
+
+  // 9. ⛔⛔ 页面发出去的每一个旗标,归它发给的那条命令。
+  //
+  // 命令行从此按命令认旗标:不是这条命令的旗标当场拒(FLAG_NOT_HERE)。页面是命令行的
+  // 第一个程序调用方,它发的旗标要是不归那条命令,每个按钮都会在这一刀之后当场坏掉,
+  // 而页面自己看不出来 —— 按钮还在、只是按下去被拒。
+  // 两层:① 同一个数组字面量里带动词又带 '--x' 的,逐条按那条命令核;② 页面里出现的
+  // 每一个 '--x' 字面量(含在别处拼 argv 的),至少得是某条命令或全局的旗标。
+  const flagsOf = (name) => new Set([
+    ...GLOBAL_PARAMS.map((one) => one.name),
+    ...(COMMANDS[name]?.params ?? []).filter((one) => one.at === undefined).map((one) => one.name),
+  ])
+  const misplaced = []
+  for (const hit of filled.matchAll(/\[\s*'([a-z][a-z-]*)'((?:\s*,\s*(?:'[^']*'|[^,\]]+))*)\]/g)) {
+    const verb = hit[1]
+    const items = [...(hit[2] ?? '').matchAll(/'([^']*)'/g)].map((m) => m[1])
+    const name = items[0] !== undefined && known.has(`${verb}.${items[0]}`) ? `${verb}.${items[0]}` : verb
+    if (!known.has(name)) continue
+    for (const item of items) {
+      if (!item.startsWith('--')) continue
+      if (!flagsOf(name).has(item.slice(2))) misplaced.push(`${name.split('.').join(' ')} ${item}`)
+    }
+  }
+  check('页面在字面量里发给某条命令的旗标,都归那条命令', misplaced.length === 0, [...new Set(misplaced)].join('、'))
+  const anyFlag = new Set(Object.keys(COMMANDS).flatMap((name) => [...flagsOf(name)]))
+  const orphan = [...filled.matchAll(/'--([a-z][a-z-]*)'/g)].map((m) => m[1]).filter((flag) => !anyFlag.has(flag))
+  check('页面里出现的每个旗标字面量,至少是某条命令的旗标(死旗标会让按钮静默被拒)',
+    orphan.length === 0, [...new Set(orphan)].join('、'))
 }
 
 // The whole surface, in one place, for a person who wants to read it rather

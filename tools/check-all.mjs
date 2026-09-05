@@ -109,6 +109,33 @@ try {
   // patch file stands on it.
   if (!run('check-patch-file.mjs', [])) failed.push('check-patch-file')
 
+  // ⭐ Compares the path names this tool hardcodes against the ones dsh reads,
+  // out of whatever real installation this machine happens to have. ⛔ On a
+  // machine with none it prints "not checked" and says so — it must never be
+  // read as agreement, because nothing was compared.
+  if (!run('check-upstream-constants.mjs', [])) failed.push('check-upstream-constants')
+
+  // ⭐ The one declaration every face is generated from: sane on its own terms
+  // (positions, enums, forms, one sentence per parameter in both languages)
+  // and with no hand-written copy left beside it. Static, and early, because
+  // every face below is generated from what it guards.
+  if (!run('check-declaration.mjs', [])) failed.push('check-declaration')
+
+  // Flags belong to commands (another command's flag is refused by name, a
+  // value flag given twice is refused, a refusal leaves nothing on disk), and
+  // every answer carries a verdict whose exit code is 0/1/2/3 by tier. Spawns
+  // the real command line, so it gets a scratch directory to point `--box` at.
+  const ownership = mkdtempSync(join(tmpdir(), 'dsh-box-flags-'))
+  disposable.push(ownership)
+  if (!run('check-verdicts.mjs', [ownership])) failed.push('check-verdicts')
+
+  // ⭐ The third face, right after the declaration it is generated from and the
+  // verdicts it maps: every command is a tool unless it says why not, and the
+  // server really speaks the protocol over stdio against a scratch directory.
+  const mcp = mkdtempSync(join(tmpdir(), 'dsh-box-mcp-'))
+  disposable.push(mcp)
+  if (!run('check-mcp.mjs', [mcp])) failed.push('check-mcp')
+
   // Builds a cabinet by hand — never with dsh-box — and reads it back, because
   // a cabinet this tool built would only prove we can read our own handwriting.
   const inventory = mkdtempSync(join(tmpdir(), 'dsh-box-inventory-'))
@@ -170,6 +197,17 @@ try {
   const bootReady = freshBox('boot-ready', ['--guarded', '--silent'])
   disposable.push(bootReady.dir)
   if (!run('check-boot-ready.mjs', [bootReady.data])) failed.push('check-boot-ready')
+
+  // ⭐ The other half of what a launch owes a person: not "did it come up" but
+  // "is it still at the same address". Its own directory, and it holds real
+  // ports on purpose — it squats the low numbers so the sandbox is forced onto a
+  // higher one, which is the only arrangement in which remembering a port and
+  // re-scanning for one give different answers. Sharing a box with anything that
+  // also launches would let the other suite's sandbox take the number this one
+  // is watching.
+  const portSticky = mkdtempSync(join(tmpdir(), 'dsh-box-port-'))
+  disposable.push(portSticky)
+  if (!run('check-port-sticky.mjs', [portSticky])) failed.push('check-port-sticky')
 
   // Its own box: it starts a sandbox, deletes that sandbox's ledger on purpose,
   // and leaves the sandbox behind.

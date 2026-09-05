@@ -19,9 +19,9 @@ dsh-box <命令>                npm i -g dsh-box 之后,或 exe 那份跑过 set
 ⛔ 0.3.4 及更早的 exe 只有窗口一张脸,带参数会挂住不返回,文件名也还是 `dsh-box-shell.exe`。撞上那种版本走 `npx`。
 
 ```
-node bin/cli.js ls release --json                # 已下载哪些版本 / npm 上有哪些
-node bin/cli.js get release 0.1.0-rc.8 --json    # 下载并逐包钉版核对(原地等到完)
-node bin/cli.js rm release 0.1.0-rc.6 --json     # 删掉一个已下载的版本
+node bin/cli.js ls machine --json                # 能用哪些 dsh:本机装的、已下载的、你指过的文件夹
+node bin/cli.js get machine 0.1.0-rc.8 --json    # 下载并逐包钉版核对(原地等到完)
+node bin/cli.js rm machine 0.1.0-rc.6 --json     # 删掉一个已下载的版本
 node bin/cli.js ls plugin --in <档案柜> --json   # 那个档案柜实际装着什么(--in main 看日常的)
 node bin/cli.js get plugin <id|目录|包名> --to <档案柜> --json   # 正式装进去,一直在
 node bin/cli.js get plugin --from main --to <名> --json          # 不给 id 就整柜复刻
@@ -29,7 +29,7 @@ node bin/cli.js rm plugin <id> --from <档案柜> --json            # 从那个�
 node bin/cli.js set plugin <id> off --in <档案柜> --json         # 关掉那一行(on 是打开)
 node bin/cli.js set plugin --undo --in main --json               # 退回上一次改动之前,可连按
 node bin/cli.js ls sandbox --json                # 沙箱清单,含谁在跑、端口、pid
-node bin/cli.js start <名> --json                # ⚠会挡住:等到 dsh 真在服务才返回(常十几秒,上限 120 秒)
+node bin/cli.js start <名> --json                # ⚠会挡住:等到 dsh 真在服务才返回(重开约 5 秒、新建约 25 秒,上限 120 秒)
 node bin/cli.js start <名> --version 0.1.0-rc.8 --json   # 改用下载的版本
 node bin/cli.js stop <沙箱名> --json             # 停掉一台
 node bin/cli.js start main                       # 非沙箱:开用户真实的 ~/.dsh
@@ -42,38 +42,38 @@ node bin/cli.js set source mirror --json         # 换安装源:auto | official 
 node bin/cli.js set path on --json               # 把 exe 所在目录加进用户 PATH;set path off 撤销
 node bin/cli.js stop --all --json                # 总退出:停下所有沙箱;走到用户日常那台会要人在面板上点头
 
-node bin/cli.js ls --json                        # 此刻全景:谁在跑、装了什么、有没有人接管
+node bin/cli.js ls --json                        # 此刻全景:谁在跑、装了什么、此刻还有谁在动这个数据目录
 node bin/cli.js logs <沙箱名> --shape --json     # 先看日志形状,再决定要不要读正文
 node bin/cli.js logs <沙箱名> --errors --json    # 只要像出错的行(靠关键词猜的,会说明)
 node bin/cli.js logs --version 0.1.0-rc.8 --json # 下载/删除那个版本时说了什么(下载中也能看)
-node bin/cli.js agent attach --json              # 接管:配置窗显示你在操作并停止接受点击
-node bin/cli.js agent detach --json              # 交还(--forced 是窗口上那个停止按钮用的)
-node bin/cli.js ls memory --json                 # 上次接管期间做了什么(含被拒绝的)
+node bin/cli.js ls memory --json                 # 这个数据目录最近做过什么(含被拒绝的、含是谁干的)
 node bin/cli.js ui --port 10130                  # 给人开配置窗(会一直占着这个进程)
 ```
 
-**共 10 个动词**:`ls` `get` `rm` `start` `stop` `set` `logs` `ui` `agent` `help`。上面每一条都认 `--json`,`ui` 除外(它是给人开窗口的,不返回结果)。
+**共 10 个动词**:`ls` `get` `rm` `start` `stop` `set` `logs` `ui` `mcp` `help`。上面每一条都认 `--json`,`ui` 与 `mcp` 除外(一个给人开窗口、一个给 Agent 当 MCP 服务,都不返回)。
 
 ⭐ **档案柜写成一个值,不是一个旗标**:`--in` 看/改哪个柜、`--to` 拿进哪个柜、`--from` 从哪个柜拿。值是沙箱名,或者日常档案柜的名字 `main`。
 
 **配置窗没有第二套实现。**它显示的每件事都来自这里的命令:人点一个按钮,窗口就起一个进程敲对应的那条命令,和你敲的是同一条,记进同一份 `logs/actions.log`,失败给同一个 `code`。**所以窗口不可能做到命令行做不到的事**,你也不需要为了"让人看得见"去走窗口那条路。
 
-## `agent attach` 之后,人是看得见你的
+## 人一直看得见你,你不用打招呼
 
-敲了 `agent attach`,配置窗整个罩上蓝框、**停止接受点击**,并按顺序标出你碰过哪些控件;
-角标实时显示你此刻在跑哪条命令(**只读命令也算**,不然你下载版本的两分钟里窗口无话可说)。
-干完敲 `agent detach` 交还,框一次性清掉,人可以点开回看你做过的那一串。
+**没有「接管」这个动作了**(`agent attach` / `agent detach` 已删)。你每敲一条会改状态的命令,
+它自己会在数据目录里登记一条「正在跑」,跑完自动删掉;配置窗看见这条记录就罩上蓝框、
+**在这条命令跑完之前不接受点击**,并按顺序标出被碰过的控件。你不需要声明任何东西,
+也没有东西要交还——**进程一结束,锁就没了**。
 
-- ⭐ **人手上永远有一个停止按钮**,随时可以把控制权收回去。**收回不需要理由,也不会等你**。
-- **下次醒来先敲 `ls memory`。**它会告诉你上次结束于 `done`(你自己交还)还是 **`forced`(人按停止收回)**,
-  并列出每一步——**包括被拒的那几步**。「你在这里被拦下过」是你最该先知道的事,否则会再撞一次同一堵墙。
+- **多个 agent 同时干活是允许的**:一个进程一条记录,谁也不挤掉谁,每一步都记着是哪个进程干的。
+- **下次醒来先敲 `ls memory`。**它列出这个数据目录最近的每一步——**包括被拒的那几步**、以及此刻还有谁在跑。
+  「你在这里被拦下过」是你最该先知道的事,否则会再撞一次同一堵墙。
+- ⚠️ 反过来也成立:**人在窗口上点东西的时候,你发的命令不受影响**——挡的只是窗口那一侧。
 - ⛔ **能用这些命令干的事就不要绕过去自己伸手干**(直接改文件、自己起 dsh 进程)。
   窗口显示的是"经过这个工具的一切",绕过去的部分它看不见,人会以为屏幕上就是全部。
 
 ## 每轮先敲 `ls`
 
 它只报此刻、**全部本地读盘不碰网络**,所以永远是快的。一句话拿到:数据目录、
-有没有人接管、**用户自己装的那台 dsh(`host`)**、已下载版本、记着的插件、
+此刻还有谁在动这个数据目录、**用户自己装的那台 dsh(`host`)**、已下载版本、记着的插件、
 3080 上日常工作区在不在、每台沙箱跑没跑在哪。
 **你每轮醒来都不记得上次做过什么,这条命令就是拿来重新定位的。**
 
@@ -87,10 +87,25 @@ node bin/cli.js ui --port 10130                  # 给人开配置窗(会一直�
 
 ## `--json` 的约定
 
-- **成功**是一行 `{"box":…, "ok":true, …}`,**失败**是一行 `{"box":…, "ok":false, "code":…, "message":…}`,退出码 1。
+- 每一行都以 `{"schema":1, "box":…, "ok":…, "verdict":…}` 开头。**成功**是 `"ok":true`,**失败**多带 `"code":…, "message":…`。
+- **`verdict` 分四档,退出码只是它的投影**:`ok` 0 答出来了 ／ `failed` 1 关于你问的那台的判定(沙箱不在、dsh 没起来、闸门拒了;请求没错,是世界说了不)／ `error` 2 请求或本工具的问题(不认识的命令或选项、工具崩了)／ `partial` 3 做了一半再被拒,答案里写着做了哪一半。⛔ 别把 1 当成「工具坏了」,也别把 2 当成「沙箱有问题」。
 - **`code` 是不会变的标识,`message` 是给人看的、随时可能改写。**判断出了什么事请用 `code`,不要匹配中文。
-- **`box` 永远是第一个字段**,它是本次操作用的数据目录。**图形窗和命令行指向不同数据目录时,两边的回答都正确、都自洽、说的却是两个世界**——每次核对这个字段是唯一的防线。
-- `--json` 写在子命令前后都可以。不认识的选项会被拒绝而不是忽略。
+- **`box` 是本次操作用的数据目录。**图形窗和命令行指向不同数据目录时,两边的回答都正确、都自洽、说的却是两个世界——每次核对这个字段是唯一的防线。
+- **形状有版本**:裸 `--json` 永远是第 1 版,`--json=1` 是它的明写;要一个没有的版本会被拒(`JSON_SCHEMA_UNKNOWN`)。
+- `--json` 写在子命令前后都可以。不认识的选项会被拒绝而不是忽略;**别的命令的选项也拒**,并说明它属于谁(`FLAG_NOT_HERE`)。
+- **`ls` 是总览不是全量**:每台沙箱一行、插件只给数目;路径看 `ls sandbox`,某一柜装了什么看 `ls plugin --in <档案柜>`。
+
+## 走 MCP 那条路
+
+`dsh-box mcp` 把这张命令表原样交给 MCP 客户端,每条命令就是一个同名工具(两个词之间用下划线:`ls_sandbox`、`get_plugin`、`start`、`stop`),参数名就是旗标去掉 `--`,位置参数的名字以工具的 inputSchema 为准(就是 `--help --json` 里 `params[].name`;例如 `get_plugin` 的位置参数叫 `source`,`rm_sandbox` 的叫 `sandbox`)。挂法:
+
+```json
+{"mcpServers":{"dsh-box":{"command":"npx","args":["dsh-box","mcp","--box","<数据目录>"]}}}
+```
+
+- 每次工具调用的背后就是同一条命令行带 `--json`,答案就是那一行 JSON;**只有 `error` 会标成工具出错(isError)**,`failed` 与 `partial` 是答案。
+- 不在工具表里的只有不返回的两样:`ui`、`mcp` 自己;`start --follow` 同理。需要人点头的动作照旧:后台那条命令行自己弹面板等一分钟。
+- 答案超过 20000 字符会换成一条 `partial` 替身(`ANSWER_TOO_LARGE`,带前一段与实际大小);`mcp --max-chars <字符数>` 可调。
 
 全部 `code`（41 个）:`BAD_FLAG` `BAD_PACKAGE_NAME` `BAD_PID` `BAD_PLUGIN_ID` `BAD_SANDBOX_NAME` `BAD_SETTING_VALUE` `BOOT_EXITED` `BOOT_EXITED_LATE` `BOOT_TIMEOUT` `DIR_NOT_FOUND` `MAIN_DSH_RUNNING` `MISSING_ARGUMENT` `MISSING_VALUE` `NEEDS_APPROVAL` `NOT_A_DSH_PLUGIN` `NOT_OURS` `NOT_RUNNING` `NO_BACKUP` `NO_FREE_PORT` `NO_HOST_DSH` `NO_LOGS` `NO_PACKAGE_JSON` `NO_PACKAGE_NAME` `NO_SESSIONS` `NO_SUCH_SANDBOX` `NPM_FAILED` `PLUGIN_DEPS_MISSING` `PLUGIN_HAS_NO_ENTRY` `PLUGIN_LINK_BROKEN` `PLUGIN_NOT_BUILT` `SAME_WORKSPACE` `SANDBOX_ALREADY_RUNNING` `SANDBOX_RUNNING` `UNKNOWN_COMMAND` `UNKNOWN_FLAG` `UNKNOWN_PLUGIN` `UNKNOWN_SETTING` `UNREADABLE_MANIFEST` `UNREADABLE_PATCH` `VERSION_IN_USE` `VERSION_NOT_DOWNLOADED`。
 （这一批新的都来自「插件属于工作区」那次改动:`NOT_OURS`／`UNREADABLE_PATCH`／`NO_BACKUP`／`BAD_PACKAGE_NAME`／`NPM_FAILED`／`SAME_WORKSPACE`,以及闸门那条 `NEEDS_APPROVAL`。
@@ -105,6 +120,7 @@ node bin/cli.js ui --port 10130                  # 给人开配置窗(会一直�
 - `start --plugin <id>` ＝ 启动前顺手装一次;`start --unplug <id>` ＝ 顺手拿掉。
 - ⛔ **不写 `--plugin` 不是「一个都不装」,是「什么都不改」**——这个工作区之前装过的照样在。
   要一台纯官方的 dsh,**新建一个沙箱**(`--new`),新沙箱天生一个插件都没有。
+- ⛔ `start --json` 里的 `pluginsChanged` 说的是**这一次改动了哪几个**(不写 `--plugin` 就是空的,那是「什么都没改」不是「一个都没装」);同一份答复里的 `cabinetPlugins` 才是**这个档案柜现在装着什么**。
 - **要知道某个档案柜现在有什么,问 `ls plugin --in <档案柜>` 或 `ls` 的 `mainPlugins`**,
   返回分两栏:`ours`(dsh-box 装的,卸得掉)与 `theirs`(那个工作区本来就有的,**我们不动**)。
 - 卸载**只删我们写进去的那几条**。想拿掉 `theirs` 里的东西会得到 `NOT_OURS`,这是对的,
@@ -145,7 +161,7 @@ dsh-box 自己的目录(`<数据目录>/packages`),然后走上面这三道同�
 - ⛔ **档案柜也不沿用上次。**裸敲 `start` 一定被拒。理由:同一条命令应当永远得到同一个结果——这条比少敲几个字重要,你写进日志或回给用户的那行命令,别人重跑必须得到同一台。
 - ⛔ **`main` 只说档案柜,不说机器。**`start main` 配 `--version` 是唯一「出事修不回来」的组合(见下)。`main` 和 `--new` 同时给会被拒:它们是同一个问题的两个答案。
 - 输出里的 `engine` 字段说清楚了这次用的是哪台:`{"kind":"host"|"release","version":…,"dir":…}`。**光看 `version` 分不出来**——用户自己装的和我们下载的可以是同一个版本号、两套不同的安装。
-- **启动完就交还命令行,沙箱留在后台跑。**输出里有 `url`／`pid`／`port`／`logFile`。要停用 `stop <沙箱名>`,**不要按进程名模糊匹配去杀**,会误杀用户自己正在用的 dsh。人想留在终端看日志加 `--follow`(Ctrl+C 则停掉沙箱)。
+- **启动完就交还命令行,沙箱留在后台跑。**输出里有 `url`／`pid`／`port`／`logFile`,还有 `elapsedMs`(这一次从接到命令到 dsh 真在服务用了多少毫秒)——**定自己的等待上限用它,别照抄文档里的约数**。要停用 `stop <沙箱名>`,**不要按进程名模糊匹配去杀**,会误杀用户自己正在用的 dsh。人想留在终端看日志加 `--follow`(Ctrl+C 则停掉沙箱)。
 - **一个沙箱同时只能跑一台**(两台会互踩同一份档案柜)。要并行就用不同的沙箱名,端口从 3090 起自动找。
 - ⛔ **但插件不在「不沿用」之列**,因为它根本不属于这次启动:见上面那节。不写 `--plugin` ＝ 不改动这个工作区的插件。
 

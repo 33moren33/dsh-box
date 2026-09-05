@@ -1,0 +1,985 @@
+{
+  "top": [
+    "action",
+    "box",
+    "boxVersion",
+    "commands",
+    "globals",
+    "ok",
+    "program",
+    "schema",
+    "verdict",
+    "verdicts"
+  ],
+  "globals": [
+    [
+      "box",
+      "string",
+      false
+    ],
+    [
+      "json",
+      "boolean",
+      false
+    ],
+    [
+      "help",
+      "boolean",
+      false
+    ]
+  ],
+  "verdicts": {
+    "ok": 0,
+    "failed": 1,
+    "error": 2,
+    "partial": 3
+  },
+  "commands": [
+    {
+      "name": "ls",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": []
+    },
+    {
+      "name": "ls.machine",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": []
+    },
+    {
+      "name": "ls.plugin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "in",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "ls.sandbox",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": []
+    },
+    {
+      "name": "ls.workspace",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "in",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "ls.history",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "lines",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "shape",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "ls.memory",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": []
+    },
+    {
+      "name": "ls.setting",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": []
+    },
+    {
+      "name": "get.machine",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "version",
+          "string",
+          1,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "get.plugin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "source",
+          "string",
+          1,
+          false,
+          null,
+          false
+        ],
+        [
+          "to",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ],
+        [
+          "from",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "id",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "get.signin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "to",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "get.chat",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "from",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ],
+        [
+          "to",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ],
+        [
+          "force",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "rm.machine",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "version",
+          "string",
+          1,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "rm.plugin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "target",
+          "string",
+          1,
+          true,
+          null,
+          false
+        ],
+        [
+          "from",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "rm.sandbox",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "sandbox",
+          "string",
+          1,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "rm.signin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "from",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "rm.setting",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": []
+    },
+    {
+      "name": "start",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "sandbox",
+          "string",
+          1,
+          false,
+          null,
+          false
+        ],
+        [
+          "new",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "version",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "plugin",
+          "string",
+          null,
+          false,
+          null,
+          true
+        ],
+        [
+          "unplug",
+          "string",
+          null,
+          false,
+          null,
+          true
+        ],
+        [
+          "no-sign-in",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "sign-in",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "sign-out",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "follow",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "stop",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "sandbox",
+          "string",
+          1,
+          false,
+          null,
+          false
+        ],
+        [
+          "all",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "window",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "download",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.plugin",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "target",
+          "string",
+          1,
+          false,
+          null,
+          false
+        ],
+        [
+          "state",
+          "string",
+          2,
+          false,
+          [
+            "on",
+            "off"
+          ],
+          false
+        ],
+        [
+          "undo",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "in",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ],
+        [
+          "at",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.workspace",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "path",
+          "string",
+          1,
+          true,
+          null,
+          false
+        ],
+        [
+          "in",
+          "string",
+          null,
+          true,
+          null,
+          false
+        ],
+        [
+          "title",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.source",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "value",
+          "string",
+          1,
+          true,
+          [
+            "auto",
+            "official",
+            "mirror"
+          ],
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.lang",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "value",
+          "string",
+          1,
+          true,
+          [
+            "zh",
+            "en"
+          ],
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.ask-on-quit",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "value",
+          "string",
+          1,
+          true,
+          [
+            "on",
+            "off"
+          ],
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.ask-on-daily",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "value",
+          "string",
+          1,
+          true,
+          [
+            "on",
+            "off"
+          ],
+          false
+        ]
+      ]
+    },
+    {
+      "name": "set.path",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": true,
+      "params": [
+        [
+          "state",
+          "string",
+          1,
+          true,
+          [
+            "on",
+            "off"
+          ],
+          false
+        ],
+        [
+          "force",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "logs",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "sandbox",
+          "string",
+          1,
+          false,
+          null,
+          false
+        ],
+        [
+          "shape",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "errors",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "lines",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "all",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "version",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "package",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "ui",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "no-open",
+          "boolean",
+          null,
+          false,
+          null,
+          false
+        ],
+        [
+          "port",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    },
+    {
+      "name": "mcp",
+      "keys": [
+        "after",
+        "booleans",
+        "mutates",
+        "name",
+        "notes",
+        "params",
+        "summary",
+        "usage",
+        "values"
+      ],
+      "mutates": false,
+      "params": [
+        [
+          "max-chars",
+          "string",
+          null,
+          false,
+          null,
+          false
+        ]
+      ]
+    }
+  ]
+}

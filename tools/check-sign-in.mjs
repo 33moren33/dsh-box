@@ -24,7 +24,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { boxLayout, removeTree, uiSeatFile } from '../src/paths.js'
-import { CREDENTIALS_FILE, claimPath } from '../src/sandbox.js'
+import { CREDENTIALS_FILE, claimPath, credentialsState, portableCredentials } from '../src/sandbox.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CLI = join(HERE, '..', 'bin', 'cli.js')
@@ -44,9 +44,15 @@ const layout = boxLayout(box)
 
 // A stand-in for the user's own cabinet, with something that looks like a
 // sign-in in it. Everything below reads this instead of the real home.
+//
+// ⭐ Shaped like the document dsh actually writes, not like a plausible one.
+// Read off a real machine on 2026-09-01: `version: 1` at the top and the
+// provider keys under `refs:`, environment-variable name to value. The old
+// fixture here was a bare `apiKey:` line, which is a shape dsh has never
+// produced — and a fixture we invented can only prove we understand ourselves.
 const daily = join(root, 'fake-daily')
 mkdirSync(daily, { recursive: true })
-writeFileSync(join(daily, CREDENTIALS_FILE), 'apiKey: not-a-real-key\n')
+writeFileSync(join(daily, CREDENTIALS_FILE), 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: not-a-real-key\n')
 
 let failures = 0
 const check = (what, passed, detail = '') => {
@@ -109,6 +115,68 @@ const sandboxCreds = (name) => join(layout.sandboxes, name, 'home', CREDENTIALS_
 
 console.log('\n登录是档案柜的属性,拿掉了就没有备份\n')
 
+// ── 0. 「有没有登录」这个判据本身 ─────────────────────────────────────────────
+// ⛔⛔ 这一整节是补一个说了两年谎的判据:它原来是 existsSync。而**这个文件是 dsh
+//    自己会写的** —— 它每次给浏览器签会话都记在这儿(kind: grant),于是一台从没
+//    给过 key 的沙箱,起过一次之后文件就在了。后果有两个,都在下面钉住:
+//    start 会承诺「真实计费」,而 --sign-in 会认为已经有了、**一声不响地不干活**。
+// ⭐ 四份夹具全部照 dsh 真写出来的形状,⛔ 不是我们觉得合理的形状。
+const shapes = join(root, 'shapes')
+const shaped = (name, text) => {
+  const home = join(shapes, name)
+  mkdirSync(home, { recursive: true })
+  writeFileSync(join(home, CREDENTIALS_FILE), text)
+  return home
+}
+check('⭐ refs 里有 provider key → 有登录',
+  credentialsState(shaped('refs', 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: x\n')) === 'keys')
+check('⛔⛔ 只有 dsh 给自己签的浏览器会话 → 没有登录(这就是那句「真实计费」的假话)',
+  credentialsState(shaped('grant', 'version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: x\n')) === 'session-only')
+check('⭐ records 里的 api-key 算登录,grant 不算',
+  credentialsState(shaped('apikey', 'version: 1\nrecords:\n  deepseek/default:\n    kind: api-key\n    key: x\n')) === 'keys')
+check('文件不在 → 没有登录', credentialsState(join(shapes, '压根没有这个目录')) === 'none')
+check('⭐ 上一代的扁平版式也算有(dsh 不拒它,它会就地改写成 refs)',
+  credentialsState(shaped('flat', 'DEEPSEEK_API_KEY: x\n')) === 'keys')
+// ⛔ 「读不懂」必须和「没有」分开:把一个有 key 的柜子说成没有,人会照着去配第二个;
+//    而这个工具没有 YAML 库,一定存在它看不懂的写法。
+check('⛔⛔ 看不懂的文档说看不懂,不说「没有」',
+  credentialsState(shaped('multi', 'version: 1\nrefs:\n  A: x\n---\nversion: 1\n')) === 'unreadable')
+check('⛔ 顶层出现官方不认的键,也算看不懂(dsh 自己会当场抛)',
+  credentialsState(shaped('alien', 'version: 1\napiKey: x\n')) === 'unreadable')
+check('⚠️ 注释不算条目',
+  credentialsState(shaped('comment', 'version: 1\nrefs:\n  # DEEPSEEK_API_KEY: x\n')) === 'none')
+
+// ── 0b. 搬过去的是钥匙,不是那份文档 ──────────────────────────────────────────
+// ⛔⛔ 一份凭证文档里装着两种东西:**内容**(refs 与 api-key 记录,那是用户的钥匙)
+//    和**身份**(kind: grant —— dsh 给**那一台**签浏览器 cookie 用的密钥)。
+//    整文件复制会把身份也搬过去,于是两个档案柜共用一把签名密钥,一边签的 cookie
+//    在另一边也验得过。⭐ 这条规矩是 dsh 自己的:它复制 agent preset 时会重写
+//    复制品的元数据,**丢掉源的 name 与名册 order、只留 description**
+//    (packages/preset/agent-presets/src/authoring.ts:153-162)。一份复制品不该
+//    继承原件的身份 —— 同一条道理,换一个文件。
+const mixedDaily = shaped('mixed-daily',
+  'version: 1\nrefs:\n  DEEPSEEK_API_KEY: real-key\nrecords:\n'
+  + '  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: cookie-signing-secret\n'
+  + '  deepseek/spare:\n    kind: api-key\n    key: spare-key\n')
+const carried = portableCredentials(mixedDaily)
+check('⭐ refs 里的钥匙搬过去了', carried !== null && carried.text.includes('DEEPSEEK_API_KEY: real-key'), String(carried?.refs))
+check('⭐ records 里的 api-key 也搬过去了', carried !== null && carried.text.includes('spare-key'), String(carried?.apiKeys))
+check('⛔⛔ 而那把 cookie 签名密钥没有跟着走',
+  carried !== null && !carried.text.includes('cookie-signing-secret') && carried.droppedGrants === 1,
+  `droppedGrants=${carried?.droppedGrants}`)
+check('⭐ 搬完的仍是 dsh 读得懂的形状(版本位在,而且判回 keys)',
+  carried !== null && carried.text.startsWith('version: 1\n')
+  && credentialsState(shaped('carried', carried.text)) === 'keys')
+// ⛔ 上一代扁平版式:搬过去时顺手升级成 refs —— 与 dsh 自己那次就地升级同一个结果,
+//    ⛔ 不是我们发明的形状。
+const flatCarried = portableCredentials(shaped('flat-src', 'DEEPSEEK_API_KEY: x\n'))
+check('⭐ 扁平版式搬过去时升级成 version:1 + refs',
+  flatCarried !== null && flatCarried.text === 'version: 1\nrefs:\n  DEEPSEEK_API_KEY: x\n', JSON.stringify(flatCarried?.text))
+check('⛔ 源那边只有浏览器会话时,没东西可搬,说没有',
+  portableCredentials(shaped('grant-src', 'version: 1\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      secret: s\n')) === null)
+check('⛔ 读不懂的源不许硬搬(半份凭证比没有更坏)',
+  portableCredentials(shaped('bad-src', 'version: 1\napiKey: x\n')) === null)
+
 // 1. A sandbox born without one, then given one, then relieved of it.
 await cli('start', 'plain', '--version', '9.9.9-stub', '--no-sign-in')
 await cli('stop', 'plain')
@@ -123,6 +191,26 @@ check('再来一次不报错,只说本来就有', again.ok === true && again.imp
 const gone = await cli('rm', 'signin', '--from', 'plain')
 check('rm signin 之后没了', gone.ok === true && !existsSync(sandboxCreds('plain')), gone.code ?? 'ok')
 check('沙箱那一侧不需要任何人点头', gone.removed === true)
+
+// 1b. ⛔⛔ 2026-08-30 的判例,也是这一族此前唯一没被盯住的一格:**重开**一台已经
+//     存在、而且里面没有登录的沙箱。不写任何登录旗标时必须什么都不改。
+//     此前它会顺手补一份进去 —— 于是配置窗里那个明明没勾的勾,启动之后自己变回
+//     勾上,而人接着据此排查,前提是假的。
+// ⭐ 出生那一刻仍然默认带上,两者不是一回事:新柜没有「原本的样子」可以保。
+//    这一格与上面 `plain` 那一格合起来才是完整的规则。
+await cli('start', 'born', '--version', '9.9.9-stub')
+await cli('stop', 'born')
+check('新沙箱不写旗标:出生时带上登录', existsSync(sandboxCreds('born')))
+
+await cli('rm', 'signin', '--from', 'born')
+await cli('start', 'born', '--version', '9.9.9-stub')
+await cli('stop', 'born')
+check('⛔⛔ 重开一台没有登录的旧沙箱,不写旗标就不会凭空出现一份',
+  !existsSync(sandboxCreds('born')))
+
+await cli('start', 'born', '--version', '9.9.9-stub', '--sign-in')
+await cli('stop', 'born')
+check('⭐ 明说 --sign-in,才拿得到', existsSync(sandboxCreds('born')))
 
 // 2. The daily cabinet is the source, so importing into it means nothing.
 const silly = await cli('get', 'signin', '--to', 'main')
